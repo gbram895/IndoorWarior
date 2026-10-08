@@ -18,8 +18,15 @@ step.
   Wahoo or Tacx control channel,
 - has a **Copy trainer report** button that puts all of that on the clipboard.
 
-ERG control is not built yet; the report says whether the trainer can do it
-through standard FTMS.
+## ERG
+
+The ERG panel has an on/off switch and a target (buttons, slider, or keys:
+E toggles, arrow keys change by 5 W, Shift+arrows by 25 W). On sends FTMS
+Request Control, Start and Set Target Power to the control point (0x2AD9),
+one command at a time, each waiting for the trainer's answer. Off switches the
+trainer to flat-road simulation (grade 0 %) instead of leaving the last
+target, or sends Reset on trainers without simulation. If another app takes
+control, ERG turns itself off without grabbing control back.
 
 ## Running it
 

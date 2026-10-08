@@ -42,6 +42,23 @@
   dd { margin: 0; overflow-wrap: anywhere; }
   #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
   .hidden { display: none; }
+  .erg-head { display: flex; justify-content: space-between; align-items: center; }
+  .switch { position: relative; width: 56px; height: 32px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: #2a2f3a; border-radius: 16px; cursor: pointer; transition: background .15s; }
+  .slider::before { content: ""; position: absolute; width: 24px; height: 24px; left: 4px; top: 4px; background: #fff; border-radius: 50%; transition: transform .15s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(24px); }
+  .switch input:disabled + .slider { opacity: .4; cursor: default; }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--text); outline-offset: 2px; }
+  .target { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 16px 0 8px; }
+  .target button { min-width: 56px; }
+  #targetWatts { font-size: 56px; font-weight: 700; min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
+  #targetRange { width: 100%; accent-color: var(--accent); }
+  #ergStatus { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  #ergStatus.bad { color: var(--bad); } #ergStatus.ok { color: var(--ok); }
+  .keys { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .ergOff .target, .ergOff #targetRange { opacity: .45; }
 </style>
 </head>
 <body>
@@ -70,6 +87,26 @@
       <div class="stat"><div class="label">FTMS Indoor Bike Data</div><div class="value" id="ftmsWatts">--</div></div>
     </div>
     <div id="fresh">Waiting for the first reading…</div>
+  </section>
+
+  <section class="panel hidden ergOff" id="ergPanel">
+    <div class="erg-head">
+      <h2 style="margin:0">ERG</h2>
+      <label class="switch" title="Toggle ERG (E)">
+        <input type="checkbox" id="ergToggle" aria-label="ERG mode">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="target">
+      <button class="secondary" data-step="-25">−25</button>
+      <button class="secondary" data-step="-5">−5</button>
+      <div><div id="targetWatts">150</div><div class="unit" style="text-align:center">target W</div></div>
+      <button class="secondary" data-step="5">+5</button>
+      <button class="secondary" data-step="25">+25</button>
+    </div>
+    <input type="range" id="targetRange" min="50" max="600" step="5" value="150" aria-label="Target watts">
+    <div id="ergStatus">ERG is off. The trainer rides like a flat road.</div>
+    <div class="keys">Keys: E toggles ERG, ↑/↓ change target by 5 W, Shift+↑/↓ by 25 W.</div>
   </section>
 
   <section class="panel hidden" id="reportPanel">
@@ -349,9 +386,21 @@ async function connect() {
           } else if ([0x2acc, 0x2ad8, 0x2a29, 0x2a24, 0x2a26].map(uuid16).includes(c.uuid)) {
             onValue(c.uuid, await c.readValue());
           } else if (c.uuid === uuid16(0x2ad9)) {
-            // Present is all the spike checks. ERG would write Request
-            // Control (0x00) then Set Target Power (0x05) here.
             state.report.controlPoint = true;
+            c.addEventListener('characteristicvaluechanged', e => ERG.indication(e.target.value));
+            await c.startNotifications(); // indications carry the command answers
+            ERG.attach(c);
+          } else if (c.uuid === uuid16(0x2ada)) {
+            // Fitness Machine Status: 0xFF means another app took control.
+            c.addEventListener('characteristicvaluechanged', e => {
+              if (e.target.value.getUint8(0) === 0xff) {
+                const wasOn = ERG.on;
+                ERG.controlLost();
+                renderErg();
+                if (wasOn) ergStatus('Another app took control of the trainer. ERG is off.', 'bad');
+              }
+            });
+            await c.startNotifications();
           }
         } catch (e) {
           state.report.errors.push(`${nameOf(c.uuid)}: ${e.message}`);
@@ -362,6 +411,12 @@ async function connect() {
     $('trainerName').textContent = device.name || 'Trainer';
     $('livePanel').classList.remove('hidden');
     $('reportPanel').classList.remove('hidden');
+    $('ergPanel').classList.remove('hidden');
+    const canErg = state.report.controlPoint && (!state.report.features || state.report.features.powerTarget);
+    $('ergToggle').disabled = !canErg;
+    if (state.report.range) { $('targetRange').min = state.report.range.min; $('targetRange').max = state.report.range.max; }
+    ERG.setTarget(ERG.target);
+    ergStatus(canErg ? 'ERG is off. Switch it on to hold the target power.' : 'This trainer does not accept power targets.', canErg ? '' : 'bad');
     $('connectBtn').classList.add('hidden');
     $('disconnectBtn').classList.remove('hidden');
     setStatus(`Connected to ${device.name || 'trainer'}.`);
@@ -374,12 +429,133 @@ async function connect() {
 }
 
 function onDisconnected() {
+  ERG.detach();
+  renderErg();
+  ergStatus('Trainer disconnected. ERG is off.');
   setStatus('Disconnected.');
   $('connectBtn').classList.remove('hidden');
   $('disconnectBtn').classList.add('hidden');
   wakeLock?.release().catch(() => {});
   wakeLock = null;
 }
+
+// ---- ERG through the FTMS control point (0x2AD9).
+// Every write is answered by an indication: 0x80, request op code, result.
+// Writes go one at a time; the next waits for the previous answer.
+const FTMS_RESULT = { 1: 'success', 2: 'not supported', 3: 'invalid parameter', 4: 'operation failed', 5: 'control not permitted' };
+const OP = { requestControl: 0x00, reset: 0x01, setTargetPower: 0x05, start: 0x07, setSimulation: 0x11 };
+
+const ERG = (() => {
+  let cp = null, queue = Promise.resolve(), pending = null;
+  let on = false, target = 150, hasControl = false, sendTimer = null;
+
+  function onIndication(view) {
+    if (view.byteLength < 3 || view.getUint8(0) !== 0x80 || !pending) return;
+    if (view.getUint8(1) !== pending.op) return;
+    const p = pending; pending = null;
+    clearTimeout(p.timer);
+    p.resolve(view.getUint8(2));
+  }
+
+  // Write one command and wait for its answer. Resolves with the result code.
+  function send(bytes) {
+    const run = () => new Promise((resolve, reject) => {
+      if (!cp) return reject(new Error('not connected'));
+      pending = { op: bytes[0], resolve, timer: setTimeout(() => { pending = null; reject(new Error('trainer did not answer')); }, 3000) };
+      cp.writeValueWithResponse(new Uint8Array(bytes)).catch(e => {
+        if (pending) { clearTimeout(pending.timer); pending = null; }
+        reject(e);
+      });
+    });
+    const result = queue.then(run, run);
+    queue = result.catch(() => {});
+    return result;
+  }
+
+  async function ensureControl() {
+    if (hasControl) return;
+    const r = await send([OP.requestControl]);
+    if (r !== 1) throw new Error(`trainer refused control (${FTMS_RESULT[r] || r})`);
+    hasControl = true;
+    await send([OP.start]).catch(() => {}); // some trainers want Start first; harmless otherwise
+  }
+
+  function powerBytes(w) { return [OP.setTargetPower, w & 0xff, (w >> 8) & 0xff]; }
+  // Flat road: wind 0 m/s, grade 0 %, Crr 0.0040, Cw 0.51 kg/m.
+  const FLAT_ROAD = [OP.setSimulation, 0, 0, 0, 0, 40, 51];
+
+  async function applyTarget() {
+    await ensureControl();
+    const r = await send(powerBytes(target));
+    if (r !== 1) throw new Error(`target refused (${FTMS_RESULT[r] || r})`);
+    ergStatus(`Holding ${target} W.`, 'ok');
+  }
+
+  async function release() {
+    const f = state.report.features;
+    if (f && f.simulation) {
+      await ensureControl();
+      const r = await send(FLAT_ROAD);
+      if (r === 1) { ergStatus('ERG is off. The trainer rides like a flat road.'); return; }
+    }
+    // No simulation mode: hand control back, which ends the power target.
+    const r = await send([OP.reset]);
+    hasControl = false;
+    ergStatus(r === 1 ? 'ERG is off. Control handed back to the trainer.' : `ERG off, but reset was refused (${FTMS_RESULT[r] || r}).`);
+  }
+
+  return {
+    attach(characteristic) { cp = characteristic; hasControl = false; pending = null; queue = Promise.resolve(); },
+    indication: onIndication,
+    get on() { return on; },
+    get target() { return target; },
+    detach() { cp = null; on = false; hasControl = false; pending = null; },
+    // Another app took over: stop without sending anything, so we do not grab it back.
+    controlLost() { hasControl = false; on = false; clearTimeout(sendTimer); },
+    async setOn(value) {
+      on = value;
+      try { on ? await applyTarget() : await release(); }
+      catch (e) {
+        ergStatus(`ERG ${on ? 'could not start' : 'could not stop'}: ${e.message}`, 'bad');
+        if (on) { on = false; renderErg(); }
+      }
+    },
+    setTarget(w) {
+      const r = state.report.range || { min: 50, max: 600 };
+      target = Math.max(r.min, Math.min(r.max, Math.round(w)));
+      renderErg();
+      if (!on) return;
+      // Coalesce rapid clicks and slider drags into one write.
+      clearTimeout(sendTimer);
+      sendTimer = setTimeout(() => applyTarget().catch(e => ergStatus(`Target not set: ${e.message}`, 'bad')), 250);
+    },
+  };
+})();
+
+function ergStatus(text, cls = '') { $('ergStatus').textContent = text; $('ergStatus').className = cls; }
+
+function renderErg() {
+  $('ergToggle').checked = ERG.on;
+  $('targetWatts').textContent = ERG.target;
+  $('targetRange').value = ERG.target;
+  $('ergPanel').classList.toggle('ergOff', !ERG.on);
+}
+
+$('ergToggle').addEventListener('change', e => { ERG.setOn(e.target.checked); renderErg(); });
+document.querySelectorAll('[data-step]').forEach(b =>
+  b.addEventListener('click', () => ERG.setTarget(ERG.target + Number(b.dataset.step))));
+$('targetRange').addEventListener('input', e => ERG.setTarget(Number(e.target.value)));
+document.addEventListener('keydown', e => {
+  if ($('ergPanel').classList.contains('hidden') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') return; // the slider handles its own arrows
+  if (e.key === 'e' || e.key === 'E') { if (!$('ergToggle').disabled) { ERG.setOn(!ERG.on); renderErg(); } }
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const step = (e.shiftKey ? 25 : 5) * (e.key === 'ArrowUp' ? 1 : -1);
+    ERG.setTarget(ERG.target + step);
+  }
+});
+renderErg();
 
 $('connectBtn').addEventListener('click', connect);
 $('disconnectBtn').addEventListener('click', () => device?.gatt?.disconnect());
