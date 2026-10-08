@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IndoorWarior</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --text: #f2f4f8; --muted: #8b93a7;
+    --accent: #ff7a1a; --ok: #3ecf8e; --warn: #f5b84b; --bad: #ff5d5d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 16px;
+    background: var(--accent); color: #111; cursor: pointer;
+  }
+  button.secondary { background: #2a2f3a; color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #status { color: var(--muted); margin-top: 10px; }
+  #status.bad { color: var(--bad); }
+  .power { text-align: center; padding: 8px 0 16px; }
+  #watts { font-size: clamp(96px, 22vw, 180px); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .unit { color: var(--muted); }
+  #avg3 { font-size: 22px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { background: #20242d; border-radius: 8px; padding: 10px 12px; }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #fresh { text-align: center; color: var(--muted); font-size: 13px; margin-top: 12px; }
+  #fresh.stale { color: var(--warn); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>IndoorWarior</h1>
+
+  <section class="panel" id="connectPanel">
+    <div class="row">
+      <button id="connectBtn">Connect trainer</button>
+      <button id="disconnectBtn" class="secondary hidden">Disconnect</button>
+    </div>
+    <div id="status">Close Zwift or any other app using the trainer, pedal to wake it, then connect.</div>
+  </section>
+
+  <section class="panel hidden" id="livePanel">
+    <h2 id="trainerName">Trainer</h2>
+    <div class="power">
+      <div id="watts">--</div>
+      <div class="unit">watts</div>
+      <div id="avg3">3s average --</div>
+    </div>
+    <div class="grid">
+      <div class="stat"><div class="label">Cadence</div><div class="value" id="cadence">--</div></div>
+      <div class="stat"><div class="label">Speed</div><div class="value" id="speed">--</div></div>
+      <div class="stat"><div class="label">Cycling Power service</div><div class="value" id="cpWatts">--</div></div>
+      <div class="stat"><div class="label">FTMS Indoor Bike Data</div><div class="value" id="ftmsWatts">--</div></div>
+    </div>
+    <div id="fresh">Waiting for the first reading…</div>
+  </section>
+
+  <section class="panel hidden" id="reportPanel">
+    <h2>What this trainer supports</h2>
+    <dl>
+      <dt>Trainer</dt><dd id="rTrainer">reading…</dd>
+      <dt>ERG</dt><dd id="erg">reading…</dd>
+      <dt>Power range</dt><dd id="rRange">--</dd>
+    </dl>
+    <div class="row" style="margin-top:12px">
+      <button id="copyBtn" class="secondary">Copy trainer report</button>
+    </div>
+  </section>
+</main>
+
+<script>
+// ---- Byte parsers for the standard Bluetooth SIG cycling characteristics.
+// All fields little-endian. Each takes a DataView and returns null if short.
+const BLE = (() => {
+  function reader(view) {
+    let o = 0;
+    const need = n => o + n <= view.byteLength;
+    return {
+      skip(n) { if (!need(n)) return false; o += n; return true; },
+      u8() { if (!need(1)) return null; const v = view.getUint8(o); o += 1; return v; },
+      u16() { if (!need(2)) return null; const v = view.getUint16(o, true); o += 2; return v; },
+      s16() { if (!need(2)) return null; const v = view.getInt16(o, true); o += 2; return v; },
+      u32() { if (!need(4)) return null; const v = view.getUint32(o, true); o += 4; return v; },
+    };
+  }
+
+  // Cycling Power Measurement (0x2A63): flags u16, power s16, then optional
+  // fields in flag order. Read up to crank revolution data.
+  function cyclingPower(view) {
+    const r = reader(view);
+    const flags = r.u16(), power = r.s16();
+    if (flags === null || power === null) return null;
+    const out = { power, crankRevs: null, crankTime: null };
+    if (flags & 0x0001 && !r.skip(1)) return null; // pedal power balance
+    if (flags & 0x0004 && !r.skip(2)) return null; // accumulated torque
+    if (flags & 0x0010 && !r.skip(6)) return null; // wheel revolution data
+    if (flags & 0x0020) {                           // crank revolution data
+      out.crankRevs = r.u16(); out.crankTime = r.u16();
+      if (out.crankTime === null) return null;
+    }
+    return out;
+  }
+
+  // Indoor Bike Data (0x2AD2). A reading can be split over several
+  // notifications, so every field may be absent.
+  function indoorBike(view) {
+    const r = reader(view);
+    const flags = r.u16();
+    if (flags === null) return null;
+    const has = bit => (flags & (1 << bit)) !== 0;
+    const out = { speedKmh: null, cadence: null, resistance: null, power: null, heartRate: null };
+    // Bit 0 is "More Data": instantaneous speed is present when it is CLEAR.
+    if (!has(0)) { const v = r.u16(); if (v === null) return null; out.speedKmh = v / 100; }
+    if (has(1) && !r.skip(2)) return null;           // average speed
+    if (has(2)) { const v = r.u16(); if (v === null) return null; out.cadence = v / 2; }
+    if (has(3) && !r.skip(2)) return null;           // average cadence
+    if (has(4) && !r.skip(3)) return null;           // total distance (u24)
+    if (has(5)) { const v = r.s16(); if (v === null) return null; out.resistance = v; }
+    if (has(6)) { const v = r.s16(); if (v === null) return null; out.power = v; }
+    if (has(7) && !r.skip(2)) return null;           // average power
+    if (has(8) && !r.skip(5)) return null;           // expended energy
+    if (has(9)) { const v = r.u8(); if (v === null) return null; out.heartRate = v; }
+    return out;
+  }
+
+  // Fitness Machine Feature (0x2ACC): u32 machine features, u32 target settings.
+  function ftmsFeatures(view) {
+    const r = reader(view);
+    const machine = r.u32(), targets = r.u32();
+    if (machine === null || targets === null) return null;
+    const t = bit => (targets & (1 << bit)) !== 0;
+    const m = bit => (machine & (1 << bit)) !== 0;
+    return {
+      machine, targets,
+      powerTarget: t(3),        // ERG
+      resistanceTarget: t(2),
+      simulation: t(13),        // grade/wind, what SIM mode uses
+      spinDown: t(15),
+      reportsCadence: m(1),
+      reportsHeartRate: m(10),
+      reportsPower: m(14),
+    };
+  }
+
+  // Supported Power Range (0x2AD8): s16 min, s16 max, u16 increment.
+  function powerRange(view) {
+    const r = reader(view);
+    const min = r.s16(), max = r.s16(), step = r.u16();
+    return step === null ? null : { min, max, step };
+  }
+
+  // Cumulative crank revolutions -> rpm. The trainer repeats the last event
+  // while you stop pedalling, so drop to 0 after 3 s without a new one.
+  function crankCadence() {
+    let last = null, lastAdvance = 0, rpm = null;
+    return function update(revs, time, now = Date.now()) {
+      if (last === null) { last = { revs, time }; lastAdvance = now; return null; }
+      const dRevs = (revs - last.revs) & 0xffff;
+      const dTime = (time - last.time) & 0xffff; // 1/1024 s, wraps at 65536
+      if (dRevs === 0 || dTime === 0) {
+        if (now - lastAdvance > 3000) rpm = 0;
+        return rpm;
+      }
+      last = { revs, time }; lastAdvance = now;
+      const value = dRevs * 60 * 1024 / dTime;
+      if (value < 250) rpm = value;
+      return rpm;
+    };
+  }
+
+  return { cyclingPower, indoorBike, ftmsFeatures, powerRange, crankCadence };
+})();
+
+// ---- GATT identifiers.
+const WAHOO_CONTROL = 'a026e005-0a7d-4ab3-97fa-f1500f9feb8b';
+const TACX_FEC = '6e40fec1-b5a3-f393-e0a9-e50e24dcca9e';
+const uuid16 = n => `0000${n.toString(16).padStart(4, '0')}-0000-1000-8000-00805f9b34fb`;
+const NAMES = {
+  [uuid16(0x1818)]: 'Cycling Power', [uuid16(0x1826)]: 'Fitness Machine (FTMS)',
+  [uuid16(0x1816)]: 'Cycling Speed and Cadence', [uuid16(0x180d)]: 'Heart Rate',
+  [uuid16(0x180a)]: 'Device Information', [uuid16(0x180f)]: 'Battery',
+  [uuid16(0x2a63)]: 'Cycling Power Measurement', [uuid16(0x2a65)]: 'Cycling Power Feature',
+  [uuid16(0x2a66)]: 'Cycling Power Control Point', [uuid16(0x2ad2)]: 'Indoor Bike Data',
+  [uuid16(0x2acc)]: 'Fitness Machine Feature', [uuid16(0x2ad3)]: 'Training Status',
+  [uuid16(0x2ad6)]: 'Supported Resistance Range', [uuid16(0x2ad8)]: 'Supported Power Range',
+  [uuid16(0x2ad9)]: 'Fitness Machine Control Point', [uuid16(0x2ada)]: 'Fitness Machine Status',
+  [uuid16(0x2a29)]: 'Manufacturer Name', [uuid16(0x2a24)]: 'Model Number',
+  [uuid16(0x2a26)]: 'Firmware Revision',
+  [WAHOO_CONTROL]: 'Wahoo trainer control (proprietary)',
+  [TACX_FEC]: 'Tacx FE-C over BLE (proprietary)',
+};
+const nameOf = u => NAMES[u] || u;
+
+// ---- Connection state.
+const $ = id => document.getElementById(id);
+let device = null, wakeLock = null;
+let state;
+function resetState() {
+  state = {
+    cpWatts: null, ftmsWatts: null, cadence: null, speed: null, lastPacket: null,
+    samples: [], crank: BLE.crankCadence(),
+    report: { manufacturer: null, model: null, firmware: null, services: [], characteristics: [],
+              features: null, range: null, controlPoint: false, errors: [] },
+  };
+}
+resetState();
+
+function setStatus(text, bad = false) {
+  $('status').textContent = text;
+  $('status').className = bad ? 'bad' : '';
+}
+
+function recordPower(watts) {
+  const now = Date.now();
+  state.lastPacket = now;
+  state.samples.push({ at: now, watts });
+  state.samples = state.samples.filter(s => now - s.at <= 3000);
+  $('watts').textContent = watts;
+  const avg = Math.round(state.samples.reduce((a, s) => a + s.watts, 0) / state.samples.length);
+  $('avg3').textContent = `3s average ${avg} W`;
+}
+
+function ergVerdict(r) {
+  if (r.features) {
+    if (r.features.powerTarget && r.controlPoint) return ['yes', 'Yes. FTMS power target is supported, so ERG can use the standard control point.'];
+    if (r.controlPoint) return ['no', 'Not through FTMS power targets. The control point exists but power target is not advertised.'];
+    return ['no', 'FTMS features are readable, but no control point was found.'];
+  }
+  if (r.characteristics.some(c => c.startsWith('Wahoo') || c.startsWith('Tacx'))) {
+    return ['no', 'No FTMS, but a proprietary control channel is present.'];
+  }
+  return ['no', 'Unknown so far. The trainer has not shown FTMS features.'];
+}
+
+function hex32(n) { return '0x' + (n >>> 0).toString(16).toUpperCase().padStart(8, '0'); }
+
+function reportText() {
+  const r = state.report, f = r.features;
+  const lines = [
+    `Trainer: ${r.manufacturer ?? '?'} ${r.model ?? '?'} (firmware ${r.firmware ?? '?'})`,
+    `ERG: ${ergVerdict(r)[1]}`,
+  ];
+  if (f) {
+    lines.push(`FTMS targets: power ${f.powerTarget}, resistance ${f.resistanceTarget}, simulation ${f.simulation}, spin-down ${f.spinDown}`);
+    lines.push(`FTMS reports: power ${f.reportsPower}, cadence ${f.reportsCadence}, heart rate ${f.reportsHeartRate}`);
+    lines.push(`FTMS feature raw: machine ${hex32(f.machine)}, targets ${hex32(f.targets)}`);
+  }
+  if (r.range) lines.push(`Power range: ${r.range.min}-${r.range.max} W in ${r.range.step} W steps`);
+  lines.push(`Power seen: Cycling Power ${state.cpWatts ?? 'none'}, FTMS ${state.ftmsWatts ?? 'none'}`);
+  lines.push(`Services: ${r.services.join(', ')}`);
+  lines.push(`Characteristics: ${r.characteristics.join(', ')}`);
+  if (r.errors.length) lines.push(`Errors: ${r.errors.join('; ')}`);
+  lines.push(`Browser: ${navigator.userAgent}`);
+  return lines.join('\n');
+}
+
+function renderReport() {
+  const r = state.report;
+  $('rTrainer').textContent = [r.manufacturer, r.model].filter(Boolean).join(' ') || 'reading…';
+  const [cls, text] = ergVerdict(r);
+  $('erg').textContent = text;
+  $('erg').className = cls;
+  $('rRange').textContent = r.range ? `${r.range.min}–${r.range.max} W` : '--';
+}
+
+const decoder = new TextDecoder();
+
+function onValue(uuid, view) {
+  switch (uuid) {
+    case uuid16(0x2a63): {
+      const m = BLE.cyclingPower(view);
+      if (!m) return;
+      state.cpWatts = m.power;
+      $('cpWatts').textContent = `${m.power} W`;
+      recordPower(m.power);
+      if (m.crankRevs !== null) {
+        const rpm = state.crank(m.crankRevs, m.crankTime);
+        if (rpm !== null) $('cadence').textContent = `${Math.round(rpm)} rpm`;
+      }
+      break;
+    }
+    case uuid16(0x2ad2): {
+      const d = BLE.indoorBike(view);
+      if (!d) return;
+      state.lastPacket = Date.now();
+      if (d.power !== null) {
+        state.ftmsWatts = d.power;
+        $('ftmsWatts').textContent = `${d.power} W`;
+        recordPower(d.power);
+      }
+      if (d.cadence !== null) $('cadence').textContent = `${Math.round(d.cadence)} rpm`;
+      if (d.speedKmh !== null) $('speed').textContent = `${d.speedKmh.toFixed(1)} km/h`;
+      break;
+    }
+    case uuid16(0x2acc): state.report.features = BLE.ftmsFeatures(view); break;
+    case uuid16(0x2ad8): state.report.range = BLE.powerRange(view); break;
+    case uuid16(0x2a29): state.report.manufacturer = decoder.decode(view).replace(/\0/g, '').trim(); break;
+    case uuid16(0x2a24): state.report.model = decoder.decode(view).replace(/\0/g, '').trim(); break;
+    case uuid16(0x2a26): state.report.firmware = decoder.decode(view).replace(/\0/g, '').trim(); break;
+  }
+  renderReport();
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setStatus('This browser has no Web Bluetooth. Open this page in Chrome or Edge on Windows.', true);
+    return;
+  }
+  try {
+    setStatus('Pick your trainer in the browser’s pop-up…');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [0x1818] }, { services: [0x1826] }],
+      optionalServices: [0x180a, 0x180d, 0x180f, 0x1816, TACX_FEC],
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    resetState();
+    setStatus(`Connecting to ${device.name || 'trainer'}…`);
+    const server = await device.gatt.connect();
+
+    const services = await server.getPrimaryServices();
+    for (const service of services) {
+      state.report.services.push(nameOf(service.uuid));
+      let chars = [];
+      try { chars = await service.getCharacteristics(); }
+      catch (e) { state.report.errors.push(`${nameOf(service.uuid)}: ${e.message}`); continue; }
+      for (const c of chars) {
+        state.report.characteristics.push(nameOf(c.uuid));
+        try {
+          if (c.uuid === uuid16(0x2a63) || c.uuid === uuid16(0x2ad2)) {
+            c.addEventListener('characteristicvaluechanged', e => onValue(c.uuid, e.target.value));
+            await c.startNotifications();
+          } else if ([0x2acc, 0x2ad8, 0x2a29, 0x2a24, 0x2a26].map(uuid16).includes(c.uuid)) {
+            onValue(c.uuid, await c.readValue());
+          } else if (c.uuid === uuid16(0x2ad9)) {
+            // Present is all the spike checks. ERG would write Request
+            // Control (0x00) then Set Target Power (0x05) here.
+            state.report.controlPoint = true;
+          }
+        } catch (e) {
+          state.report.errors.push(`${nameOf(c.uuid)}: ${e.message}`);
+        }
+      }
+    }
+
+    $('trainerName').textContent = device.name || 'Trainer';
+    $('livePanel').classList.remove('hidden');
+    $('reportPanel').classList.remove('hidden');
+    $('connectBtn').classList.add('hidden');
+    $('disconnectBtn').classList.remove('hidden');
+    setStatus(`Connected to ${device.name || 'trainer'}.`);
+    renderReport();
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+  } catch (e) {
+    if (e.name === 'NotFoundError') setStatus('No trainer picked. Pedal to wake it and try again.');
+    else setStatus(`Could not connect: ${e.message}`, true);
+  }
+}
+
+function onDisconnected() {
+  setStatus('Disconnected.');
+  $('connectBtn').classList.remove('hidden');
+  $('disconnectBtn').classList.add('hidden');
+  wakeLock?.release().catch(() => {});
+  wakeLock = null;
+}
+
+$('connectBtn').addEventListener('click', connect);
+$('disconnectBtn').addEventListener('click', () => device?.gatt?.disconnect());
+$('copyBtn').addEventListener('click', async () => {
+  const text = reportText();
+  try { await navigator.clipboard.writeText(text); $('copyBtn').textContent = 'Copied'; }
+  catch { prompt('Copy the report:', text); }
+});
+
+setInterval(() => {
+  if (!state.lastPacket) return;
+  const age = (Date.now() - state.lastPacket) / 1000;
+  $('fresh').textContent = age < 2 ? 'Live' : `No data for ${Math.floor(age)} s`;
+  $('fresh').className = age < 2 ? '' : 'stale';
+}, 1000);
+
+if (!navigator.bluetooth) {
+  setStatus('This browser has no Web Bluetooth. Open this page in Chrome or Edge on Windows.', true);
+}
+</script>
+</body>
+</html>
