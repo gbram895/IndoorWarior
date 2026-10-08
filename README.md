@@ -50,6 +50,17 @@ Gradient upload permission; the page shows an **Allow uploads to Strava**
 button for that. Uploads use a fixed external id per ride, so a retry cannot
 create a duplicate.
 
+**Choose from library** lists every ride in your Dropbox workout library, as
+Gradient parses it (`GET /api/workout-library`, bike workouts with steps
+only). Search by name, filter by Endurance, Tempo, Threshold or VO2max, or
+sort shortest first; each row shows the length and a small profile. Picking
+one loads it exactly like today's plan.
+
+During a ride a live chart shows the last 4 minutes of power (3 s smoothed),
+heart rate and the ERG target, with the workout's next 6 minutes drawn ahead
+of the "now" line as coloured blocks with their watts. On a free ride it shows
+the last 10 minutes.
+
 Keep the page in front while riding: Chrome slows timers in background tabs,
 which would delay step changes.
 

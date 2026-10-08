@@ -86,6 +86,20 @@
   button.link { background: none; color: var(--muted); padding: 10px 4px; text-decoration: underline; font-weight: 400; }
   button.sm { padding: 6px 10px; min-width: 0; }
   .wname { font-weight: 600; font-size: 18px; margin: 12px 0 8px; }
+  #liveChart { width: 100%; height: 190px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 8px; }
+  .legend { display: flex; gap: 14px; font-size: 13px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  #libBox { margin-top: 12px; }
+  #libSearch { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #12151b; color: var(--text); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chips button { padding: 6px 12px; font-weight: 500; background: #2a2f3a; color: var(--text); }
+  .chips button[aria-pressed="true"] { background: var(--text); color: #111; }
+  #libList { max-height: 340px; overflow-y: auto; border-radius: 8px; background: #12151b; }
+  .lib-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: 100%; text-align: left; background: none; color: var(--text); font-weight: 400; border-radius: 0; border-bottom: 1px solid #20242d; padding: 10px 12px; }
+  .lib-item:hover { background: #1c2029; }
+  .lib-item .n { font-weight: 600; }
+  .lib-item .m { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
+  .lib-item svg { width: 120px; height: 24px; grid-row: 1 / span 2; grid-column: 2; align-self: center; }
   #wChart { width: 100%; height: 90px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 12px; }
   .value.small { font-size: 18px; }
   #rideMsg { color: var(--muted); font-size: 14px; margin-top: 10px; }
@@ -148,7 +162,20 @@
     </form>
     <div id="signedIn" class="row hidden" style="margin-top:12px">
       <button id="loadTodayBtn" class="secondary">Load today's ride</button>
+      <button id="libBtn" class="secondary">Choose from library</button>
       <button id="signOutBtn" class="link">Sign out of Gradient</button>
+    </div>
+    <div id="libBox" class="hidden">
+      <input id="libSearch" type="search" placeholder="Search your workouts" aria-label="Search workouts">
+      <div class="chips" id="libChips">
+        <button data-cat="" aria-pressed="true">All</button>
+        <button data-cat="ENDURANCE" aria-pressed="false">Endurance</button>
+        <button data-cat="TEMPO" aria-pressed="false">Tempo</button>
+        <button data-cat="THRESHOLD" aria-pressed="false">Threshold</button>
+        <button data-cat="VO2MAX" aria-pressed="false">VO2max</button>
+        <button data-sort="dur" aria-pressed="false">Shortest first</button>
+      </div>
+      <div id="libList"></div>
     </div>
 
     <div id="workoutBox" class="hidden">
@@ -163,6 +190,10 @@
       </div>
     </div>
 
+    <div id="liveBox" class="hidden">
+      <canvas id="liveChart" aria-label="Live ride chart"></canvas>
+      <div class="legend"><span><i style="background:#f2f4f8"></i>Power</span><span><i style="background:#ff5d5d"></i>Heart rate</span><span><i style="background:#8b93a7"></i>Target</span><span id="liveSpan">Last 4 min · next 6 min</span></div>
+    </div>
     <div class="row" style="margin-top:12px">
       <button id="startBtn">Start ride</button>
       <button id="pauseBtn" class="secondary hidden">Pause</button>
@@ -993,6 +1024,185 @@ async function loadToday() {
   }
 }
 
+// ---- Workout library: every ride in the Dropbox library Gradient reads.
+// Gradient parses and caches the files; the first load after new files land
+// can take a while on its free instance.
+let library = null; // { workouts, ftp }
+const libView = { q: '', cat: '', sort: 'name' };
+
+async function openLibrary() {
+  if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+  const box = $('libBox');
+  if (!box.classList.contains('hidden') && library) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  if (library) return renderLibrary();
+  $('libList').innerHTML = '<div class="muted" style="padding:12px">Loading your workout library from Gradient. The first time can take up to a minute…</div>';
+  try {
+    const [all, thresholds] = await Promise.all([
+      gradientApi('/api/workout-library'),
+      gradientApi('/api/settings/thresholds'),
+    ]);
+    if (!thresholds || !thresholds.ftpWatts) { box.classList.add('hidden'); return rideMsg('Set your FTP in Gradient first. The steps are in % of FTP.', 'bad'); }
+    const workouts = (Array.isArray(all) ? all : [])
+      .filter(w => w.discipline === 'BIKE' && Array.isArray(w.segments) && w.segments.some(x => x.durationSec > 0));
+    library = { workouts, ftp: thresholds.ftpWatts };
+    renderLibrary();
+  } catch (err) {
+    $('libList').innerHTML = '';
+    box.classList.add('hidden');
+    rideMsg(err.message, 'bad');
+  }
+}
+
+const workoutSeconds = w => w.segments.reduce((a, x) => a + (x.durationSec > 0 ? x.durationSec : 0), 0);
+const CATEGORY_LABEL = { ENDURANCE: 'Endurance', TEMPO: 'Tempo', THRESHOLD: 'Threshold', VO2MAX: 'VO2max' };
+
+// A small profile of the workout, same colours as the big chart.
+function miniProfile(segments) {
+  const steps = segments.filter(x => x.durationSec > 0);
+  const total = steps.reduce((a, x) => a + x.durationSec, 0) || 1;
+  const frac = x => (x.targetMetric && x.targetMetric !== 'power' ? null : x.intensityFraction ?? null);
+  const maxF = Math.max(1.2, ...steps.map(x => frac(x) ?? 0));
+  let x = 0, out = '';
+  for (const st of steps) {
+    const w = (st.durationSec / total) * 120, f = frac(st), h = ((f ?? 0.4) / maxF) * 24;
+    out += `<rect x="${x.toFixed(1)}" y="${(24 - h).toFixed(1)}" width="${Math.max(w, 0.5).toFixed(1)}" height="${h.toFixed(1)}" fill="${zoneColor(f)}"/>`;
+    x += w;
+  }
+  return `<svg viewBox="0 0 120 24" preserveAspectRatio="none" aria-hidden="true">${out}</svg>`;
+}
+
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// JOIN names every ride "JOIN Cycling - …"; the prefix says nothing here.
+const workoutTitle = w => String(w.name || 'Workout').replace(/^JOIN Cycling\s*-\s*/i, '');
+
+function renderLibrary() {
+  if (!library) return;
+  const q = libView.q.trim().toLowerCase();
+  let list = library.workouts.filter(w => (!libView.cat || w.category === libView.cat) && (!q || workoutTitle(w).toLowerCase().includes(q)));
+  list = list.slice().sort(libView.sort === 'dur'
+    ? (a, b) => workoutSeconds(a) - workoutSeconds(b)
+    : (a, b) => workoutTitle(a).localeCompare(workoutTitle(b)));
+  document.querySelectorAll('#libChips [data-cat]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === libView.cat)));
+  document.querySelector('#libChips [data-sort]').setAttribute('aria-pressed', String(libView.sort === 'dur'));
+  if (!list.length) {
+    $('libList').innerHTML = `<div class="muted" style="padding:12px">${library.workouts.length ? 'No ride matches.' : 'Gradient found no rides in your workout library.'}</div>`;
+    return;
+  }
+  $('libList').innerHTML = list.map(w => {
+    const i = library.workouts.indexOf(w);
+    const meta = [fmtTime(workoutSeconds(w)), CATEGORY_LABEL[w.category]].filter(Boolean).join(' · ');
+    return `<button class="lib-item" data-i="${i}"><span class="n">${esc(workoutTitle(w))}</span>${miniProfile(w.segments)}<span class="m">${esc(meta)}</span></button>`;
+  }).join('');
+}
+
+function pickLibrary(i) {
+  const w = library && library.workouts[i];
+  if (!w) return;
+  if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+  $('libBox').classList.add('hidden');
+  loadWorkout(workoutTitle(w), w.segments, library.ftp);
+}
+
+// ---- Live ride chart: the last 4 minutes of power, heart rate and target,
+// and the workout's next 6 minutes drawn ahead of "now".
+const LIVE_PAST = 240, LIVE_AHEAD = 360;
+
+// Seconds into the workout, counting skipped steps as done.
+function workoutPosition() {
+  if (!workout) return 0;
+  if (ride.workoutDone && ride.status !== 'idle') return workout.steps.reduce((a, x) => a + x.sec, 0);
+  return workout.steps.slice(0, ride.step).reduce((a, x) => a + x.sec, 0) + (ride.status === 'idle' ? 0 : ride.stepElapsed);
+}
+
+function drawLive() {
+  const cv = $('liveChart');
+  const active = ride.status === 'riding' || ride.status === 'paused';
+  const show = active || (!!workout && ride.status !== 'finished');
+  $('liveBox').classList.toggle('hidden', !show);
+  if (!show) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  const ahead = workout ? LIVE_AHEAD : 0;
+  const past = workout ? LIVE_PAST : LIVE_PAST + LIVE_AHEAD; // a free ride uses the whole width for history
+  $('liveSpan').textContent = workout ? 'Last 4 min · next 6 min' : 'Last 10 min';
+  const span = past + ahead;
+  const nowX = (past / span) * W;
+  const xOf = dt => nowX + (dt / span) * W; // dt: seconds relative to now
+
+  const samples = ride.samples.slice(-past);
+  // Steps still to come, as [startDt, endDt, watts|null].
+  const future = [];
+  if (workout && !(ride.workoutDone && active)) {
+    let at = -workoutPosition();
+    for (const st of workout.steps) {
+      const a = at, b = at + st.sec;
+      at = b;
+      if (b <= 0) continue;
+      if (a >= ahead) break;
+      future.push([Math.max(a, 0), Math.min(b, ahead), stepWatts(st), st.fraction]);
+    }
+  }
+
+  // Watts scale: room for the hardest thing in view, never under FTP x 1.3.
+  const ftp = workout ? workout.ftp : 250;
+  const topW = Math.max(ftp * 1.3, ...samples.map(x => x.p || 0), ...samples.map(x => x.tg || 0), ...future.map(f => f[2] || 0)) * 1.08;
+  const yW = w => H - 6 - (w / topW) * (H - 12);
+  const HR_LO = 60, HR_HI = 200;
+  const yHr = hr => H - 6 - ((Math.min(HR_HI, Math.max(HR_LO, hr)) - HR_LO) / (HR_HI - HR_LO)) * (H - 12);
+
+  // FTP line.
+  if (workout) {
+    g.strokeStyle = 'rgba(139,147,167,.35)'; g.setLineDash([4, 4]); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, yW(ftp)); g.lineTo(W, yW(ftp)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = 'rgba(139,147,167,.8)'; g.font = '11px "Segoe UI", system-ui, sans-serif';
+    g.textAlign = 'right'; g.fillText(`FTP ${ftp} W`, W - 6, yW(ftp) - 4); g.textAlign = 'left';
+  }
+
+  // Steps ahead, as zone-coloured blocks.
+  for (const [a, b, w, f] of future) {
+    const x0 = xOf(a), x1 = xOf(b);
+    g.fillStyle = zoneColor(f);
+    g.globalAlpha = 0.8;
+    const top = w == null ? yW(ftp * 0.4) : yW(w);
+    g.fillRect(x0, top, Math.max(1, x1 - x0 - 1), H - top);
+    g.globalAlpha = 1;
+    if (w != null && x1 - x0 > 34) { g.fillStyle = '#f2f4f8'; g.font = '600 11px "Segoe UI", system-ui, sans-serif'; g.fillText(`${w}`, x0 + 4, Math.max(12, top - 4)); }
+  }
+
+  // Past target, a stepped grey line.
+  const line = (pts, color, width) => {
+    g.strokeStyle = color; g.lineWidth = width; g.lineJoin = 'round';
+    g.beginPath(); let on = false;
+    for (const pt of pts) {
+      if (pt == null) { on = false; continue; }
+      if (!on) { g.moveTo(pt[0], pt[1]); on = true; } else g.lineTo(pt[0], pt[1]);
+    }
+    g.stroke();
+  };
+  const n = samples.length;
+  const dtOf = i => i - n + 1; // the newest sample sits on the now line
+  line(samples.map((x, i) => (x.tg ? [xOf(dtOf(i)), yW(x.tg)] : null)), '#8b93a7', 2);
+  // Power, 3 s smoothed.
+  line(samples.map((x, i) => {
+    const w3 = samples.slice(Math.max(0, i - 2), i + 1);
+    return [xOf(dtOf(i)), yW(w3.reduce((a, y) => a + (y.p || 0), 0) / w3.length)];
+  }), '#f2f4f8', 2);
+  line(samples.map((x, i) => (x.hr ? [xOf(dtOf(i)), yHr(x.hr)] : null)), '#ff5d5d', 1.5);
+
+  // Now.
+  g.fillStyle = 'rgba(242,244,248,.6)';
+  g.fillRect(nowX - 0.5, 0, 1, H);
+  if (!n && !active) { g.fillStyle = '#8b93a7'; g.font = '12px "Segoe UI", system-ui, sans-serif'; g.fillText('Starts here', nowX + 6, 14); }
+}
+window.addEventListener('resize', drawLive);
+
 // ---- Workout and player.
 let workout = null; // { name, ftp, steps: [{ sec, fraction }] }
 let intensity = 1;
@@ -1128,6 +1338,7 @@ function recordSample() {
     s: trainerFresh ? l.speed : null,
     hr: isFresh(ext.hr.at) ? ext.hr.value : trainerFresh ? l.hr : null,
     ...routeSample(), // position, elevation, distance and road speed on a route
+    tg: ERG.on ? ERG.target : null, // ERG target, for the live chart
   });
   if (ride.samples.length % 30 === 0) saveUnsaved();
 }
@@ -1168,6 +1379,7 @@ function summarize(samples) {
 
 function renderRide() {
   const active = ride.status === 'riding' || ride.status === 'paused';
+  drawLive();
   $('rideTimer').textContent = fmtTime(rideSeconds());
   $('startBtn').classList.toggle('hidden', active);
   $('startBtn').textContent = workout ? 'Start ride' : 'Start free ride';
@@ -1390,6 +1602,16 @@ function discardRide() {
 
 $('signInForm').addEventListener('submit', signIn);
 $('loadTodayBtn').addEventListener('click', loadToday);
+$('libBtn').addEventListener('click', openLibrary);
+$('libSearch').addEventListener('input', e => { libView.q = e.target.value; renderLibrary(); });
+$('libChips').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.sort) libView.sort = libView.sort === 'dur' ? 'name' : 'dur';
+  else libView.cat = b.dataset.cat;
+  renderLibrary();
+});
+$('libList').addEventListener('click', e => { const b = e.target.closest('.lib-item'); if (b) pickLibrary(Number(b.dataset.i)); });
 $('signOutBtn').addEventListener('click', () => { gradient.token = null; store.set('gradient', gradient); renderGradient(); });
 $('startBtn').addEventListener('click', startRide);
 $('pauseBtn').addEventListener('click', pauseRide);
