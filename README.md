@@ -61,7 +61,15 @@ its own Bluetooth connection. While the power meter is sending, its power and
 crank cadence are shown and recorded instead of the trainer's; the strap's
 heart rate likewise wins over any the trainer relays. If either drops out the
 page tries to reconnect three times, and falls back to the trainer's values
-meanwhile. ERG still holds the target by the trainer's own power reading.
+meanwhile.
+
+**Power match** (on by default, a tick box in the ERG panel while a power
+meter is connected): ERG holds the target on the power meter rather than the
+trainer. The page keeps a slow average (about 20 s) of trainer watts ÷ power
+meter watts while you pedal, within ±15%, and sends the trainer target × that
+factor, so a 200 W target reads 200 W on the power meter even if the trainer
+reads high or low. It resends at most every 5 s. If the power meter goes quiet
+for 10 s, ERG falls back to the trainer's own reading and says so.
 
 ## Route
 

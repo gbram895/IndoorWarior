@@ -230,6 +230,7 @@
     </div>
     <input type="range" id="targetRange" min="50" max="600" step="5" value="150" aria-label="Target watts">
     <div id="ergStatus">ERG is off. The trainer rides like a flat road.</div>
+    <label class="muted" id="matchRow" style="display:block;margin-top:8px"><input type="checkbox" id="matchToggle"> Hold the target on my power meter (power match)</label>
     <div class="keys">Keys: E toggles ERG, ↑/↓ change target by 5 W, Shift+↑/↓ by 25 W.</div>
   </section>
 
@@ -728,9 +729,45 @@ function onDisconnected() {
 const FTMS_RESULT = { 1: 'success', 2: 'not supported', 3: 'invalid parameter', 4: 'operation failed', 5: 'control not permitted' };
 const OP = { requestControl: 0x00, reset: 0x01, setTargetPower: 0x05, start: 0x07, setSimulation: 0x11 };
 
+// ---- Power match. Trainers and power meters often disagree by 5-10%. With
+// a power meter sending, ERG aims the trainer at target x factor, where the
+// factor is a slow average of (trainer watts / power meter watts) while
+// pedalling, so the power meter reads the target. A ratio rather than a fixed
+// difference, so the correction scales between a 120 W and a 300 W step.
+// Without a fresh power meter reading for 10 s the factor falls back to 1 and
+// ERG uses the trainer alone.
+const match = (() => {
+  let enabled = true, factor = 1, lastPm = 0, lost = false;
+  try { enabled = localStorage.getItem('powerMatch') !== 'off'; } catch {}
+  const LIMIT = 0.15, ALPHA = 0.05; // within 15%; about a 20 s time constant at 1 Hz
+  return {
+    get enabled() { return enabled; },
+    set enabled(v) { enabled = v; try { localStorage.setItem('powerMatch', v ? 'on' : 'off'); } catch {} if (!v) factor = 1; },
+    active() { return enabled && Date.now() - lastPm < 10000; },
+    factor() { return this.active() ? factor : 1; },
+    // The power meter was matching and has gone quiet.
+    get lost() { return enabled && lost; },
+    // Called once a second.
+    tick() {
+      if (!enabled) return;
+      const pmOk = isFresh(ext.pm.at), trOk = !!state && isFresh(state.live.at);
+      if (pmOk) { lastPm = Date.now(); lost = false; }
+      else if (lastPm && Date.now() - lastPm >= 10000 && factor !== 1) { factor = 1; lost = true; }
+      if (!pmOk || !trOk || !ERG.on || ext.pm.power < 30 || state.live.power < 30) return;
+      const ratio = state.live.power / ext.pm.power;
+      factor = Math.max(1 - LIMIT, Math.min(1 + LIMIT, factor + ALPHA * (ratio - factor)));
+    },
+  };
+})();
+
 const ERG = (() => {
   let cp = null, queue = Promise.resolve(), pending = null;
-  let on = false, target = 150, hasControl = false, sendTimer = null;
+  let on = false, target = 150, hasControl = false, sendTimer = null, lastSent = 0, lastNudge = 0;
+
+  function commanded() {
+    const r = state.report.range || { min: 50, max: 600 };
+    return Math.max(r.min, Math.min(r.max, Math.round(target * match.factor())));
+  }
 
   function onIndication(view) {
     if (view.byteLength < 3 || view.getUint8(0) !== 0x80 || !pending) return;
@@ -769,9 +806,13 @@ const ERG = (() => {
 
   async function applyTarget() {
     await ensureControl();
-    const r = await send(powerBytes(target));
+    const w = commanded();
+    const r = await send(powerBytes(w));
     if (r !== 1) throw new Error(`target refused (${FTMS_RESULT[r] || r})`);
-    ergStatus(`Holding ${target} W.`, 'ok');
+    lastSent = w;
+    if (match.active()) ergStatus(`Holding ${target} W on your power meter (trainer set to ${w} W).`, 'ok');
+    else if (match.lost) ergStatus(`Power meter silent: holding ${target} W on the trainer's own reading.`, 'bad');
+    else ergStatus(`Holding ${target} W.`, 'ok');
   }
 
   async function release() {
@@ -803,6 +844,16 @@ const ERG = (() => {
     detach() { cp = null; on = false; hasControl = false; pending = null; },
     // Another app took over: stop without sending anything, so we do not grab it back.
     controlLost() { hasControl = false; on = false; clearTimeout(sendTimer); },
+    // Watts actually sent to the trainer: the target scaled by power match.
+    get sent() { return lastSent; },
+    // Power match changed its factor: resend, at most every 5 s and only for 3 W or more.
+    nudge(force = false) {
+      if (!on || !cp) return;
+      const w = commanded();
+      if ((Math.abs(w - lastSent) < 2 && !force) || (!force && Date.now() - lastNudge < 5000)) return;
+      lastNudge = Date.now();
+      applyTarget().catch(e => ergStatus(`Target not set: ${e.message}`, 'bad'));
+    },
     async setOn(value) {
       on = value;
       try { on ? await applyTarget() : await release(); }
@@ -822,6 +873,15 @@ const ERG = (() => {
     },
   };
 })();
+
+$('matchToggle').checked = match.enabled;
+$('matchToggle').addEventListener('change', e => { match.enabled = e.target.checked; ERG.nudge(true); });
+setInterval(() => {
+  const wasLost = match.lost;
+  match.tick();
+  $('matchRow').classList.toggle('hidden', !ext.pm.device);
+  if (ERG.on) ERG.nudge(match.lost !== wasLost);
+}, 1000);
 
 function ergStatus(text, cls = '') { $('ergStatus').textContent = text; $('ergStatus').className = cls; }
 
