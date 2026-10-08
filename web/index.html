@@ -42,6 +42,7 @@
   dd { margin: 0; overflow-wrap: anywhere; }
   #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
   .hidden { display: none !important; }
+  .di2log { background: #11141a; border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 10px 0; }
   .route-map { width: 100%; height: 260px; display: block; background: #12151b; border-radius: 8px; }
   .route-elev { width: 100%; height: 110px; display: block; background: #12151b; border-radius: 8px; margin-top: 8px; }
   .route-settings { margin-top: 12px; gap: 16px; color: var(--muted); font-size: 14px; }
@@ -227,6 +228,20 @@
     <input type="range" id="targetRange" min="50" max="600" step="5" value="150" aria-label="Target watts">
     <div id="ergStatus">ERG is off. The trainer rides like a flat road.</div>
     <div class="keys">Keys: E toggles ERG, ↑/↓ change target by 5 W, Shift+↑/↓ by 25 W.</div>
+  </section>
+
+  <section class="panel" id="di2Panel">
+    <div class="erg-head">
+      <h2 style="margin:0">Di2 gears (experimental)</h2>
+      <button id="di2Btn" class="secondary">Connect Di2</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Shimano does not publish how Di2 reports gears over Bluetooth. Connect it, shift through a few gears front and rear, then press Copy Di2 log and paste it in the chat so the gear display can be built from what your bike actually sends. Shift once first to wake it, and close the E-TUBE app.</p>
+    <div id="di2State" class="muted" style="margin-top:8px"></div>
+    <div id="di2Box" class="hidden">
+      <div class="muted" style="margin-top:8px" id="di2Services"></div>
+      <pre id="di2Log" class="di2log"></pre>
+      <div class="row"><button id="di2Copy" class="secondary">Copy Di2 log</button><button id="di2Mark" class="secondary">Mark: I just shifted</button></div>
+    </div>
   </section>
 
   <section class="panel hidden" id="reportPanel">
@@ -1582,6 +1597,85 @@ $('rDifficultyLabel').textContent = `${Math.round(routeCfg.difficulty * 100)}%`;
 window.addEventListener('resize', () => renderRoute());
 
 $('connectBtn').addEventListener('click', connect);
+// ---- Di2 explorer. Shimano's Bluetooth services use their own UUID base,
+// which spells "SHIMANO_BLE" in its last bytes. Web Bluetooth only exposes
+// services named up front, so every short id on that base is listed.
+const SHIMANO_BASE = '-5348-494d-414e-4f5f424c4500';
+const SHIMANO_SERVICES = Array.from({ length: 256 }, (_, i) => `000018${i.toString(16).padStart(2, '0')}${SHIMANO_BASE}`);
+const di2 = { device: null, log: [], started: 0 };
+const hex = view => Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), b => b.toString(16).padStart(2, '0')).join(' ');
+const shortUuid = u => (u.endsWith(SHIMANO_BASE) ? `shimano:${u.slice(4, 8)}` : u.endsWith('-0000-1000-8000-00805f9b34fb') ? u.slice(4, 8) : u);
+
+function di2Log(line) {
+  const t = ((Date.now() - di2.started) / 1000).toFixed(1).padStart(6);
+  di2.log.push(`${t}s ${line}`);
+  if (di2.log.length > 2000) di2.log.shift();
+  const el = $('di2Log');
+  el.textContent = di2.log.slice(-200).join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+async function connectDi2() {
+  if (di2.device) { di2.device.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) return ($('di2State').textContent = 'This browser has no Web Bluetooth. Use Chrome or Edge.');
+  try {
+    $('di2State').textContent = 'Pick your Di2 in the pop-up (often named after the rear derailleur, e.g. RD-R8150).';
+    const dev = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [...SHIMANO_SERVICES, 0x180a, 0x180f, 0x1816, 0x1818],
+    });
+    di2.device = dev;
+    di2.log = [];
+    di2.started = Date.now();
+    dev.addEventListener('gattserverdisconnected', () => {
+      di2Log('disconnected');
+      di2.device = null;
+      $('di2Btn').textContent = 'Connect Di2';
+      $('di2State').textContent = 'Disconnected.';
+    });
+    $('di2State').textContent = `Connecting to ${dev.name || 'device'}…`;
+    const server = await dev.gatt.connect();
+    $('di2Box').classList.remove('hidden');
+    $('di2Btn').textContent = 'Disconnect';
+    di2Log(`connected to "${dev.name || '?'}"`);
+    const services = await server.getPrimaryServices();
+    $('di2Services').textContent = `Services: ${services.map(s => shortUuid(s.uuid)).join(', ') || 'none visible'}`;
+    let subscribed = 0;
+    for (const svc of services) {
+      let chars = [];
+      try { chars = await svc.getCharacteristics(); } catch (e) { di2Log(`${shortUuid(svc.uuid)}: ${e.message}`); continue; }
+      for (const c of chars) {
+        const id = `${shortUuid(svc.uuid)}/${shortUuid(c.uuid)}`;
+        const props = Object.entries({ read: c.properties.read, write: c.properties.write, notify: c.properties.notify, indicate: c.properties.indicate })
+          .filter(([, v]) => v).map(([k]) => k).join(',');
+        di2Log(`char ${id} [${props}]`);
+        try {
+          if (c.properties.read) di2Log(`read ${id}: ${hex(await c.readValue())}`);
+          if (c.properties.notify || c.properties.indicate) {
+            c.addEventListener('characteristicvaluechanged', e => di2Log(`notify ${id}: ${hex(e.target.value)}`));
+            await c.startNotifications();
+            subscribed++;
+          }
+        } catch (e) { di2Log(`${id}: ${e.message}`); }
+      }
+    }
+    $('di2State').textContent = subscribed
+      ? `Connected. Listening on ${subscribed} channel${subscribed === 1 ? '' : 's'}. Now shift a few times, front and rear.`
+      : 'Connected, but it exposes nothing to listen to. Copy the log anyway; it shows what is there.';
+  } catch (e) {
+    if (e.name !== 'NotFoundError') $('di2State').textContent = `Could not connect: ${e.message}`;
+    else $('di2State').textContent = '';
+  }
+}
+
+$('di2Btn').addEventListener('click', connectDi2);
+$('di2Mark').addEventListener('click', () => di2Log('---- shifted ----'));
+$('di2Copy').addEventListener('click', async () => {
+  const text = di2.log.join('\n');
+  try { await navigator.clipboard.writeText(text); $('di2Copy').textContent = 'Copied'; }
+  catch { prompt('Copy the Di2 log:', text); }
+});
+
 $('hrBtn').addEventListener('click', () => toggleSensor('hr'));
 $('pmBtn').addEventListener('click', () => toggleSensor('pm'));
 $('disconnectBtn').addEventListener('click', () => device?.gatt?.disconnect());

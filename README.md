@@ -74,6 +74,16 @@ Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
 while ERG is on, ERG wins. Rides on a route are saved with position and
 elevation as a virtual ride, so Strava shows the map.
 
+## Di2 (experimental)
+
+Shimano does not publish how Di2 reports gears over Bluetooth, so the Di2
+panel is an explorer, not a gear display yet. **Connect Di2** pairs with the
+derailleur or wireless unit, lists every service and characteristic it
+exposes (including Shimano's own, UUIDs ending `-5348-494d-414e-4f5f424c4500`),
+and logs every notification. **Mark: I just shifted** drops a marker in the
+log, and **Copy Di2 log** puts it on the clipboard so the gear messages can be
+decoded from a real ride. Close E-TUBE first; Di2 accepts one app at a time.
+
 ## Running it
 
 1. Make sure the laptop's Bluetooth is on (Windows 10 or 11).
