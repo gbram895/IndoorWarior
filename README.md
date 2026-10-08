@@ -53,6 +53,16 @@ create a duplicate.
 Keep the page in front while riding: Chrome slows timers in background tabs,
 which would delay step changes.
 
+## Heart rate strap and power meter
+
+Under the trainer button are **Connect** buttons for a heart rate strap
+(Heart Rate service 0x180D) and a power meter (Cycling Power 0x1818). Each is
+its own Bluetooth connection. While the power meter is sending, its power and
+crank cadence are shown and recorded instead of the trainer's; the strap's
+heart rate likewise wins over any the trainer relays. If either drops out the
+page tries to reconnect three times, and falls back to the trainer's values
+meanwhile. ERG still holds the target by the trainer's own power reading.
+
 ## Running it
 
 1. Make sure the laptop's Bluetooth is on (Windows 10 or 11).

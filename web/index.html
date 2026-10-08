@@ -42,6 +42,11 @@
   dd { margin: 0; overflow-wrap: anywhere; }
   #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
   .hidden { display: none !important; }
+  .sensors { display: grid; gap: 8px; margin-top: 14px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
+  .sensor { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .sensor .label { color: var(--muted); font-size: 13px; }
+  .sensor-state { font-size: 15px; }
+  .sensor-state.ok { color: var(--ok); } .sensor-state.bad { color: var(--bad); }
   .erg-head { display: flex; justify-content: space-between; align-items: center; }
   .switch { position: relative; width: 56px; height: 32px; flex: none; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -87,20 +92,31 @@
       <button id="disconnectBtn" class="secondary hidden">Disconnect</button>
     </div>
     <div id="status">Close Zwift or any other app using the trainer, pedal to wake it, then connect.</div>
+    <div class="sensors">
+      <div class="sensor">
+        <div><div class="label">Heart rate strap</div><div class="sensor-state" id="hrState">Not connected</div></div>
+        <button id="hrBtn" class="secondary">Connect</button>
+      </div>
+      <div class="sensor">
+        <div><div class="label">Power meter (power and cadence)</div><div class="sensor-state" id="pmState">Not connected</div></div>
+        <button id="pmBtn" class="secondary">Connect</button>
+      </div>
+    </div>
   </section>
 
   <section class="panel hidden" id="livePanel">
     <h2 id="trainerName">Trainer</h2>
     <div class="power">
       <div id="watts">--</div>
-      <div class="unit">watts</div>
+      <div class="unit" id="powerSource">watts</div>
       <div id="avg3">3s average --</div>
     </div>
     <div class="grid">
       <div class="stat"><div class="label">Cadence</div><div class="value" id="cadence">--</div></div>
       <div class="stat"><div class="label">Speed</div><div class="value" id="speed">--</div></div>
-      <div class="stat"><div class="label">Cycling Power service</div><div class="value" id="cpWatts">--</div></div>
-      <div class="stat"><div class="label">FTMS Indoor Bike Data</div><div class="value" id="ftmsWatts">--</div></div>
+      <div class="stat"><div class="label">Heart rate</div><div class="value" id="hr">--</div></div>
+      <div class="stat"><div class="label">Power meter</div><div class="value" id="pmWatts">--</div></div>
+      <div class="stat"><div class="label">Trainer power</div><div class="value" id="trainerWatts">--</div></div>
     </div>
     <div id="fresh">Waiting for the first reading…</div>
   </section>
@@ -290,7 +306,15 @@ const BLE = (() => {
     };
   }
 
-  return { cyclingPower, indoorBike, ftmsFeatures, powerRange, crankCadence };
+  // Heart Rate Measurement (0x2A37): flags u8; bit 0 set = u16 heart rate, else u8.
+  function heartRate(view) {
+    const r = reader(view);
+    const flags = r.u8();
+    if (flags === null) return null;
+    return flags & 0x01 ? r.u16() : r.u8();
+  }
+
+  return { cyclingPower, indoorBike, ftmsFeatures, powerRange, crankCadence, heartRate };
 })();
 
 // ---- GATT identifiers.
@@ -333,11 +357,12 @@ function setStatus(text, bad = false) {
   $('status').className = bad ? 'bad' : '';
 }
 
-function recordPower(watts) {
+// Shows the headline power. The power meter wins while it is sending;
+// otherwise the trainer's own reading is shown.
+function recordPower(watts, source) {
   const now = Date.now();
   state.lastPacket = now;
-  state.live.power = watts;
-  state.live.at = now;
+  $('powerSource').textContent = source === 'pm' ? 'watts · power meter' : 'watts · trainer';
   state.samples.push({ at: now, watts });
   state.samples = state.samples.filter(s => now - s.at <= 3000);
   $('watts').textContent = watts;
@@ -390,17 +415,140 @@ function renderReport() {
 
 const decoder = new TextDecoder();
 
+// ---- Extra sensors: a heart rate strap and a power meter, each its own
+// Bluetooth connection next to the trainer's.
+const FRESH_MS = 3000;
+const isFresh = at => !!at && Date.now() - at < FRESH_MS;
+const ext = {
+  hr: { device: null, manual: false, value: null, at: 0 },
+  pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null },
+};
+
+function trainerPower(watts) {
+  state.live.power = watts;
+  state.live.at = Date.now();
+  $('trainerWatts').textContent = `${watts} W`;
+  if (!isFresh(ext.pm.at)) recordPower(watts, 'trainer');
+}
+
+function trainerCadence(rpm) {
+  state.live.cadence = rpm;
+  if (!isFresh(ext.pm.cadenceAt)) $('cadence').textContent = `${Math.round(rpm)} rpm`;
+}
+
+function sensorState(kind, text, cls = '') {
+  $(`${kind}State`).textContent = text;
+  $(`${kind}State`).className = `sensor-state ${cls}`;
+}
+
+function renderSensors() {
+  for (const kind of ['hr', 'pm']) $(`${kind}Btn`).textContent = ext[kind].device ? 'Disconnect' : 'Connect';
+  if (ext.hr.device || ext.pm.device || device) $('livePanel').classList.remove('hidden');
+}
+
+function onSensorValue(kind, view) {
+  const now = Date.now();
+  if (kind === 'hr') {
+    const v = BLE.heartRate(view);
+    if (!v) return;
+    ext.hr.value = v;
+    ext.hr.at = now;
+    $('hr').textContent = `${v} bpm`;
+    return;
+  }
+  const m = BLE.cyclingPower(view);
+  if (!m) return;
+  ext.pm.power = m.power;
+  ext.pm.at = now;
+  $('pmWatts').textContent = `${m.power} W`;
+  recordPower(m.power, 'pm');
+  if (m.crankRevs !== null) {
+    const rpm = ext.pm.crank(m.crankRevs, m.crankTime);
+    if (rpm !== null) {
+      ext.pm.cadence = rpm;
+      ext.pm.cadenceAt = now;
+      $('cadence').textContent = `${Math.round(rpm)} rpm`;
+    }
+  }
+}
+
+async function subscribeSensor(kind) {
+  const s = ext[kind];
+  sensorState(kind, 'Connecting…');
+  const server = await s.device.gatt.connect();
+  const service = await server.getPrimaryService(kind === 'hr' ? 0x180d : 0x1818);
+  const ch = await service.getCharacteristic(kind === 'hr' ? 0x2a37 : 0x2a63);
+  s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
+  ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
+  await ch.startNotifications();
+  sensorState(kind, s.device.name || 'Connected', 'ok');
+}
+
+function forgetSensor(kind) {
+  const s = ext[kind];
+  s.device = null;
+  s.at = 0;
+  if (kind === 'pm') { s.cadenceAt = 0; $('pmWatts').textContent = '--'; $('cadence').textContent = '--'; }
+  else $('hr').textContent = '--';
+  renderSensors();
+}
+
+async function toggleSensor(kind) {
+  const s = ext[kind];
+  if (s.device) {
+    s.manual = true;
+    s.device.gatt.disconnect();
+    return;
+  }
+  if (!navigator.bluetooth) return sensorState(kind, 'This browser has no Web Bluetooth. Use Chrome or Edge.', 'bad');
+  try {
+    sensorState(kind, kind === 'hr' ? 'Pick your heart rate strap in the pop-up…' : 'Pick your power meter (not the trainer) in the pop-up…');
+    const picked = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [kind === 'hr' ? 0x180d : 0x1818] }],
+      optionalServices: [0x180f, 0x180a],
+    });
+    if (kind === 'pm' && device && picked.id === device.id) {
+      return sensorState(kind, 'That is the trainer. Connect again and pick your power meter.', 'bad');
+    }
+    s.device = picked;
+    s.manual = false;
+    if (kind === 'pm') s.crank = BLE.crankCadence();
+    picked.addEventListener('gattserverdisconnected', () => onSensorDisconnected(kind, picked));
+    renderSensors();
+    await subscribeSensor(kind);
+  } catch (e) {
+    if (e.name === 'NotFoundError') sensorState(kind, s.device ? sensorStateText(kind) : 'Not connected');
+    else { sensorState(kind, `Could not connect: ${e.message}`, 'bad'); if (s.device) { s.manual = true; s.device.gatt.disconnect(); forgetSensor(kind); } }
+  }
+}
+
+function sensorStateText(kind) { return ext[kind].device?.name || 'Connected'; }
+
+// Straps and power meters drop out now and then; try to get them back.
+async function onSensorDisconnected(kind, which) {
+  const s = ext[kind];
+  if (s.device !== which) return;
+  if (s.manual) { forgetSensor(kind); sensorState(kind, 'Not connected'); return; }
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    sensorState(kind, `Connection lost. Reconnecting (${attempt} of 3)…`, 'bad');
+    await new Promise(r => setTimeout(r, 2000 * attempt));
+    if (s.device !== which || s.manual) return;
+    try { await subscribeSensor(kind); return; } catch { /* next attempt */ }
+  }
+  forgetSensor(kind);
+  sensorState(kind, 'Connection lost. Press Connect to try again.', 'bad');
+}
+
 function onValue(uuid, view) {
   switch (uuid) {
     case uuid16(0x2a63): {
       const m = BLE.cyclingPower(view);
       if (!m) return;
       state.cpWatts = m.power;
-      $('cpWatts').textContent = `${m.power} W`;
-      recordPower(m.power);
+      trainerPower(m.power);
       if (m.crankRevs !== null) {
         const rpm = state.crank(m.crankRevs, m.crankTime);
-        if (rpm !== null) { state.live.cadence = rpm; $('cadence').textContent = `${Math.round(rpm)} rpm`; }
+        if (rpm !== null) trainerCadence(rpm);
       }
       break;
     }
@@ -408,14 +556,17 @@ function onValue(uuid, view) {
       const d = BLE.indoorBike(view);
       if (!d) return;
       state.lastPacket = Date.now();
+      state.live.at = Date.now();
       if (d.power !== null) {
         state.ftmsWatts = d.power;
-        $('ftmsWatts').textContent = `${d.power} W`;
-        recordPower(d.power);
+        trainerPower(d.power);
       }
-      if (d.cadence !== null) { state.live.cadence = d.cadence; $('cadence').textContent = `${Math.round(d.cadence)} rpm`; }
+      if (d.cadence !== null) trainerCadence(d.cadence);
       if (d.speedKmh !== null) { state.live.speed = d.speedKmh; $('speed').textContent = `${d.speedKmh.toFixed(1)} km/h`; }
-      if (d.heartRate) state.live.hr = d.heartRate;
+      if (d.heartRate) {
+        state.live.hr = d.heartRate;
+        if (!isFresh(ext.hr.at)) $('hr').textContent = `${d.heartRate} bpm`;
+      }
       break;
     }
     case uuid16(0x2acc): state.report.features = BLE.ftmsFeatures(view); break;
@@ -789,7 +940,7 @@ function applyStep() {
 }
 
 function startRide() {
-  if (!ERG.connected && !confirm('No trainer is connected, so nothing will be recorded. Start anyway?')) return;
+  if (!ERG.connected && !ext.pm.device && !ext.hr.device && !confirm('Nothing is connected, so nothing will be recorded. Start anyway?')) return;
   const now = Date.now() / 1000;
   Object.assign(ride, {
     status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
@@ -840,13 +991,14 @@ function recordSample() {
   const last = ride.samples[ride.samples.length - 1];
   if (last && last.t === t) return;
   const l = state.live;
-  const fresh = l.at && Date.now() - l.at < 3000;
+  const trainerFresh = isFresh(l.at);
   ride.samples.push({
     t,
-    p: fresh ? (l.power ?? 0) : 0,
-    c: fresh && l.cadence != null ? Math.round(l.cadence) : null,
-    s: fresh ? l.speed : null,
-    hr: fresh ? l.hr : null,
+    // Power meter first, then the trainer; heart rate strap first, then the trainer.
+    p: isFresh(ext.pm.at) ? ext.pm.power : trainerFresh ? (l.power ?? 0) : 0,
+    c: isFresh(ext.pm.cadenceAt) ? Math.round(ext.pm.cadence) : trainerFresh && l.cadence != null ? Math.round(l.cadence) : null,
+    s: trainerFresh ? l.speed : null,
+    hr: isFresh(ext.hr.at) ? ext.hr.value : trainerFresh ? l.hr : null,
   });
   if (ride.samples.length % 30 === 0) saveUnsaved();
 }
@@ -1119,6 +1271,8 @@ renderGradient();
 renderRide();
 
 $('connectBtn').addEventListener('click', connect);
+$('hrBtn').addEventListener('click', () => toggleSensor('hr'));
+$('pmBtn').addEventListener('click', () => toggleSensor('pm'));
 $('disconnectBtn').addEventListener('click', () => device?.gatt?.disconnect());
 $('copyBtn').addEventListener('click', async () => {
   const text = reportText();
