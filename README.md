@@ -63,6 +63,17 @@ heart rate likewise wins over any the trainer relays. If either drops out the
 page tries to reconnect three times, and falls back to the trainer's values
 meanwhile. ERG still holds the target by the trainer's own power reading.
 
+## Route
+
+Load a GPX file (Strava or Komoot route export) in the Route panel. It draws
+the route as a map and an elevation profile coloured by gradient. During a
+ride your position moves at a road speed worked out from your power (rider +
+bike mass, rolling resistance, air drag, gradient, with inertia). While ERG is
+off, the trainer gets the gradient under you through FTMS Indoor Bike
+Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
+while ERG is on, ERG wins. Rides on a route are saved with position and
+elevation as a virtual ride, so Strava shows the map.
+
 ## Running it
 
 1. Make sure the laptop's Bluetooth is on (Windows 10 or 11).

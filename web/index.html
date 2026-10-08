@@ -42,6 +42,14 @@
   dd { margin: 0; overflow-wrap: anywhere; }
   #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
   .hidden { display: none !important; }
+  .route-map { width: 100%; height: 260px; display: block; background: #12151b; border-radius: 8px; }
+  .route-elev { width: 100%; height: 110px; display: block; background: #12151b; border-radius: 8px; margin-top: 8px; }
+  .route-settings { margin-top: 12px; gap: 16px; color: var(--muted); font-size: 14px; }
+  .route-settings input[type=number] { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #2f3542; background: #11141a; color: var(--text); }
+  .route-settings input[type=range] { accent-color: var(--accent); vertical-align: middle; }
+  .filebtn input { display: none; }
+  .filebtn span { display: inline-block; font-weight: 600; border-radius: 8px; padding: 10px 16px; background: #2a2f3a; color: var(--text); cursor: pointer; }
+  #routeMsg.bad { color: var(--bad); } #routeMsg.ok { color: var(--ok); }
   .sensors { display: grid; gap: 8px; margin-top: 14px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
   .sensor { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .sensor .label { color: var(--muted); font-size: 13px; }
@@ -171,6 +179,34 @@
       </div>
       <p class="muted">When you are signed in to Gradient, a finished ride goes to Strava by itself, and Gradient picks it up from there. Save .fit is a backup.</p>
     </div>
+  </section>
+
+  <section class="panel" id="routePanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Route</h2>
+      <div class="row">
+        <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,application/gpx+xml"><span>Load GPX</span></label>
+      </div>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Load a GPX file (a Strava or Komoot route export works) or drop one here.</p>
+    <div id="routeBox" class="hidden">
+      <div class="wname" id="routeName"></div>
+      <canvas id="routeMap" class="route-map"></canvas>
+      <canvas id="routeElev" class="route-elev"></canvas>
+      <div class="grid" style="margin-top:12px">
+        <div class="stat"><div class="label">Distance</div><div class="value small" id="rDist">--</div></div>
+        <div class="stat"><div class="label">Gradient now</div><div class="value small" id="rGrade">--</div></div>
+        <div class="stat"><div class="label">Next km</div><div class="value small" id="rNext">--</div></div>
+        <div class="stat"><div class="label">Climbed</div><div class="value small" id="rClimb">--</div></div>
+        <div class="stat"><div class="label">Road speed</div><div class="value small" id="rSpeed">--</div></div>
+      </div>
+      <div class="row route-settings">
+        <label>Rider + bike <input type="number" id="rMass" min="40" max="200" step="1" style="width:5em"> kg</label>
+        <label>Trainer difficulty <input type="range" id="rDifficulty" min="0" max="100" step="5"> <span id="rDifficultyLabel"></span></label>
+        <button id="routeClear" class="link">Remove route</button>
+      </div>
+    </div>
+    <div id="routeMsg" class="muted" style="margin-top:8px"></div>
   </section>
 
   <section class="panel hidden ergOff" id="ergPanel">
@@ -733,6 +769,13 @@ const ERG = (() => {
     indication: onIndication,
     get on() { return on; },
     get target() { return target; },
+    // Indoor Bike Simulation with a gradient (%), no wind, Crr 0.0040, Cw 0.51.
+    async setGrade(pct) {
+      await ensureControl();
+      const g = Math.round(pct * 100) & 0xffff;
+      const r = await send([OP.setSimulation, 0, 0, g & 0xff, g >> 8, 40, 51]);
+      if (r !== 1) throw new Error(`trainer refused the gradient (${FTMS_RESULT[r] || r})`);
+    },
     get connected() { return !!cp && !$('ergToggle').disabled; },
     detach() { cp = null; on = false; hasControl = false; pending = null; },
     // Another app took over: stop without sending anything, so we do not grab it back.
@@ -947,6 +990,7 @@ function startRide() {
     samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
   });
   rideMsg('');
+  if (route) Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
   applyStep();
   renderRide();
 }
@@ -981,6 +1025,7 @@ function finishRide() {
   if (ride.status === 'riding') ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'stop' });
   ride.status = 'finished';
   if (ERG.on) { ERG.setOn(false); renderErg(); }
+  else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
   saveUnsaved();
   renderRide();
   uploadToStrava(true);
@@ -999,6 +1044,7 @@ function recordSample() {
     c: isFresh(ext.pm.cadenceAt) ? Math.round(ext.pm.cadence) : trainerFresh && l.cadence != null ? Math.round(l.cadence) : null,
     s: trainerFresh ? l.speed : null,
     hr: isFresh(ext.hr.at) ? ext.hr.value : trainerFresh ? l.hr : null,
+    ...routeSample(), // position, elevation, distance and road speed on a route
   });
   if (ride.samples.length % 30 === 0) saveUnsaved();
 }
@@ -1013,6 +1059,7 @@ function tick() {
   const dt = (t - ride.lastTick) / 1000;
   ride.lastTick = t;
   if (ride.status !== 'riding') return;
+  routeTick(dt);
   recordSample();
   if (workout && !ride.workoutDone) {
     ride.stepElapsed += dt;
@@ -1023,6 +1070,7 @@ function tick() {
     }
   }
   renderRide();
+  renderRoute();
 }
 
 function rideSeconds() { return ride.samples.length; }
@@ -1105,9 +1153,9 @@ function fitCrc(bytes) {
 }
 
 function buildFit(r) {
-  const T = { enum: 0x00, uint8: 0x02, uint16: 0x84, uint32: 0x86, uint32z: 0x8C };
-  const SIZE = { 0x00: 1, 0x02: 1, 0x84: 2, 0x86: 4, 0x8C: 4 };
-  const INVALID = { 0x00: 0xFF, 0x02: 0xFF, 0x84: 0xFFFF, 0x86: 0xFFFFFFFF, 0x8C: 0 };
+  const T = { enum: 0x00, uint8: 0x02, uint16: 0x84, sint32: 0x85, uint32: 0x86, uint32z: 0x8C };
+  const SIZE = { 0x00: 1, 0x02: 1, 0x84: 2, 0x85: 4, 0x86: 4, 0x8C: 4 };
+  const INVALID = { 0x00: 0xFF, 0x02: 0xFF, 0x84: 0xFFFF, 0x85: 0x7FFFFFFF, 0x86: 0xFFFFFFFF, 0x8C: 0 };
   const out = [], defs = {};
   const define = (local, global, fields) => {
     out.push(0x40 | local, 0, 0, global & 0xFF, global >> 8, fields.length);
@@ -1135,31 +1183,37 @@ function buildFit(r) {
   const maxHr = hrs.length ? Math.max(...hrs.map(s => s.hr)) : null;
 
   // Distance from the trainer's virtual speed, where it sends one.
+  // Distance along the route where there is one, else from the trainer's virtual speed.
   let dist = 0;
-  const distAt = samples.map(s => (dist += (s.s ?? 0) / 3.6));
+  const distAt = samples.map(s => (dist = s.d != null ? s.d : dist + (s.s ?? 0) / 3.6));
+  const onRoute = samples.some(s => s.lat != null);
+  const subSport = onRoute ? 58 : 6; // virtual_activity (Strava: Virtual Ride) or indoor_cycling
+  const semi = deg => (deg == null ? null : Math.round(deg * 2147483648 / 180));
 
   define(0, 0, [[0, T.enum], [1, T.uint16], [2, T.uint16], [3, T.uint32z], [4, T.uint32]]); // file_id
   write(0, [4, 255, 0, 1, ft(start)]); // activity, manufacturer "development"
 
   define(1, 21, [[253, T.uint32], [0, T.enum], [1, T.enum]]); // event: timer start/stop
-  define(2, 20, [[253, T.uint32], [7, T.uint16], [4, T.uint8], [6, T.uint16], [3, T.uint8], [5, T.uint32]]); // record
+  define(2, 20, [[253, T.uint32], [7, T.uint16], [4, T.uint8], [6, T.uint16], [3, T.uint8], [5, T.uint32],
+    [0, T.sint32], [1, T.sint32], [2, T.uint16]]); // record
   let e = 0;
   samples.forEach((s, i) => {
     while (e < r.events.length && r.events[e].t <= s.t) {
       write(1, [ft(r.events[e].t), 0, r.events[e].type === 'start' ? 0 : 4]);
       e++;
     }
-    write(2, [ft(s.t), s.p, s.c, s.s != null ? (s.s / 3.6) * 1000 : null, s.hr, distAt[i] * 100]);
+    write(2, [ft(s.t), s.p, s.c, s.s != null ? (s.s / 3.6) * 1000 : null, s.hr, distAt[i] * 100,
+      semi(s.lat), semi(s.lon), s.alt != null ? (s.alt + 500) * 5 : null]);
   });
   for (; e < r.events.length; e++) write(1, [ft(Math.max(r.events[e].t, end)), 0, r.events[e].type === 'start' ? 0 : 4]);
 
   define(3, 19, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [19, T.uint16], [20, T.uint16],
     [0, T.enum], [1, T.enum], [25, T.enum], [39, T.enum]]); // lap
-  write(3, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, 9, 1, 2, 6]);
+  write(3, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, 9, 1, 2, subSport]);
 
   define(4, 18, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [20, T.uint16], [21, T.uint16],
     [18, T.uint8], [16, T.uint8], [17, T.uint8], [5, T.enum], [6, T.enum], [0, T.enum], [1, T.enum], [25, T.uint16], [26, T.uint16]]); // session
-  write(4, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, avgCad, avgHr, maxHr, 2, 6, 8, 1, 0, 1]);
+  write(4, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, avgCad, avgHr, maxHr, 2, subSport, 8, 1, 0, 1]);
 
   const offset = -new Date(end * 1000).getTimezoneOffset() * 60;
   define(5, 34, [[253, T.uint32], [0, T.uint32], [1, T.uint16], [2, T.enum], [3, T.enum], [4, T.enum], [5, T.uint32]]); // activity
@@ -1269,6 +1323,263 @@ window.addEventListener('beforeunload', e => {
 setInterval(tick, 250);
 renderGradient();
 renderRide();
+
+// ---- Route: a GPX file drawn as a map and an elevation profile. During a
+// ride your position moves at a speed worked out from your power, and while
+// ERG is off the trainer gets the gradient under your wheels.
+const ROUTE_STEP = 10; // metres between resampled points
+let route = null;      // { name, total, pts: [{x, y}], res: [{d, lat, lon, ele}], climb: [cumulative ascent] }
+const routeState = { dist: 0, speed: 0, lastGrade: null, lastGradeAt: 0, gradeBusy: false, finished: false };
+const routeCfg = Object.assign({ mass: 84, difficulty: 0.5 }, store.get('routeCfg', {}));
+
+function haversine(a, b) {
+  const R = 6371000, toRad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toRad, dLon = (b.lon - a.lon) * toRad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function parseGpx(text, fileName) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('That file is not valid GPX.');
+  let nodes = [...doc.getElementsByTagNameNS('*', 'trkpt')];
+  if (!nodes.length) nodes = [...doc.getElementsByTagNameNS('*', 'rtept')];
+  const raw = nodes.map(n => {
+    const ele = n.getElementsByTagNameNS('*', 'ele')[0];
+    return { lat: Number(n.getAttribute('lat')), lon: Number(n.getAttribute('lon')), ele: ele ? Number(ele.textContent) : NaN };
+  }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  if (raw.length < 2) throw new Error('No track points found in that GPX file.');
+  const hasEle = raw.some(p => Number.isFinite(p.ele));
+  // Cumulative distance, dropping repeated points.
+  const pts = [{ ...raw[0], d: 0 }];
+  for (let i = 1; i < raw.length; i++) {
+    const step = haversine(pts[pts.length - 1], raw[i]);
+    if (step > 0.5) pts.push({ ...raw[i], d: pts[pts.length - 1].d + step });
+  }
+  if (pts.length < 2) throw new Error('That route has no length.');
+  for (const p of pts) if (!Number.isFinite(p.ele)) p.ele = hasEle ? NaN : 0;
+  // Fill gaps in elevation from neighbours.
+  for (let i = 0; i < pts.length; i++) if (!Number.isFinite(pts[i].ele)) pts[i].ele = i ? pts[i - 1].ele : (pts.find(p => Number.isFinite(p.ele))?.ele ?? 0);
+
+  // Resample every ROUTE_STEP metres, so lookups and smoothing are simple.
+  const total = pts[pts.length - 1].d;
+  const res = [];
+  let j = 0;
+  for (let d = 0; d <= total; d += ROUTE_STEP) {
+    while (j < pts.length - 2 && pts[j + 1].d < d) j++;
+    const a = pts[j], b = pts[j + 1], f = (d - a.d) / (b.d - a.d || 1);
+    res.push({ d, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, ele: a.ele + (b.ele - a.ele) * f });
+  }
+  // GPS elevation is noisy: smooth over about 100 m before taking gradients.
+  const smooth = res.map((_, i) => {
+    let sum = 0, n = 0;
+    for (let k = Math.max(0, i - 5); k <= Math.min(res.length - 1, i + 5); k++) { sum += res[k].ele; n++; }
+    return sum / n;
+  });
+  res.forEach((p, i) => { p.ele = smooth[i]; });
+  const climb = [0];
+  for (let i = 1; i < res.length; i++) climb.push(climb[i - 1] + Math.max(0, res[i].ele - res[i - 1].ele));
+
+  const name = doc.getElementsByTagNameNS('*', 'name')[0]?.textContent?.trim() || fileName.replace(/\.gpx$/i, '');
+  return { name, total: res[res.length - 1].d, res, climb };
+}
+
+function routeAt(d) {
+  const i = Math.min(route.res.length - 1, Math.max(0, Math.floor(d / ROUTE_STEP)));
+  const a = route.res[i], b = route.res[Math.min(i + 1, route.res.length - 1)];
+  const f = Math.min(1, Math.max(0, (d - a.d) / ROUTE_STEP));
+  return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, ele: a.ele + (b.ele - a.ele) * f, i };
+}
+
+// Average gradient (%) between two distances.
+function gradeBetween(d1, d2) {
+  d1 = Math.max(0, Math.min(route.total, d1));
+  d2 = Math.max(0, Math.min(route.total, d2));
+  if (d2 - d1 < 1) return 0;
+  return ((routeAt(d2).ele - routeAt(d1).ele) / (d2 - d1)) * 100;
+}
+
+// Speed from power, with inertia: rider + bike mass, rolling resistance,
+// air drag and gravity on the current gradient.
+function advanceSpeed(watts, gradePct, dt) {
+  const m = routeCfg.mass, g = 9.81, crr = 0.004, cda = 0.32, rho = 1.2, eta = 0.97;
+  const theta = Math.atan(gradePct / 100);
+  let v = routeState.speed;
+  const steps = Math.max(1, Math.ceil(dt / 0.05));
+  for (let k = 0; k < steps; k++) {
+    const h = dt / steps;
+    const drive = (eta * Math.max(0, watts)) / Math.max(v, 1);
+    const resist = m * g * (crr * Math.cos(theta) + Math.sin(theta)) + 0.5 * rho * cda * v * v;
+    v = Math.max(0, v + ((drive - resist) / (m + 1.5)) * h); // +1.5 kg for the wheels' rotating mass
+  }
+  routeState.speed = v;
+  return v;
+}
+
+function currentPower() {
+  if (isFresh(ext.pm.at)) return ext.pm.power;
+  return isFresh(state.live.at) ? (state.live.power ?? 0) : 0;
+}
+
+function routeTick(dt) {
+  if (!route || routeState.finished) return;
+  const grade = gradeBetween(routeState.dist - 25, routeState.dist + 25);
+  const v = advanceSpeed(currentPower(), grade, dt);
+  routeState.dist = Math.min(route.total, routeState.dist + v * dt);
+  if (routeState.dist >= route.total) {
+    routeState.finished = true;
+    routeMsg('Route finished. Keep riding or press Finish.', 'ok');
+    sendGrade(0, true);
+    return;
+  }
+  sendGrade(grade);
+}
+
+// Grade goes to the trainer only while ERG is off (ERG wins when it is on).
+function sendGrade(gradePct, force = false) {
+  if (!ERG.connected || ERG.on || routeState.gradeBusy) return;
+  const g = Math.max(-10, Math.min(20, gradePct * routeCfg.difficulty));
+  const now = Date.now();
+  if (!force && routeState.lastGrade !== null && Math.abs(g - routeState.lastGrade) < 0.2 && now - routeState.lastGradeAt < 5000) return;
+  routeState.gradeBusy = true;
+  ERG.setGrade(g)
+    .then(() => { routeState.lastGrade = g; routeState.lastGradeAt = now; })
+    .catch(e => routeMsg(`Gradient not sent to the trainer: ${e.message}`, 'bad'))
+    .finally(() => { routeState.gradeBusy = false; });
+}
+
+function routeMsg(text, cls = '') { $('routeMsg').textContent = text; $('routeMsg').className = cls; }
+
+function routeSample() {
+  if (!route) return {};
+  const p = routeAt(routeState.dist);
+  return { lat: p.lat, lon: p.lon, alt: p.ele, d: routeState.dist, s: routeState.speed * 3.6 };
+}
+
+// ---- Drawing.
+function setupCanvas(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawMap() {
+  const { ctx, w, h } = setupCanvas($('routeMap'));
+  const res = route.res, lat0 = res[0].lat * Math.PI / 180;
+  const xs = res.map(p => p.lon * Math.cos(lat0)), ys = res.map(p => -p.lat);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = 16, scale = Math.min((w - 2 * pad) / (maxX - minX || 1), (h - 2 * pad) / (maxY - minY || 1));
+  const ox = (w - (maxX - minX) * scale) / 2, oy = (h - (maxY - minY) * scale) / 2;
+  const P = i => [ox + (xs[i] - minX) * scale, oy + (ys[i] - minY) * scale];
+  const here = Math.min(res.length - 1, Math.floor(routeState.dist / ROUTE_STEP));
+  ctx.lineJoin = ctx.lineCap = 'round';
+  const line = (from, to, color, width) => {
+    ctx.beginPath();
+    for (let i = from; i <= to; i++) { const [x, y] = P(i); i === from ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+  };
+  line(0, res.length - 1, '#3a404d', 4);
+  if (here > 0) line(0, here, '#ff7a1a', 4);
+  const [sx, sy] = P(0), [ex, ey] = P(res.length - 1);
+  ctx.fillStyle = '#3ecf8e'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ff5d5d'; ctx.beginPath(); ctx.arc(ex, ey, 4, 0, 7); ctx.fill();
+  const pos = routeAt(routeState.dist);
+  const px = ox + (pos.lon * Math.cos(lat0) - minX) * scale, py = oy + (-pos.lat - minY) * scale;
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(px, py, 7, 0, 7); ctx.fill(); ctx.stroke();
+}
+
+function gradeColor(g) {
+  if (g < 2) return '#4b6b8f';
+  if (g < 4) return '#3ecf8e';
+  if (g < 6) return '#f5b84b';
+  if (g < 9) return '#ff7a1a';
+  return '#ff5d5d';
+}
+
+function drawElevation() {
+  const { ctx, w, h } = setupCanvas($('routeElev'));
+  const res = route.res;
+  const eles = res.map(p => p.ele);
+  const lo = Math.min(...eles), hi = Math.max(...eles), span = Math.max(hi - lo, 30);
+  const top = 8, bottom = h - 4;
+  const X = d => (d / route.total) * w;
+  const Y = e => bottom - ((e - lo) / span) * (bottom - top);
+  // Columns coloured by gradient, about 100 m each.
+  const colW = Math.max(1, w / Math.ceil(route.total / 100));
+  for (let d = 0; d < route.total; d += 100) {
+    const g = gradeBetween(d, d + 100);
+    const e = routeAt(Math.min(route.total, d + 50)).ele;
+    ctx.fillStyle = gradeColor(g);
+    ctx.globalAlpha = d < routeState.dist ? 0.95 : 0.45;
+    ctx.fillRect(X(d), Y(e), colW + 0.5, bottom - Y(e));
+  }
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  res.forEach((p, i) => (i ? ctx.lineTo(X(p.d), Y(p.ele)) : ctx.moveTo(X(p.d), Y(p.ele))));
+  ctx.strokeStyle = '#f2f4f8'; ctx.lineWidth = 1.5; ctx.stroke();
+  const mx = X(routeState.dist);
+  ctx.fillStyle = '#fff'; ctx.fillRect(mx - 1, 0, 2, h);
+}
+
+function fmtKm(m) { return (m / 1000).toFixed(m < 10000 ? 2 : 1); }
+function fmtGrade(g) { return `${g >= 0 ? '+' : ''}${g.toFixed(1)}%`; }
+
+function renderRoute() {
+  if (!route) return;
+  drawMap();
+  drawElevation();
+  const d = routeState.dist;
+  $('rDist').textContent = `${fmtKm(d)} / ${fmtKm(route.total)} km`;
+  $('rGrade').textContent = fmtGrade(gradeBetween(d - 25, d + 25));
+  $('rNext').textContent = d >= route.total - 1 ? '--' : fmtGrade(gradeBetween(d, Math.min(route.total, d + 1000)));
+  const i = Math.min(route.climb.length - 1, Math.floor(d / ROUTE_STEP));
+  $('rClimb').textContent = `${Math.round(route.climb[i])} / ${Math.round(route.climb[route.climb.length - 1])} m`;
+  $('rSpeed').textContent = `${(routeState.speed * 3.6).toFixed(1)} km/h`;
+}
+
+async function loadGpxFile(file) {
+  if (!file) return;
+  if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before loading another route.', 'bad');
+  try {
+    route = parseGpx(await file.text(), file.name);
+    Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
+    $('routeBox').classList.remove('hidden');
+    $('routeName').textContent = route.name;
+    routeMsg(`${fmtKm(route.total)} km with ${Math.round(route.climb[route.climb.length - 1])} m of climbing. Start a ride to roll. The trainer gets the gradient while ERG is off.`, 'ok');
+    renderRoute();
+  } catch (e) {
+    routeMsg(e.message, 'bad');
+  }
+}
+
+function clearRoute() {
+  if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before removing the route.', 'bad');
+  route = null;
+  $('routeBox').classList.add('hidden');
+  $('gpxInput').value = '';
+  routeMsg('');
+}
+
+$('gpxInput').addEventListener('change', e => loadGpxFile(e.target.files[0]));
+$('routePanel').addEventListener('dragover', e => e.preventDefault());
+$('routePanel').addEventListener('drop', e => { e.preventDefault(); loadGpxFile(e.dataTransfer.files[0]); });
+$('routeClear').addEventListener('click', clearRoute);
+$('rMass').value = routeCfg.mass;
+$('rDifficulty').value = Math.round(routeCfg.difficulty * 100);
+$('rMass').addEventListener('change', e => { routeCfg.mass = Math.max(40, Math.min(200, Number(e.target.value) || 84)); e.target.value = routeCfg.mass; store.set('routeCfg', routeCfg); });
+$('rDifficulty').addEventListener('input', e => {
+  routeCfg.difficulty = Number(e.target.value) / 100;
+  $('rDifficultyLabel').textContent = `${e.target.value}%`;
+  store.set('routeCfg', routeCfg);
+  routeState.lastGrade = null; // resend at the new difficulty
+});
+$('rDifficultyLabel').textContent = `${Math.round(routeCfg.difficulty * 100)}%`;
+window.addEventListener('resize', () => renderRoute());
 
 $('connectBtn').addEventListener('click', connect);
 $('hrBtn').addEventListener('click', () => toggleSensor('hr'));
