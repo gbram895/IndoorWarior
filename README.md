@@ -74,15 +74,22 @@ Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
 while ERG is on, ERG wins. Rides on a route are saved with position and
 elevation as a virtual ride, so Strava shows the map.
 
-## Di2 (experimental)
+## Di2 gears (experimental)
 
-Shimano does not publish how Di2 reports gears over Bluetooth, so the Di2
-panel is an explorer, not a gear display yet. **Connect Di2** pairs with the
-derailleur or wireless unit, lists every service and characteristic it
-exposes (including Shimano's own, UUIDs ending `-5348-494d-414e-4f5f424c4500`),
-and logs every notification. **Mark: I just shifted** drops a marker in the
-log, and **Copy Di2 log** puts it on the clipboard so the gear messages can be
-decoded from a real ride. Close E-TUBE first; Di2 accepts one app at a time.
+Shimano does not publish how Di2 reports gears over Bluetooth, so the gear
+display is worked out from logs of a GRX RD-RX827. **Connect Di2** pairs with
+the derailleur and shows the rear gear as Shimano numbers it (e.g. 11 of 12),
+also as a tile next to cadence while a trainer is connected. It comes from
+message type 0x00 on Shimano service 18ef, characteristic 2ac1: byte 5 is the
+rear position and byte 6 the number of rear gears. Bytes 3-4 are 0xff on a 1x
+bike and are read as the front position and count otherwise, which no 2x bike
+has confirmed yet.
+
+The page leaves Shimano's setup and pairing services (18fe, 18ff) alone:
+reading them fails authentication and the derailleur drops the connection. If
+the Di2 drops anyway, the page reconnects up to three times. A log of
+everything the Di2 sends sits under **Di2 log** for troubleshooting. Close
+E-TUBE first; Di2 accepts one app at a time.
 
 ## Running it
 

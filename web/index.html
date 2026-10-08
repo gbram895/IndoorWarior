@@ -42,6 +42,8 @@
   dd { margin: 0; overflow-wrap: anywhere; }
   #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
   .hidden { display: none !important; }
+  .gear-big { font-size: 56px; font-weight: 700; line-height: 1; margin-top: 12px; font-variant-numeric: tabular-nums; }
+  .gear-big .unit { font-size: 18px; font-weight: 400; margin-left: 8px; color: #9aa3b2; }
   .di2log { background: #11141a; border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 10px 0; }
   .route-map { width: 100%; height: 260px; display: block; background: #12151b; border-radius: 8px; }
   .route-elev { width: 100%; height: 110px; display: block; background: #12151b; border-radius: 8px; margin-top: 8px; }
@@ -126,6 +128,7 @@
       <div class="stat"><div class="label">Heart rate</div><div class="value" id="hr">--</div></div>
       <div class="stat"><div class="label">Power meter</div><div class="value" id="pmWatts">--</div></div>
       <div class="stat"><div class="label">Trainer power</div><div class="value" id="trainerWatts">--</div></div>
+      <div class="stat hidden" id="gearStat"><div class="label">Gear (Di2)</div><div class="value" id="gearTile">--</div></div>
     </div>
     <div id="fresh">Waiting for the first reading…</div>
   </section>
@@ -235,12 +238,17 @@
       <h2 style="margin:0">Di2 gears (experimental)</h2>
       <button id="di2Btn" class="secondary">Connect Di2</button>
     </div>
-    <p class="muted" style="margin:8px 0 0">Shimano does not publish how Di2 reports gears over Bluetooth. Connect it, shift through a few gears front and rear, then press Copy Di2 log and paste it in the chat so the gear display can be built from what your bike actually sends. Shift once first to wake it, and close the E-TUBE app.</p>
+    <p class="muted" style="margin:8px 0 0">Shows your current gear, read from what the derailleur broadcasts (worked out from a GRX RX827; Shimano does not publish this). Shift once first to wake it, and close the E-TUBE app.</p>
     <div id="di2State" class="muted" style="margin-top:8px"></div>
     <div id="di2Box" class="hidden">
-      <div class="muted" style="margin-top:8px" id="di2Services"></div>
-      <pre id="di2Log" class="di2log"></pre>
-      <div class="row"><button id="di2Copy" class="secondary">Copy Di2 log</button><button id="di2Mark" class="secondary">Mark: I just shifted</button></div>
+      <div class="gear-big"><span id="gearRear">--</span><span class="unit" id="gearOf"></span></div>
+      <div class="muted" id="gearFront"></div>
+      <details style="margin-top:8px">
+        <summary class="muted">Di2 log (for troubleshooting)</summary>
+        <div class="muted" style="margin-top:8px" id="di2Services"></div>
+        <pre id="di2Log" class="di2log"></pre>
+        <div class="row"><button id="di2Copy" class="secondary">Copy Di2 log</button><button id="di2Mark" class="secondary">Mark: I just shifted</button></div>
+      </details>
     </div>
   </section>
 
@@ -1620,7 +1628,29 @@ function di2Log(line) {
   el.scrollTop = el.scrollHeight;
 }
 
+// Gear state on 18ef/2ac1, message type 0x00, as seen from an RD-RX827:
+//   00 00 03 ff ff 0c 0c 80 ...   rear position 12 of 12
+//   00 00 03 ff ff 0b 0c 80 ...   after one shift: 11 of 12
+// Byte 5 is the rear position, byte 6 the number of rear gears. Bytes 3-4
+// are 0xff on a 1x bike and are read as front position and count otherwise,
+// which is a guess until a 2x bike confirms it.
+function di2Gear(view) {
+  if (view.byteLength < 7 || view.getUint8(0) !== 0x00) return;
+  const rear = view.getUint8(5), rearCount = view.getUint8(6);
+  if (!rear || rear === 0xff || !rearCount || rearCount === 0xff || rear > rearCount) return;
+  const front = view.getUint8(3), frontCount = view.getUint8(4);
+  const hasFront = front !== 0xff && frontCount !== 0xff && frontCount > 1;
+  $('gearRear').textContent = rear;
+  $('gearOf').textContent = `of ${rearCount}`;
+  $('gearFront').textContent = hasFront ? `Front ${front} of ${frontCount}` : '';
+  $('gearTile').textContent = hasFront ? `${front}·${rear}/${rearCount}` : `${rear}/${rearCount}`;
+  $('gearStat').classList.remove('hidden');
+  di2.gear = { rear, rearCount, front: hasFront ? front : null, at: Date.now() };
+}
+
 function di2Notify(id, view) {
+  if (!di2.device) return;
+  if (id === 'shimano:18ef/shimano:2ac1') di2Gear(view);
   const value = hex(view);
   // Messages on one channel are told apart by their first byte.
   const key = `${id}#${value.slice(0, 2)}`;
@@ -1659,7 +1689,7 @@ async function di2Attach() {
     }
   }
   $('di2State').textContent = subscribed
-    ? `Connected. Listening on ${subscribed} channel${subscribed === 1 ? '' : 's'}. Now shift a few times, front and rear.`
+    ? `Connected to ${dev.name || 'Di2'}.`
     : 'Connected, but it exposes nothing to listen to. Copy the log anyway; it shows what is there.';
 }
 
@@ -1673,6 +1703,11 @@ function di2Disconnected() {
     return;
   }
   di2.device = null;
+  di2.gear = null;
+  $('gearStat').classList.add('hidden');
+  $('gearRear').textContent = '--';
+  $('gearOf').textContent = '';
+  $('gearTile').textContent = '--';
   $('di2Btn').textContent = 'Connect Di2';
   $('di2State').textContent = 'Disconnected.';
 }
