@@ -28,6 +28,24 @@ trainer to flat-road simulation (grade 0 %) instead of leaving the last
 target, or sends Reset on trainers without simulation. If another app takes
 control, ERG turns itself off without grabbing control back.
 
+## Riding today's plan
+
+The Ride panel signs in to Gradient once (only the token is stored, in the
+browser), loads today's planned ride from `/api/training-plan/today` and your
+FTP from `/api/settings/thresholds`, and plays it step by step: ERG is set to
+FTP × the step's % for each step, free steps (and steps aimed at heart rate or
+pace) switch ERG off, and −5% / +5% scales the whole workout. Pause turns ERG
+off so it never holds watts while you are not pedalling. Without a plan,
+**Start free ride** just records.
+
+Every ride is recorded once a second (power, cadence, speed, heart rate) and
+kept in the browser until it is saved or discarded, so a closed tab does not
+lose it. **Save .fit** downloads a standard FIT activity (indoor cycling) to
+upload to Strava or Garmin Connect, which Gradient already syncs from.
+
+Keep the page in front while riding: Chrome slows timers in background tabs,
+which would delay step changes.
+
 ## Running it
 
 1. Make sure the laptop's Bluetooth is on (Windows 10 or 11).

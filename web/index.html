@@ -41,7 +41,7 @@
   dt { color: var(--muted); }
   dd { margin: 0; overflow-wrap: anywhere; }
   #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
-  .hidden { display: none; }
+  .hidden { display: none !important; }
   .erg-head { display: flex; justify-content: space-between; align-items: center; }
   .switch { position: relative; width: 56px; height: 32px; flex: none; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -59,6 +59,22 @@
   #ergStatus.bad { color: var(--bad); } #ergStatus.ok { color: var(--ok); }
   .keys { color: var(--muted); font-size: 12px; margin-top: 6px; }
   .ergOff .target, .ergOff #targetRange { opacity: .45; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .timer { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .signin { display: grid; gap: 8px; margin-top: 12px; max-width: 420px; }
+  .signin p { margin: 0; }
+  input[type=email], input[type=password], input[type=url] {
+    font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid #2f3542; background: #11141a; color: var(--text); width: 100%;
+  }
+  details summary { color: var(--muted); font-size: 14px; cursor: pointer; margin-bottom: 6px; }
+  button.link { background: none; color: var(--muted); padding: 10px 4px; text-decoration: underline; font-weight: 400; }
+  button.sm { padding: 6px 10px; min-width: 0; }
+  .wname { font-weight: 600; font-size: 18px; margin: 12px 0 8px; }
+  #wChart { width: 100%; height: 90px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 12px; }
+  .value.small { font-size: 18px; }
+  #rideMsg { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  #rideMsg.bad { color: var(--bad); } #rideMsg.ok { color: var(--ok); }
+  #savedBox { margin-top: 12px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
 </style>
 </head>
 <body>
@@ -87,6 +103,52 @@
       <div class="stat"><div class="label">FTMS Indoor Bike Data</div><div class="value" id="ftmsWatts">--</div></div>
     </div>
     <div id="fresh">Waiting for the first reading…</div>
+  </section>
+
+  <section class="panel" id="ridePanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Ride</h2>
+      <div id="rideTimer" class="timer">0:00:00</div>
+    </div>
+
+    <form id="signInForm" class="signin hidden">
+      <p class="muted">Sign in to Gradient to load today's planned ride. Only a sign-in token is kept on this laptop, never your password.</p>
+      <input id="gEmail" type="email" placeholder="Gradient email" autocomplete="username" required>
+      <input id="gPassword" type="password" placeholder="Password" autocomplete="current-password" required>
+      <details><summary>Gradient address</summary><input id="gUrl" type="url"></details>
+      <div class="row"><button type="submit">Sign in</button></div>
+    </form>
+    <div id="signedIn" class="row hidden" style="margin-top:12px">
+      <button id="loadTodayBtn" class="secondary">Load today's ride</button>
+      <button id="signOutBtn" class="link">Sign out of Gradient</button>
+    </div>
+
+    <div id="workoutBox" class="hidden">
+      <div class="wname" id="wName"></div>
+      <svg id="wChart" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="grid">
+        <div class="stat"><div class="label" id="stepLabel">Step</div><div class="value" id="stepTarget">--</div><div class="label" id="stepLeft">&nbsp;</div></div>
+        <div class="stat"><div class="label">Next</div><div class="value small" id="stepNext">--</div></div>
+        <div class="stat"><div class="label">Intensity</div>
+          <div class="row" style="flex-wrap:nowrap"><button class="secondary sm" data-int="-0.05">−5%</button><span class="value small" id="intensity">100%</span><button class="secondary sm" data-int="0.05">+5%</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button id="startBtn">Start ride</button>
+      <button id="pauseBtn" class="secondary hidden">Pause</button>
+      <button id="resumeBtn" class="hidden">Resume</button>
+      <button id="skipBtn" class="secondary hidden">Skip step</button>
+      <button id="finishBtn" class="secondary hidden">Finish</button>
+    </div>
+    <div id="rideMsg"></div>
+
+    <div id="savedBox" class="hidden">
+      <div id="rideSummary"></div>
+      <div class="row" style="margin-top:8px"><button id="saveFitBtn">Save .fit</button><button id="discardBtn" class="secondary">Discard</button></div>
+      <p class="muted">Upload the .fit to Strava or Garmin Connect and Gradient picks it up from there.</p>
+    </div>
   </section>
 
   <section class="panel hidden ergOff" id="ergPanel">
@@ -253,6 +315,7 @@ function resetState() {
   state = {
     cpWatts: null, ftmsWatts: null, cadence: null, speed: null, lastPacket: null,
     samples: [], crank: BLE.crankCadence(),
+    live: { power: null, cadence: null, speed: null, hr: null, at: 0 },
     report: { manufacturer: null, model: null, firmware: null, services: [], characteristics: [],
               features: null, range: null, controlPoint: false, errors: [] },
   };
@@ -267,6 +330,8 @@ function setStatus(text, bad = false) {
 function recordPower(watts) {
   const now = Date.now();
   state.lastPacket = now;
+  state.live.power = watts;
+  state.live.at = now;
   state.samples.push({ at: now, watts });
   state.samples = state.samples.filter(s => now - s.at <= 3000);
   $('watts').textContent = watts;
@@ -329,7 +394,7 @@ function onValue(uuid, view) {
       recordPower(m.power);
       if (m.crankRevs !== null) {
         const rpm = state.crank(m.crankRevs, m.crankTime);
-        if (rpm !== null) $('cadence').textContent = `${Math.round(rpm)} rpm`;
+        if (rpm !== null) { state.live.cadence = rpm; $('cadence').textContent = `${Math.round(rpm)} rpm`; }
       }
       break;
     }
@@ -342,8 +407,9 @@ function onValue(uuid, view) {
         $('ftmsWatts').textContent = `${d.power} W`;
         recordPower(d.power);
       }
-      if (d.cadence !== null) $('cadence').textContent = `${Math.round(d.cadence)} rpm`;
-      if (d.speedKmh !== null) $('speed').textContent = `${d.speedKmh.toFixed(1)} km/h`;
+      if (d.cadence !== null) { state.live.cadence = d.cadence; $('cadence').textContent = `${Math.round(d.cadence)} rpm`; }
+      if (d.speedKmh !== null) { state.live.speed = d.speedKmh; $('speed').textContent = `${d.speedKmh.toFixed(1)} km/h`; }
+      if (d.heartRate) state.live.hr = d.heartRate;
       break;
     }
     case uuid16(0x2acc): state.report.features = BLE.ftmsFeatures(view); break;
@@ -417,6 +483,7 @@ async function connect() {
     if (state.report.range) { $('targetRange').min = state.report.range.min; $('targetRange').max = state.report.range.max; }
     ERG.setTarget(ERG.target);
     ergStatus(canErg ? 'ERG is off. Switch it on to hold the target power.' : 'This trainer does not accept power targets.', canErg ? '' : 'bad');
+    if (ride.status === 'riding') applyStep();
     $('connectBtn').classList.add('hidden');
     $('disconnectBtn').classList.remove('hidden');
     setStatus(`Connected to ${device.name || 'trainer'}.`);
@@ -509,6 +576,7 @@ const ERG = (() => {
     indication: onIndication,
     get on() { return on; },
     get target() { return target; },
+    get connected() { return !!cp && !$('ergToggle').disabled; },
     detach() { cp = null; on = false; hasControl = false; pending = null; },
     // Another app took over: stop without sending anything, so we do not grab it back.
     controlLost() { hasControl = false; on = false; clearTimeout(sendTimer); },
@@ -556,6 +624,427 @@ document.addEventListener('keydown', e => {
   }
 });
 renderErg();
+
+// ---- Ride: today's workout from Gradient, a step player that drives ERG,
+// and a 1 Hz recorder that saves a .fit file.
+const GRADIENT_DEFAULT = 'https://training-dashboard-peiv.onrender.com';
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+let gradient = store.get('gradient', { url: GRADIENT_DEFAULT, token: null });
+
+function rideMsg(text, cls = '') { $('rideMsg').textContent = text; $('rideMsg').className = cls; }
+
+async function gradientApi(path, options = {}) {
+  const base = (gradient.url || GRADIENT_DEFAULT).replace(/\/+$/, '');
+  let res;
+  try {
+    res = await fetch(base + path, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(gradient.token ? { Authorization: `Bearer ${gradient.token}` } : {}) },
+    });
+  } catch {
+    throw new Error(`Could not reach Gradient at ${base}. Check the laptop is online and the address under "Gradient address".`);
+  }
+  const body = await res.json().catch(() => null);
+  if (res.status === 401 && gradient.token) {
+    gradient.token = null;
+    store.set('gradient', gradient);
+    renderGradient();
+    throw new Error('Your Gradient sign-in expired. Sign in again.');
+  }
+  if (!res.ok) throw new Error(body && typeof body.error === 'string' ? body.error : `Gradient answered ${res.status}.`);
+  return body;
+}
+
+function renderGradient() {
+  $('signInForm').classList.toggle('hidden', !!gradient.token);
+  $('signedIn').classList.toggle('hidden', !gradient.token);
+  $('gUrl').value = gradient.url || GRADIENT_DEFAULT;
+}
+
+async function signIn(e) {
+  e.preventDefault();
+  gradient.url = $('gUrl').value.trim() || GRADIENT_DEFAULT;
+  rideMsg('Signing in to Gradient. If it has been asleep this can take up to a minute…');
+  try {
+    const { token } = await gradientApi('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: $('gEmail').value.trim(), password: $('gPassword').value }),
+    });
+    gradient.token = token;
+    store.set('gradient', gradient);
+    $('gPassword').value = '';
+    renderGradient();
+    await loadToday();
+  } catch (err) {
+    rideMsg(`Sign-in failed: ${err.message}`, 'bad');
+  }
+}
+
+async function loadToday() {
+  if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+  rideMsg('Loading today’s ride from Gradient. If it has been asleep this can take up to a minute…');
+  try {
+    const [day, thresholds] = await Promise.all([
+      gradientApi('/api/training-plan/today'),
+      gradientApi('/api/settings/thresholds'),
+    ]);
+    if (!day) return rideMsg('Gradient has no training plan set up yet.');
+    if (day.isRestDay) return rideMsg(`Today is a rest day${day.restReason ? `: ${day.restReason}` : '.'}`);
+    if (day.discipline !== 'BIKE') return rideMsg(`Today’s session is a ${String(day.discipline || 'other').toLowerCase()} session, not a ride. You can still start a free ride.`);
+    const segments = Array.isArray(day.segments) ? day.segments : [];
+    if (!segments.length) return rideMsg(`Today’s ride “${day.name}” has no steps to follow. You can still start a free ride.`);
+    if (!thresholds || !thresholds.ftpWatts) return rideMsg('Set your FTP in Gradient first. The steps are in % of FTP.', 'bad');
+    loadWorkout(day.name || 'Today’s ride', segments, thresholds.ftpWatts);
+  } catch (err) {
+    rideMsg(err.message, 'bad');
+  }
+}
+
+// ---- Workout and player.
+let workout = null; // { name, ftp, steps: [{ sec, fraction }] }
+let intensity = 1;
+const ride = { status: 'idle', step: 0, stepElapsed: 0, workoutDone: true, samples: [], events: [], name: null, lastTick: performance.now() };
+
+function loadWorkout(name, segments, ftp) {
+  workout = {
+    name, ftp,
+    steps: segments.filter(s => s.durationSec > 0).map(s => ({
+      sec: s.durationSec,
+      // Rides are prescribed in % of FTP. A step aimed at heart rate or pace
+      // has no wattage, so it is ridden free with ERG off.
+      fraction: s.targetMetric && s.targetMetric !== 'power' ? null : (s.intensityFraction ?? null),
+    })),
+  };
+  intensity = 1;
+  drawChart();
+  $('workoutBox').classList.remove('hidden');
+  const total = workout.steps.reduce((a, s) => a + s.sec, 0);
+  rideMsg(`Loaded “${name}”, ${fmtTime(total)} long, at FTP ${ftp} W. Press Start ride when you are on the bike.`, 'ok');
+  renderRide();
+}
+
+const stepWatts = s => (s.fraction == null ? null : Math.round(workout.ftp * s.fraction * intensity));
+const currentStep = () => (workout && !ride.workoutDone ? workout.steps[ride.step] : null);
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function zoneColor(f) {
+  if (f == null) return '#4a5162';
+  if (f < 0.56) return '#7f8aa3';
+  if (f < 0.76) return '#3b82f6';
+  if (f < 0.91) return '#3ecf8e';
+  if (f < 1.06) return '#f5b84b';
+  if (f < 1.21) return '#ff7a1a';
+  return '#ff5d5d';
+}
+
+function drawChart() {
+  const svg = $('wChart');
+  const total = workout.steps.reduce((a, s) => a + s.sec, 0);
+  const maxF = Math.max(1.2, ...workout.steps.map(s => s.fraction ?? 0));
+  let x = 0, parts = '';
+  for (const s of workout.steps) {
+    const w = (s.sec / total) * 1000;
+    const h = ((s.fraction ?? 0.4) / maxF) * 100;
+    parts += `<rect x="${x.toFixed(2)}" y="${(100 - h).toFixed(2)}" width="${Math.max(w - 0.6, 0.4).toFixed(2)}" height="${h.toFixed(2)}" fill="${zoneColor(s.fraction)}"/>`;
+    x += w;
+  }
+  svg.setAttribute('viewBox', '0 0 1000 100');
+  svg.innerHTML = parts + '<rect id="wProgress" x="0" y="0" width="4" height="100" fill="#fff"/>';
+}
+
+// Put the current step on the trainer: ERG at the step's watts, or ERG off
+// (flat road) for a free step. A free ride without a workout leaves ERG to you.
+function applyStep() {
+  if (ride.status !== 'riding' || !ERG.connected || !workout) return;
+  const s = currentStep();
+  const w = s ? stepWatts(s) : null;
+  if (w != null) {
+    ERG.setTarget(w);
+    if (!ERG.on) ERG.setOn(true);
+  } else if (ERG.on) {
+    ERG.setOn(false);
+  }
+  renderErg();
+}
+
+function startRide() {
+  if (!ERG.connected && !confirm('No trainer is connected, so nothing will be recorded. Start anyway?')) return;
+  const now = Date.now() / 1000;
+  Object.assign(ride, {
+    status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
+    samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride',
+  });
+  rideMsg('');
+  applyStep();
+  renderRide();
+}
+
+function pauseRide() {
+  ride.status = 'paused';
+  ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'stop' });
+  // Never leave ERG holding watts while you are not pedalling.
+  if (ERG.on) { ERG.setOn(false); renderErg(); }
+  saveUnsaved();
+  renderRide();
+}
+
+function resumeRide() {
+  ride.status = 'riding';
+  ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'start' });
+  applyStep();
+  renderRide();
+}
+
+function nextStep() {
+  ride.stepElapsed = 0;
+  ride.step++;
+  if (ride.step >= workout.steps.length) {
+    ride.workoutDone = true;
+    rideMsg('Workout done. Keep riding to cool down, or press Finish.', 'ok');
+  }
+  applyStep();
+}
+
+function finishRide() {
+  if (ride.status === 'riding') ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'stop' });
+  ride.status = 'finished';
+  if (ERG.on) { ERG.setOn(false); renderErg(); }
+  saveUnsaved();
+  renderRide();
+}
+
+function recordSample() {
+  const t = Math.floor(Date.now() / 1000);
+  const last = ride.samples[ride.samples.length - 1];
+  if (last && last.t === t) return;
+  const l = state.live;
+  const fresh = l.at && Date.now() - l.at < 3000;
+  ride.samples.push({
+    t,
+    p: fresh ? (l.power ?? 0) : 0,
+    c: fresh && l.cadence != null ? Math.round(l.cadence) : null,
+    s: fresh ? l.speed : null,
+    hr: fresh ? l.hr : null,
+  });
+  if (ride.samples.length % 30 === 0) saveUnsaved();
+}
+
+// A copy of the ride survives a closed tab or a crash until it is saved or discarded.
+function saveUnsaved() {
+  if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events });
+}
+
+function tick() {
+  const t = performance.now();
+  const dt = (t - ride.lastTick) / 1000;
+  ride.lastTick = t;
+  if (ride.status !== 'riding') return;
+  recordSample();
+  if (workout && !ride.workoutDone) {
+    ride.stepElapsed += dt;
+    while (!ride.workoutDone && ride.stepElapsed >= workout.steps[ride.step].sec) {
+      const over = ride.stepElapsed - workout.steps[ride.step].sec;
+      nextStep();
+      ride.stepElapsed = ride.workoutDone ? 0 : over;
+    }
+  }
+  renderRide();
+}
+
+function rideSeconds() { return ride.samples.length; }
+
+function summarize(samples) {
+  const n = samples.length || 1;
+  const watts = samples.map(s => s.p || 0);
+  const avg = Math.round(watts.reduce((a, b) => a + b, 0) / n);
+  const kj = Math.round(watts.reduce((a, b) => a + b, 0) / 1000);
+  return { avg, max: Math.max(0, ...watts), kj, seconds: samples.length };
+}
+
+function renderRide() {
+  const active = ride.status === 'riding' || ride.status === 'paused';
+  $('rideTimer').textContent = fmtTime(rideSeconds());
+  $('startBtn').classList.toggle('hidden', active);
+  $('startBtn').textContent = workout ? 'Start ride' : 'Start free ride';
+  $('pauseBtn').classList.toggle('hidden', ride.status !== 'riding');
+  $('resumeBtn').classList.toggle('hidden', ride.status !== 'paused');
+  $('finishBtn').classList.toggle('hidden', !active);
+  $('skipBtn').classList.toggle('hidden', !(active && workout && !ride.workoutDone));
+  $('intensity').textContent = `${Math.round(intensity * 100)}%`;
+
+  if (workout) {
+    const s = currentStep();
+    const total = workout.steps.reduce((a, x) => a + x.sec, 0);
+    const done = ride.workoutDone && active ? total
+      : workout.steps.slice(0, ride.step).reduce((a, x) => a + x.sec, 0) + (active ? ride.stepElapsed : 0);
+    const bar = document.getElementById('wProgress');
+    if (bar) bar.setAttribute('x', String(Math.min(996, (done / total) * 1000)));
+    $('wName').textContent = workout.name;
+    if (s) {
+      const w = stepWatts(s);
+      $('stepLabel').textContent = `Step ${ride.step + 1} of ${workout.steps.length}`;
+      $('stepTarget').textContent = w == null ? 'Free' : `${w} W`;
+      $('stepLeft').textContent = active ? `${fmtTime(s.sec - ride.stepElapsed)} left` : fmtTime(s.sec);
+      const n = workout.steps[ride.step + 1];
+      $('stepNext').textContent = n ? `${fmtTime(n.sec)} ${stepWatts(n) == null ? 'free' : `at ${stepWatts(n)} W`}` : 'Finish';
+    } else {
+      $('stepLabel').textContent = 'Workout done';
+      $('stepTarget').textContent = 'Free';
+      $('stepLeft').innerHTML = '&nbsp;';
+      $('stepNext').textContent = '--';
+    }
+  }
+
+  const pending = ride.status === 'finished' ? { name: ride.name, samples: ride.samples, events: ride.events }
+    : !active ? store.get('unsavedRide', null) : null;
+  $('savedBox').classList.toggle('hidden', !pending || !pending.samples.length);
+  if (pending && pending.samples.length) {
+    const sum = summarize(pending.samples);
+    const when = new Date(pending.samples[0].t * 1000).toLocaleString();
+    $('rideSummary').textContent = `${ride.status === 'finished' ? 'Ride finished' : 'Unsaved ride'} (${when}): ${fmtTime(sum.seconds)}, average ${sum.avg} W, max ${sum.max} W, ${sum.kj} kJ.`;
+  }
+}
+
+function changeIntensity(delta) {
+  intensity = Math.min(1.5, Math.max(0.5, Math.round((intensity + delta) * 100) / 100));
+  applyStep();
+  renderRide();
+}
+
+// ---- FIT activity file (Garmin's format, read by Strava, Garmin Connect, TrainingPeaks).
+const FIT_EPOCH = 631065600; // 1989-12-31T00:00:00Z in Unix seconds
+const FIT_CRC = [0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401, 0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400];
+function fitCrc(bytes) {
+  let crc = 0;
+  for (const b of bytes) {
+    let tmp = FIT_CRC[crc & 0xF];
+    crc = (crc >> 4) & 0x0FFF; crc = crc ^ tmp ^ FIT_CRC[b & 0xF];
+    tmp = FIT_CRC[crc & 0xF];
+    crc = (crc >> 4) & 0x0FFF; crc = crc ^ tmp ^ FIT_CRC[(b >> 4) & 0xF];
+  }
+  return crc;
+}
+
+function buildFit(r) {
+  const T = { enum: 0x00, uint8: 0x02, uint16: 0x84, uint32: 0x86, uint32z: 0x8C };
+  const SIZE = { 0x00: 1, 0x02: 1, 0x84: 2, 0x86: 4, 0x8C: 4 };
+  const INVALID = { 0x00: 0xFF, 0x02: 0xFF, 0x84: 0xFFFF, 0x86: 0xFFFFFFFF, 0x8C: 0 };
+  const out = [], defs = {};
+  const define = (local, global, fields) => {
+    out.push(0x40 | local, 0, 0, global & 0xFF, global >> 8, fields.length);
+    for (const [num, type] of fields) out.push(num, SIZE[type], type);
+    defs[local] = fields;
+  };
+  const write = (local, values) => {
+    out.push(local);
+    defs[local].forEach(([, type], i) => {
+      let v = values[i];
+      if (v == null || Number.isNaN(v)) v = INVALID[type];
+      v = Math.round(v);
+      for (let k = 0; k < SIZE[type]; k++) { out.push(v & 0xFF); v = Math.floor(v / 256); }
+    });
+  };
+  const ft = unix => unix - FIT_EPOCH;
+
+  const samples = r.samples;
+  const start = samples[0].t, end = samples[samples.length - 1].t;
+  const timerMs = samples.length * 1000, elapsedMs = (end - start + 1) * 1000;
+  const sum = summarize(samples);
+  const cad = samples.filter(s => s.c != null), hrs = samples.filter(s => s.hr);
+  const avgCad = cad.length ? cad.reduce((a, s) => a + s.c, 0) / cad.length : null;
+  const avgHr = hrs.length ? hrs.reduce((a, s) => a + s.hr, 0) / hrs.length : null;
+  const maxHr = hrs.length ? Math.max(...hrs.map(s => s.hr)) : null;
+
+  // Distance from the trainer's virtual speed, where it sends one.
+  let dist = 0;
+  const distAt = samples.map(s => (dist += (s.s ?? 0) / 3.6));
+
+  define(0, 0, [[0, T.enum], [1, T.uint16], [2, T.uint16], [3, T.uint32z], [4, T.uint32]]); // file_id
+  write(0, [4, 255, 0, 1, ft(start)]); // activity, manufacturer "development"
+
+  define(1, 21, [[253, T.uint32], [0, T.enum], [1, T.enum]]); // event: timer start/stop
+  define(2, 20, [[253, T.uint32], [7, T.uint16], [4, T.uint8], [6, T.uint16], [3, T.uint8], [5, T.uint32]]); // record
+  let e = 0;
+  samples.forEach((s, i) => {
+    while (e < r.events.length && r.events[e].t <= s.t) {
+      write(1, [ft(r.events[e].t), 0, r.events[e].type === 'start' ? 0 : 4]);
+      e++;
+    }
+    write(2, [ft(s.t), s.p, s.c, s.s != null ? (s.s / 3.6) * 1000 : null, s.hr, distAt[i] * 100]);
+  });
+  for (; e < r.events.length; e++) write(1, [ft(Math.max(r.events[e].t, end)), 0, r.events[e].type === 'start' ? 0 : 4]);
+
+  define(3, 19, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [19, T.uint16], [20, T.uint16],
+    [0, T.enum], [1, T.enum], [25, T.enum], [39, T.enum]]); // lap
+  write(3, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, 9, 1, 2, 6]);
+
+  define(4, 18, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [20, T.uint16], [21, T.uint16],
+    [18, T.uint8], [16, T.uint8], [17, T.uint8], [5, T.enum], [6, T.enum], [0, T.enum], [1, T.enum], [25, T.uint16], [26, T.uint16]]); // session
+  write(4, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, avgCad, avgHr, maxHr, 2, 6, 8, 1, 0, 1]);
+
+  const offset = -new Date(end * 1000).getTimezoneOffset() * 60;
+  define(5, 34, [[253, T.uint32], [0, T.uint32], [1, T.uint16], [2, T.enum], [3, T.enum], [4, T.enum], [5, T.uint32]]); // activity
+  write(5, [ft(end), timerMs, 1, 0, 26, 1, ft(end) + offset]);
+
+  const header = [14, 0x20, 0x54, 0x08, out.length & 0xFF, (out.length >> 8) & 0xFF, (out.length >> 16) & 0xFF, (out.length >>> 24) & 0xFF, 0x2E, 0x46, 0x49, 0x54];
+  const hcrc = fitCrc(header);
+  header.push(hcrc & 0xFF, hcrc >> 8);
+  const file = header.concat(out);
+  const crc = fitCrc(file);
+  file.push(crc & 0xFF, crc >> 8);
+  return new Uint8Array(file);
+}
+
+function saveFit() {
+  const r = ride.status === 'finished' ? { name: ride.name, samples: ride.samples, events: ride.events } : store.get('unsavedRide', null);
+  if (!r || !r.samples.length) return;
+  const d = new Date(r.samples[0].t * 1000);
+  const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buildFit(r)], { type: 'application/octet-stream' }));
+  a.download = `IndoorWarior-${stamp}.fit`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  rideMsg(`Saved ${a.download} to your Downloads folder.`, 'ok');
+}
+
+function discardRide() {
+  if (!confirm('Throw this ride away? It cannot be recovered.')) return;
+  store.del('unsavedRide');
+  if (ride.status === 'finished') { ride.status = 'idle'; ride.samples = []; ride.events = []; }
+  rideMsg('');
+  renderRide();
+}
+
+$('signInForm').addEventListener('submit', signIn);
+$('loadTodayBtn').addEventListener('click', loadToday);
+$('signOutBtn').addEventListener('click', () => { gradient.token = null; store.set('gradient', gradient); renderGradient(); });
+$('startBtn').addEventListener('click', startRide);
+$('pauseBtn').addEventListener('click', pauseRide);
+$('resumeBtn').addEventListener('click', resumeRide);
+$('skipBtn').addEventListener('click', () => { nextStep(); renderRide(); });
+$('finishBtn').addEventListener('click', () => { if (confirm('Finish this ride?')) finishRide(); });
+$('saveFitBtn').addEventListener('click', saveFit);
+$('discardBtn').addEventListener('click', discardRide);
+document.querySelectorAll('[data-int]').forEach(b => b.addEventListener('click', () => changeIntensity(Number(b.dataset.int))));
+window.addEventListener('beforeunload', e => {
+  if (ride.status === 'riding' || ride.status === 'paused') { saveUnsaved(); e.preventDefault(); e.returnValue = ''; }
+});
+setInterval(tick, 250);
+renderGradient();
+renderRide();
 
 $('connectBtn').addEventListener('click', connect);
 $('disconnectBtn').addEventListener('click', () => device?.gatt?.disconnect());
