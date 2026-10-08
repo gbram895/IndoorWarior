@@ -1602,7 +1602,12 @@ $('connectBtn').addEventListener('click', connect);
 // services named up front, so every short id on that base is listed.
 const SHIMANO_BASE = '-5348-494d-414e-4f5f424c4500';
 const SHIMANO_SERVICES = Array.from({ length: 256 }, (_, i) => `000018${i.toString(16).padStart(2, '0')}${SHIMANO_BASE}`);
-const di2 = { device: null, log: [], started: 0 };
+// 18fe and 18ff hold Shimano's setup and pairing channels; touching them
+// fails authentication and makes the derailleur drop the connection, so the
+// explorer leaves them alone. Notifications repeat several times a second,
+// so only a changed value is logged.
+const DI2_SKIP = ['shimano:18fe', 'shimano:18ff'];
+const di2 = { device: null, log: [], started: 0, last: {}, wanted: false, retries: 0 };
 const hex = view => Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), b => b.toString(16).padStart(2, '0')).join(' ');
 const shortUuid = u => (u.endsWith(SHIMANO_BASE) ? `shimano:${u.slice(4, 8)}` : u.endsWith('-0000-1000-8000-00805f9b34fb') ? u.slice(4, 8) : u);
 
@@ -1615,8 +1620,65 @@ function di2Log(line) {
   el.scrollTop = el.scrollHeight;
 }
 
+function di2Notify(id, view) {
+  const value = hex(view);
+  // Messages on one channel are told apart by their first byte.
+  const key = `${id}#${value.slice(0, 2)}`;
+  if (di2.last[key] === value) return;
+  di2.last[key] = value;
+  di2Log(`notify ${id}: ${value}`);
+}
+
+async function di2Attach() {
+  const dev = di2.device;
+  $('di2State').textContent = `Connecting to ${dev.name || 'device'}…`;
+  const server = await dev.gatt.connect();
+  di2.retries = 0;
+  $('di2Box').classList.remove('hidden');
+  $('di2Btn').textContent = 'Disconnect';
+  di2Log(`connected to "${dev.name || '?'}"`);
+  const services = (await server.getPrimaryServices()).filter(s => !DI2_SKIP.includes(shortUuid(s.uuid)));
+  $('di2Services').textContent = `Services: ${services.map(s => shortUuid(s.uuid)).join(', ') || 'none visible'}`;
+  let subscribed = 0;
+  for (const svc of services) {
+    let chars = [];
+    try { chars = await svc.getCharacteristics(); } catch (e) { di2Log(`${shortUuid(svc.uuid)}: ${e.message}`); continue; }
+    for (const c of chars) {
+      const id = `${shortUuid(svc.uuid)}/${shortUuid(c.uuid)}`;
+      const props = Object.entries({ read: c.properties.read, write: c.properties.write, notify: c.properties.notify, indicate: c.properties.indicate })
+        .filter(([, v]) => v).map(([k]) => k).join(',');
+      di2Log(`char ${id} [${props}]`);
+      try {
+        if (c.properties.read) di2Log(`read ${id}: ${hex(await c.readValue())}`);
+        if (c.properties.notify || c.properties.indicate) {
+          c.addEventListener('characteristicvaluechanged', e => di2Notify(id, e.target.value));
+          await c.startNotifications();
+          subscribed++;
+        }
+      } catch (e) { di2Log(`${id}: ${e.message}`); }
+    }
+  }
+  $('di2State').textContent = subscribed
+    ? `Connected. Listening on ${subscribed} channel${subscribed === 1 ? '' : 's'}. Now shift a few times, front and rear.`
+    : 'Connected, but it exposes nothing to listen to. Copy the log anyway; it shows what is there.';
+}
+
+function di2Disconnected() {
+  di2Log('disconnected');
+  di2.last = {};
+  if (di2.wanted && di2.retries < 3) {
+    di2.retries++;
+    $('di2State').textContent = `Lost the Di2, reconnecting (try ${di2.retries} of 3)… Shift once to wake it.`;
+    setTimeout(() => di2Attach().catch(e => { di2Log(`reconnect failed: ${e.message}`); di2Disconnected(); }), 1500);
+    return;
+  }
+  di2.device = null;
+  $('di2Btn').textContent = 'Connect Di2';
+  $('di2State').textContent = 'Disconnected.';
+}
+
 async function connectDi2() {
-  if (di2.device) { di2.device.gatt.disconnect(); return; }
+  if (di2.device) { di2.wanted = false; di2.device.gatt.disconnect(); return; }
   if (!navigator.bluetooth) return ($('di2State').textContent = 'This browser has no Web Bluetooth. Use Chrome or Edge.');
   try {
     $('di2State').textContent = 'Pick your Di2 in the pop-up (often named after the rear derailleur, e.g. RD-R8150).';
@@ -1626,42 +1688,12 @@ async function connectDi2() {
     });
     di2.device = dev;
     di2.log = [];
+    di2.last = {};
     di2.started = Date.now();
-    dev.addEventListener('gattserverdisconnected', () => {
-      di2Log('disconnected');
-      di2.device = null;
-      $('di2Btn').textContent = 'Connect Di2';
-      $('di2State').textContent = 'Disconnected.';
-    });
-    $('di2State').textContent = `Connecting to ${dev.name || 'device'}…`;
-    const server = await dev.gatt.connect();
-    $('di2Box').classList.remove('hidden');
-    $('di2Btn').textContent = 'Disconnect';
-    di2Log(`connected to "${dev.name || '?'}"`);
-    const services = await server.getPrimaryServices();
-    $('di2Services').textContent = `Services: ${services.map(s => shortUuid(s.uuid)).join(', ') || 'none visible'}`;
-    let subscribed = 0;
-    for (const svc of services) {
-      let chars = [];
-      try { chars = await svc.getCharacteristics(); } catch (e) { di2Log(`${shortUuid(svc.uuid)}: ${e.message}`); continue; }
-      for (const c of chars) {
-        const id = `${shortUuid(svc.uuid)}/${shortUuid(c.uuid)}`;
-        const props = Object.entries({ read: c.properties.read, write: c.properties.write, notify: c.properties.notify, indicate: c.properties.indicate })
-          .filter(([, v]) => v).map(([k]) => k).join(',');
-        di2Log(`char ${id} [${props}]`);
-        try {
-          if (c.properties.read) di2Log(`read ${id}: ${hex(await c.readValue())}`);
-          if (c.properties.notify || c.properties.indicate) {
-            c.addEventListener('characteristicvaluechanged', e => di2Log(`notify ${id}: ${hex(e.target.value)}`));
-            await c.startNotifications();
-            subscribed++;
-          }
-        } catch (e) { di2Log(`${id}: ${e.message}`); }
-      }
-    }
-    $('di2State').textContent = subscribed
-      ? `Connected. Listening on ${subscribed} channel${subscribed === 1 ? '' : 's'}. Now shift a few times, front and rear.`
-      : 'Connected, but it exposes nothing to listen to. Copy the log anyway; it shows what is there.';
+    di2.wanted = true;
+    di2.retries = 0;
+    dev.addEventListener('gattserverdisconnected', di2Disconnected);
+    await di2Attach();
   } catch (e) {
     if (e.name !== 'NotFoundError') $('di2State').textContent = `Could not connect: ${e.message}`;
     else $('di2State').textContent = '';
