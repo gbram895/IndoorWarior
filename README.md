@@ -43,6 +43,13 @@ kept in the browser until it is saved or discarded, so a closed tab does not
 lose it. **Save .fit** downloads a standard FIT activity (indoor cycling) to
 upload to Strava or Garmin Connect, which Gradient already syncs from.
 
+When you are signed in to Gradient, **Finish** also uploads the ride to
+Strava through Gradient's existing Strava connection (`POST
+/api/health/strava/upload` on Gradient). The first time, Strava has to grant
+Gradient upload permission; the page shows an **Allow uploads to Strava**
+button for that. Uploads use a fixed external id per ride, so a retry cannot
+create a duplicate.
+
 Keep the page in front while riding: Chrome slows timers in background tabs,
 which would delay step changes.
 

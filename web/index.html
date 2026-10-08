@@ -146,8 +146,14 @@
 
     <div id="savedBox" class="hidden">
       <div id="rideSummary"></div>
-      <div class="row" style="margin-top:8px"><button id="saveFitBtn">Save .fit</button><button id="discardBtn" class="secondary">Discard</button></div>
-      <p class="muted">Upload the .fit to Strava or Garmin Connect and Gradient picks it up from there.</p>
+      <div id="stravaStatus" class="muted" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="stravaBtn">Upload to Strava</button>
+        <a id="stravaAllow" class="hidden" target="_blank" rel="noopener"><button type="button">Allow uploads to Strava</button></a>
+        <button id="saveFitBtn" class="secondary">Save .fit</button>
+        <button id="discardBtn" class="secondary">Discard</button>
+      </div>
+      <p class="muted">When you are signed in to Gradient, a finished ride goes to Strava by itself, and Gradient picks it up from there. Save .fit is a backup.</p>
     </div>
   </section>
 
@@ -656,7 +662,12 @@ async function gradientApi(path, options = {}) {
     renderGradient();
     throw new Error('Your Gradient sign-in expired. Sign in again.');
   }
-  if (!res.ok) throw new Error(body && typeof body.error === 'string' ? body.error : `Gradient answered ${res.status}.`);
+  if (!res.ok) {
+    const err = new Error(body && typeof body.error === 'string' ? body.error : `Gradient answered ${res.status}.`);
+    err.status = res.status;
+    err.reconnect = !!(body && body.reconnect);
+    throw err;
+  }
   return body;
 }
 
@@ -782,7 +793,7 @@ function startRide() {
   const now = Date.now() / 1000;
   Object.assign(ride, {
     status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
-    samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride',
+    samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
   });
   rideMsg('');
   applyStep();
@@ -821,6 +832,7 @@ function finishRide() {
   if (ERG.on) { ERG.setOn(false); renderErg(); }
   saveUnsaved();
   renderRide();
+  uploadToStrava(true);
 }
 
 function recordSample() {
@@ -841,7 +853,7 @@ function recordSample() {
 
 // A copy of the ride survives a closed tab or a crash until it is saved or discarded.
 function saveUnsaved() {
-  if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events });
+  if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null });
 }
 
 function tick() {
@@ -905,13 +917,18 @@ function renderRide() {
     }
   }
 
-  const pending = ride.status === 'finished' ? { name: ride.name, samples: ride.samples, events: ride.events }
-    : !active ? store.get('unsavedRide', null) : null;
+  const pending = active ? null : pendingRide();
   $('savedBox').classList.toggle('hidden', !pending || !pending.samples.length);
   if (pending && pending.samples.length) {
     const sum = summarize(pending.samples);
     const when = new Date(pending.samples[0].t * 1000).toLocaleString();
-    $('rideSummary').textContent = `${ride.status === 'finished' ? 'Ride finished' : 'Unsaved ride'} (${when}): ${fmtTime(sum.seconds)}, average ${sum.avg} W, max ${sum.max} W, ${sum.kj} kJ.`;
+    const label = ride.status === 'finished' ? 'Ride finished' : pending.strava && pending.strava.activityId ? 'Last ride' : 'Unsaved ride';
+    $('rideSummary').textContent = `${label} (${when}): ${fmtTime(sum.seconds)}, average ${sum.avg} W, max ${sum.max} W, ${sum.kj} kJ.`;
+    const onStrava = pending.strava && pending.strava.activityId;
+    $('stravaBtn').classList.toggle('hidden', !!onStrava);
+    if (onStrava && !$('stravaStatus').dataset.busy) {
+      $('stravaStatus').innerHTML = `On Strava: <a href="https://www.strava.com/activities/${Number(pending.strava.activityId)}" target="_blank" rel="noopener" style="color:var(--ok)">open the activity</a>.`;
+    }
   }
 }
 
@@ -1005,6 +1022,59 @@ function buildFit(r) {
   return new Uint8Array(file);
 }
 
+// ---- Strava upload, through Gradient's existing Strava connection.
+function pendingRide() {
+  return ride.status === 'finished' ? ride : store.get('unsavedRide', null);
+}
+
+function stravaMsg(text, cls = '') {
+  $('stravaStatus').textContent = text;
+  $('stravaStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : '';
+}
+
+function fitBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+async function uploadToStrava(auto = false) {
+  const r = pendingRide();
+  if (!r || !r.samples || !r.samples.length || (r.strava && r.strava.activityId)) return;
+  $('stravaAllow').classList.add('hidden');
+  if (!gradient.token) {
+    stravaMsg(auto ? 'Sign in to Gradient above to send rides to Strava automatically.' : 'Sign in to Gradient above first.', auto ? '' : 'bad');
+    return;
+  }
+  stravaMsg('Uploading to Strava…');
+  $('stravaStatus').dataset.busy = '1';
+  $('stravaBtn').disabled = true;
+  try {
+    const res = await gradientApi('/api/health/strava/upload', {
+      method: 'POST',
+      body: JSON.stringify({ fitBase64: fitBase64(buildFit(r)), name: r.name || 'Indoor ride', externalId: `indoorwarior-${r.samples[0].t}` }),
+    });
+    r.strava = { activityId: res.activityId ?? null };
+    if (r !== ride) store.set('unsavedRide', r); else saveUnsaved();
+    delete $('stravaStatus').dataset.busy;
+    if (res.activityId) renderRide();
+    else stravaMsg('Sent to Strava. It is still processing and will show up there shortly.', 'ok');
+  } catch (err) {
+    delete $('stravaStatus').dataset.busy;
+    if (err.reconnect) {
+      stravaMsg('Strava needs to give Gradient permission to upload. Allow it once, then press Upload to Strava.', 'bad');
+      $('stravaAllow').href = `${(gradient.url || GRADIENT_DEFAULT).replace(/\/+$/, '')}/api/health/strava/connect?token=${encodeURIComponent(gradient.token || '')}`;
+      $('stravaAllow').classList.remove('hidden');
+    } else if (err.status === 404) {
+      stravaMsg('Gradient needs its latest update before it can upload to Strava. Use Save .fit for now.', 'bad');
+    } else {
+      stravaMsg(`Strava upload failed: ${err.message} Your ride is still here; try again or use Save .fit.`, 'bad');
+    }
+  } finally {
+    $('stravaBtn').disabled = false;
+  }
+}
+
 function saveFit() {
   const r = ride.status === 'finished' ? { name: ride.name, samples: ride.samples, events: ride.events } : store.get('unsavedRide', null);
   if (!r || !r.samples.length) return;
@@ -1023,6 +1093,7 @@ function saveFit() {
 function discardRide() {
   if (!confirm('Throw this ride away? It cannot be recovered.')) return;
   store.del('unsavedRide');
+  stravaMsg('');
   if (ride.status === 'finished') { ride.status = 'idle'; ride.samples = []; ride.events = []; }
   rideMsg('');
   renderRide();
@@ -1037,6 +1108,7 @@ $('resumeBtn').addEventListener('click', resumeRide);
 $('skipBtn').addEventListener('click', () => { nextStep(); renderRide(); });
 $('finishBtn').addEventListener('click', () => { if (confirm('Finish this ride?')) finishRide(); });
 $('saveFitBtn').addEventListener('click', saveFit);
+$('stravaBtn').addEventListener('click', () => uploadToStrava(false));
 $('discardBtn').addEventListener('click', discardRide);
 document.querySelectorAll('[data-int]').forEach(b => b.addEventListener('click', () => changeIntensity(Number(b.dataset.int))));
 window.addEventListener('beforeunload', e => {
