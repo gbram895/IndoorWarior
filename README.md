@@ -28,6 +28,10 @@ trainer to flat-road simulation (grade 0 %) instead of leaving the last
 target, or sends Reset on trainers without simulation. If another app takes
 control, ERG turns itself off without grabbing control back.
 
+If the trainer's Bluetooth drops, the page reconnects by itself (up to five
+tries) and puts ERG back as it was; during a workout the current step's
+target is sent again. **Disconnect** does not reconnect.
+
 ## Riding today's plan
 
 The Ride panel signs in to Gradient once (only the token is stored, in the
@@ -42,6 +46,8 @@ Every ride is recorded once a second (power, cadence, speed, heart rate) and
 kept in the browser until it is saved or discarded, so a closed tab does not
 lose it. **Save .fit** downloads a standard FIT activity (indoor cycling) to
 upload to Strava or Garmin Connect, which Gradient already syncs from.
+Each workout step is saved as its own lap, so Strava and Gradient show the
+intervals; riding on after the workout ends is one more lap.
 
 When you are signed in to Gradient, **Finish** also uploads the ride to
 Strava through Gradient's existing Strava connection (`POST

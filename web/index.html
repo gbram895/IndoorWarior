@@ -984,73 +984,98 @@ async function connect() {
       optionalServices: [0x180a, 0x180d, 0x180f, 0x1816, TACX_FEC],
     });
     device.addEventListener('gattserverdisconnected', onDisconnected);
-    resetState();
-    setStatus(`Connecting to ${device.name || 'trainer'}…`);
-    const server = await device.gatt.connect();
-
-    const services = await server.getPrimaryServices();
-    for (const service of services) {
-      state.report.services.push(nameOf(service.uuid));
-      let chars = [];
-      try { chars = await service.getCharacteristics(); }
-      catch (e) { state.report.errors.push(`${nameOf(service.uuid)}: ${e.message}`); continue; }
-      for (const c of chars) {
-        state.report.characteristics.push(nameOf(c.uuid));
-        try {
-          if (c.uuid === uuid16(0x2a63) || c.uuid === uuid16(0x2ad2)) {
-            c.addEventListener('characteristicvaluechanged', e => onValue(c.uuid, e.target.value));
-            await c.startNotifications();
-          } else if ([0x2acc, 0x2ad8, 0x2a29, 0x2a24, 0x2a26].map(uuid16).includes(c.uuid)) {
-            onValue(c.uuid, await c.readValue());
-          } else if (c.uuid === uuid16(0x2ad9)) {
-            state.report.controlPoint = true;
-            c.addEventListener('characteristicvaluechanged', e => ERG.indication(e.target.value));
-            await c.startNotifications(); // indications carry the command answers
-            ERG.attach(c);
-          } else if (c.uuid === uuid16(0x2ada)) {
-            // Fitness Machine Status: 0xFF means another app took control.
-            c.addEventListener('characteristicvaluechanged', e => {
-              if (e.target.value.getUint8(0) === 0xff) {
-                const wasOn = ERG.on;
-                ERG.controlLost();
-                renderErg();
-                if (wasOn) ergStatus('Another app took control of the trainer. ERG is off.', 'bad');
-              }
-            });
-            await c.startNotifications();
-          }
-        } catch (e) {
-          state.report.errors.push(`${nameOf(c.uuid)}: ${e.message}`);
-        }
-      }
-    }
-
-    $('trainerName').textContent = device.name || 'Trainer';
-    $('livePanel').classList.remove('hidden');
-    $('reportPanel').classList.remove('hidden');
-    $('ergPanel').classList.remove('hidden');
-    const canErg = state.report.controlPoint && (!state.report.features || state.report.features.powerTarget);
-    $('ergToggle').disabled = !canErg;
-    if (state.report.range) { $('targetRange').min = state.report.range.min; $('targetRange').max = state.report.range.max; }
-    ERG.setTarget(ERG.target);
-    ergStatus(canErg ? 'ERG is off. Switch it on to hold the target power.' : 'This trainer does not accept power targets.', canErg ? '' : 'bad');
-    if (ride.status === 'riding') applyStep();
-    $('connectBtn').classList.add('hidden');
-    $('disconnectBtn').classList.remove('hidden');
-    setStatus(`Connected to ${device.name || 'trainer'}.`);
-    renderReport();
-    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+    trainerManual = false;
+    await setupTrainer();
   } catch (e) {
     if (e.name === 'NotFoundError') setStatus('No trainer picked. Pedal to wake it and try again.');
     else setStatus(`Could not connect: ${e.message}`, true);
   }
 }
 
-function onDisconnected() {
+// Connects to the picked trainer and subscribes to everything; also used to
+// reconnect after a dropout, which needs no new pick.
+async function setupTrainer() {
+  resetState();
+  setStatus(`Connecting to ${device.name || 'trainer'}…`);
+  const server = await device.gatt.connect();
+
+  const services = await server.getPrimaryServices();
+  for (const service of services) {
+    state.report.services.push(nameOf(service.uuid));
+    let chars = [];
+    try { chars = await service.getCharacteristics(); }
+    catch (e) { state.report.errors.push(`${nameOf(service.uuid)}: ${e.message}`); continue; }
+    for (const c of chars) {
+      state.report.characteristics.push(nameOf(c.uuid));
+      try {
+        if (c.uuid === uuid16(0x2a63) || c.uuid === uuid16(0x2ad2)) {
+          c.addEventListener('characteristicvaluechanged', e => onValue(c.uuid, e.target.value));
+          await c.startNotifications();
+        } else if ([0x2acc, 0x2ad8, 0x2a29, 0x2a24, 0x2a26].map(uuid16).includes(c.uuid)) {
+          onValue(c.uuid, await c.readValue());
+        } else if (c.uuid === uuid16(0x2ad9)) {
+          state.report.controlPoint = true;
+          c.addEventListener('characteristicvaluechanged', e => ERG.indication(e.target.value));
+          await c.startNotifications(); // indications carry the command answers
+          ERG.attach(c);
+        } else if (c.uuid === uuid16(0x2ada)) {
+          // Fitness Machine Status: 0xFF means another app took control.
+          c.addEventListener('characteristicvaluechanged', e => {
+            if (e.target.value.getUint8(0) === 0xff) {
+              const wasOn = ERG.on;
+              ERG.controlLost();
+              renderErg();
+              if (wasOn) ergStatus('Another app took control of the trainer. ERG is off.', 'bad');
+            }
+          });
+          await c.startNotifications();
+        }
+      } catch (e) {
+        state.report.errors.push(`${nameOf(c.uuid)}: ${e.message}`);
+      }
+    }
+  }
+
+  $('trainerName').textContent = device.name || 'Trainer';
+  $('livePanel').classList.remove('hidden');
+  $('reportPanel').classList.remove('hidden');
+  $('ergPanel').classList.remove('hidden');
+  const canErg = state.report.controlPoint && (!state.report.features || state.report.features.powerTarget);
+  $('ergToggle').disabled = !canErg;
+  if (state.report.range) { $('targetRange').min = state.report.range.min; $('targetRange').max = state.report.range.max; }
+  ERG.setTarget(ERG.target);
+  ergStatus(canErg ? 'ERG is off. Switch it on to hold the target power.' : 'This trainer does not accept power targets.', canErg ? '' : 'bad');
+  if (ride.status === 'riding') applyStep();
+  $('connectBtn').classList.add('hidden');
+  $('disconnectBtn').classList.remove('hidden');
+  setStatus(`Connected to ${device.name || 'trainer'}.`);
+  renderReport();
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+}
+
+// A dropout mid-ride reconnects on its own, up to five times, and puts ERG
+// back as it was; Disconnect does not.
+let trainerManual = false;
+async function onDisconnected() {
+  const which = device, ergWasOn = ERG.on;
   ERG.detach();
   renderErg();
+  if (!trainerManual && which) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      ergStatus(ergWasOn ? `Trainer connection lost. ERG paused while reconnecting (${attempt} of 5)…` : `Trainer connection lost. Reconnecting (${attempt} of 5)…`, 'bad');
+      setStatus(`Trainer connection lost. Reconnecting (${attempt} of 5)…`, true);
+      await new Promise(r => setTimeout(r, 1500 * attempt));
+      if (device !== which || trainerManual) return;
+      try {
+        await setupTrainer();
+        // A plan step puts ERG back itself (setupTrainer calls applyStep).
+        if (ergWasOn && !ERG.on && !$('ergToggle').disabled) { ERG.setOn(true); renderErg(); }
+        return;
+      } catch { /* next attempt */ }
+    }
+  }
   ergStatus('Trainer disconnected. ERG is off.');
-  setStatus('Disconnected.');
+  setStatus(trainerManual ? 'Disconnected.' : 'Trainer connection lost. Pedal to wake it and press Connect trainer.', !trainerManual);
   $('connectBtn').classList.remove('hidden');
   $('disconnectBtn').classList.add('hidden');
   wakeLock?.release().catch(() => {});
@@ -1647,6 +1672,7 @@ function recordSample() {
     hr: isFresh(ext.hr.at) ? ext.hr.value : trainerFresh ? l.hr : null,
     ...routeSample(), // position, elevation, distance and road speed on a route
     tg: ERG.on ? ERG.target : null, // ERG target, for the live chart
+    st: workout && !ride.workoutDone ? ride.step : null, // workout step, saved as a lap
   });
   if (ride.samples.length % 30 === 0) saveUnsaved();
 }
@@ -1813,11 +1839,24 @@ function buildFit(r) {
 
   define(3, 19, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [19, T.uint16], [20, T.uint16],
     [0, T.enum], [1, T.enum], [25, T.enum], [39, T.enum]]); // lap
-  write(3, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, 9, 1, 2, subSport]);
+  // One lap per workout step, so Strava and Gradient see the intervals; a ride
+  // without a workout (or the riding after it ends) is one lap.
+  const laps = [];
+  samples.forEach((s, i) => {
+    const last = laps[laps.length - 1];
+    if (last && last.st === (s.st ?? null)) last.to = i;
+    else laps.push({ st: s.st ?? null, from: i, to: i });
+  });
+  for (const lap of laps) {
+    const ls = samples.slice(lap.from, lap.to + 1), lsum = summarize(ls);
+    const t0 = ls[0].t, t1 = ls[ls.length - 1].t;
+    const d = distAt[lap.to] - (lap.from ? distAt[lap.from - 1] : 0);
+    write(3, [ft(t1), ft(t0), (t1 - t0 + 1) * 1000, ls.length * 1000, d * 100, lsum.avg, lsum.max, 9, 1, 2, subSport]);
+  }
 
   define(4, 18, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [20, T.uint16], [21, T.uint16],
     [18, T.uint8], [16, T.uint8], [17, T.uint8], [5, T.enum], [6, T.enum], [0, T.enum], [1, T.enum], [25, T.uint16], [26, T.uint16]]); // session
-  write(4, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, avgCad, avgHr, maxHr, 2, subSport, 8, 1, 0, 1]);
+  write(4, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, avgCad, avgHr, maxHr, 2, subSport, 8, 1, 0, laps.length]);
 
   const offset = -new Date(end * 1000).getTimezoneOffset() * 60;
   define(5, 34, [[253, T.uint32], [0, T.uint32], [1, T.uint16], [2, T.enum], [3, T.enum], [4, T.enum], [5, T.uint32]]); // activity
@@ -2366,7 +2405,7 @@ $('di2Copy').addEventListener('click', async () => {
 
 $('hrBtn').addEventListener('click', () => toggleSensor('hr'));
 $('pmBtn').addEventListener('click', () => toggleSensor('pm'));
-$('disconnectBtn').addEventListener('click', () => device?.gatt?.disconnect());
+$('disconnectBtn').addEventListener('click', () => { trainerManual = true; device?.gatt?.disconnect(); });
 $('copyBtn').addEventListener('click', async () => {
   const text = reportText();
   try { await navigator.clipboard.writeText(text); $('copyBtn').textContent = 'Copied'; }
