@@ -158,13 +158,24 @@ E-TUBE first; Di2 accepts one app at a time.
 
 ## Riding with another tab in front
 
-Browsers slow a background tab's timers to once a second, and after about
-five minutes hidden to once a minute. The ride clock (workout steps and their
-ERG targets, route gradient, power match, recording) therefore also beats from
-a small worker, whose timers are not slowed, so switching tabs mid-ride is
-fine. The step countdown still beeps from a background tab. The screen lock is
-dropped by the browser while the tab is hidden and taken again when you come
-back, so check that Windows is not set to sleep within the length of a ride.
+Browsers treat a background tab as low priority: its timers slow to once a
+second (once a minute after about five minutes), and Bluetooth readings can
+reach it in bunches a few seconds apart. Two things keep a ride live:
+
+- The ride clock (workout steps and their ERG targets, route gradient, power
+  match, recording) also beats from a small worker, whose timers are not
+  slowed.
+- **Mini window**: a small always-on-top window (Chrome or Edge 116+) with
+  power, heart rate, cadence, the step target and time left. It opens when
+  you press Start ride (untick "Open a mini window when I start" to stop
+  that) or from the Mini window button mid-ride. While it is open the page
+  counts as visible, so it is not treated as a background tab.
+
+If heart rate still goes missing, the line under the live chart says why
+(no skin contact, or nothing sent) and the longest wait between strap and
+trainer messages with the tab in front and behind. The screen lock is dropped
+while the tab is hidden and taken again when you come back, so check that
+Windows is not set to sleep within the length of a ride.
 
 ## Running it
 

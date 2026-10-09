@@ -320,7 +320,9 @@
       <button id="resumeBtn" class="hidden">Resume</button>
       <button id="skipBtn" class="secondary hidden">Skip step</button>
       <button id="finishBtn" class="secondary hidden">Finish</button>
+      <button id="pipBtn" class="secondary hidden">Mini window</button>
     </div>
+    <label class="muted hidden" id="pipRow" style="display:block;margin-top:6px"><input type="checkbox" id="pipToggle"> Open a mini window when I start, to keep the ride live over a show in another tab</label>
     <div id="rideMsg"></div>
 
     <div id="savedBox" class="hidden">
@@ -955,11 +957,16 @@ const decoder = new TextDecoder();
 // Bluetooth connection next to the trainer's.
 const FRESH_MS = 3000;
 const isFresh = at => !!at && Date.now() - at < FRESH_MS;
-// Heart rate changes slowly, and with the tab in the background the browser
-// can hand over a strap's readings a few seconds apart, so the last reading
-// counts for longer before heart rate is treated as missing.
-const HR_FRESH_MS = 8000;
-const hrFresh = () => !!ext.hr.at && Date.now() - ext.hr.at < HR_FRESH_MS;
+const hrFresh = () => isFresh(ext.hr.at);
+// Longest wait between two trainer messages during a ride, tab in front and behind.
+const trainerWait = { at: 0, front: 0, back: 0 };
+function noteTrainerMsg(now) {
+  if (trainerWait.at && ride.status === 'riding') {
+    const k = document.hidden ? 'back' : 'front';
+    trainerWait[k] = Math.max(trainerWait[k], now - trainerWait.at);
+  }
+  trainerWait.at = now;
+}
 const ext = {
   hr: { device: null, manual: false, value: null, at: 0, noContactAt: 0, msgAt: 0, waitFront: 0, waitBack: 0 },
   pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null },
@@ -1105,6 +1112,7 @@ function onValue(uuid, view) {
       if (!d) return;
       state.lastPacket = Date.now();
       state.live.at = Date.now();
+      noteTrainerMsg(state.live.at);
       if (d.power !== null) {
         state.ftmsWatts = d.power;
         trainerPower(d.power);
@@ -2399,6 +2407,7 @@ async function startRide() {
     rpe: null, rpeNotes: '', rpeSent: null, hrGaps: { contact: 0, silent: 0, silentHidden: 0 },
   });
   Object.assign(ext.hr, { waitFront: 0, waitBack: 0 });
+  Object.assign(trainerWait, { front: 0, back: 0 });
   renderHrGaps();
   countdown.unlock(); // sound needs a click to be allowed
   rideMsg('');
@@ -2483,7 +2492,8 @@ function renderHrGaps() {
   if (g.contact) parts.push(`${g.contact} s the strap had no skin contact (wet its pads, or tighten it)`);
   if (g.silent) parts.push(`${g.silent} s the strap sent nothing` + (g.silentHidden ? `, ${g.silentHidden} s of it with this tab in the background` : ', all with this tab in front'));
   const w = ms => `${(ms / 1000).toFixed(1)} s`;
-  el.textContent = `Heart rate missing this ride: ${parts.join('; ')}. Longest wait between strap messages: ${w(ext.hr.waitFront)} in front, ${w(ext.hr.waitBack)} in the background.`;
+  el.textContent = `Heart rate missing this ride: ${parts.join('; ')}. Longest wait between strap messages: ${w(ext.hr.waitFront)} in front, ${w(ext.hr.waitBack)} in the background` +
+    (trainerWait.at ? `; between trainer messages: ${w(trainerWait.front)} in front, ${w(trainerWait.back)} in the background.` : '.');
   el.classList.remove('hidden');
 }
 
@@ -2492,6 +2502,49 @@ function saveUnsaved() {
   if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null,
     rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null });
 }
+
+// ---- Mini window: a small always-on-top window (Document Picture-in-Picture,
+// Chrome and Edge 116+) with power, heart rate, cadence and the step. Besides
+// being handy over a show, a page with a mini window open stays a visible page
+// to the browser, so it is not treated as a background tab while you ride.
+const pip = (() => {
+  const supported = 'documentPictureInPicture' in window;
+  let win = null;
+  const CSS = `body{margin:0;background:#0f1115;color:#f2f4f8;font:14px/1.3 "Segoe UI",system-ui,sans-serif;padding:10px 12px;user-select:none}
+    .big{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}.big small{font-size:14px;color:#8b93a7;margin-left:4px}
+    .row{display:flex;gap:14px;margin-top:8px}.row div{display:flex;flex-direction:column}.row b{font-size:18px;font-variant-numeric:tabular-nums}
+    .row i{font-style:normal;font-size:11px;color:#8b93a7}.foot{display:flex;justify-content:space-between;margin-top:8px;color:#8b93a7;font-variant-numeric:tabular-nums}`;
+  async function open() {
+    if (!supported || win) return;
+    try { win = await documentPictureInPicture.requestWindow({ width: 320, height: 160 }); }
+    catch (e) { rideMsg(`Could not open the mini window: ${e.message}`, 'bad'); return; }
+    const d = win.document;
+    d.title = 'IndoorWarior';
+    const st = d.createElement('style'); st.textContent = CSS; d.head.append(st);
+    d.body.innerHTML = `<div class="big"><span id="pW">--</span><small>W</small></div>
+      <div class="row"><div><b id="pHr">--</b><i>Heart rate</i></div><div><b id="pCad">--</b><i>Cadence</i></div><div><b id="pT">--</b><i id="pStep">Target</i></div></div>
+      <div class="foot"><span id="pLeft"></span><span id="pTime"></span></div>`;
+    win.addEventListener('pagehide', () => { win = null; render(); });
+    update(); render();
+  }
+  function update() {
+    if (!win) return;
+    const d = win.document, t = id => $(id).textContent, set = (id, v) => { const el = d.getElementById(id); if (el.textContent !== v) el.textContent = v; };
+    set('pW', t('watts')); set('pHr', t('hr')); set('pCad', t('cadence'));
+    set('pT', workout ? t('stepTarget') : '--'); set('pStep', workout ? t('stepLabel') : 'Target');
+    set('pLeft', workout ? t('stepLeft').trim() : ''); set('pTime', t('rideTimer'));
+  }
+  function render() {
+    $('pipBtn').classList.toggle('hidden', !supported || !!win || !(ride.status === 'riding' || ride.status === 'paused'));
+    $('pipRow').classList.toggle('hidden', !supported);
+  }
+  let pref = true;
+  try { pref = localStorage.getItem('pip') !== 'off'; } catch {}
+  $('pipToggle').checked = pref;
+  $('pipToggle').addEventListener('change', e => { try { localStorage.setItem('pip', e.target.checked ? 'on' : 'off'); } catch {} });
+  $('pipBtn').addEventListener('click', open);
+  return { open, update, render, get isOpen() { return !!win; }, get wanted() { return supported && $('pipToggle').checked; } };
+})();
 
 function tick() {
   const t = performance.now();
@@ -2508,9 +2561,10 @@ function tick() {
       ride.stepElapsed = ride.workoutDone ? 0 : over;
     }
   }
-  // Nothing to look at while hidden; only the step countdown still beeps.
-  if (document.hidden) countdown.update();
+  // Nothing to look at while hidden, unless the mini window is open; the step countdown still beeps.
+  if (document.hidden && !pip.isOpen) countdown.update();
   else { renderRide(); renderRoute(); }
+  pip.update();
 }
 
 function rideSeconds() { return ride.samples.length; }
@@ -2534,6 +2588,7 @@ function renderRide() {
   $('pauseBtn').classList.toggle('hidden', ride.status !== 'riding');
   $('resumeBtn').classList.toggle('hidden', ride.status !== 'paused');
   $('finishBtn').classList.toggle('hidden', !active);
+  pip.render();
   $('skipBtn').classList.toggle('hidden', !(active && workout && !ride.workoutDone));
   $('intensity').textContent = `${Math.round(intensity * 100)}%`;
 
@@ -2917,7 +2972,7 @@ $('libChips').addEventListener('click', e => {
 });
 $('libList').addEventListener('click', e => { const b = e.target.closest('.lib-item'); if (b) pickLibrary(Number(b.dataset.i)); });
 $('signOutBtn').addEventListener('click', () => { gradient.token = null; store.set('gradient', gradient); renderGradient(); });
-$('startBtn').addEventListener('click', startRide);
+$('startBtn').addEventListener('click', () => { if (pip.wanted) pip.open(); startRide(); });
 $('pauseBtn').addEventListener('click', pauseRide);
 $('resumeBtn').addEventListener('click', resumeRide);
 $('skipBtn').addEventListener('click', () => { nextStep(); renderRide(); });
