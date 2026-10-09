@@ -129,6 +129,9 @@
   .bnote { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .btoast { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 12px; margin: 8px 0; border-radius: 8px; background: #232836; font-size: 14px; transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1); }
   @starting-style { .btoast { opacity: 0; transform: translateY(4px); } }
+  .btoast.out { opacity: 0; transform: translateY(4px); transition-duration: 150ms; }
+  .my-item.just { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1), background-color 1200ms ease; }
+  @starting-style { .my-item.just { opacity: 0; transform: translateY(4px); background-color: rgba(255, 122, 26, 0.22); } }
   #bChart .sel { stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
   .btip { position: absolute; top: 6px; transform: translateX(-50%); background: #0b0d11; border: 1px solid #2f3542; border-radius: 6px; padding: 4px 8px; font-size: 13px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
   .bhelp { font-size: 12px; margin-top: 4px; }
@@ -138,7 +141,7 @@
   .bpresets button { padding: 5px 10px; font-weight: 500; font-size: 13px; background: #232836; color: var(--text); border-left: 4px solid var(--c); }
   .builder button { transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
   .builder button:active:not(:disabled) { transform: scale(0.97); }
-  @media (prefers-reduced-motion: reduce) { .bblock.new { transition: opacity 180ms ease; } @starting-style { .bblock.new { transform: none; } } .builder button:active { transform: none; } @starting-style { .btoast { transform: none; } } }
+  @media (prefers-reduced-motion: reduce) { .bblock.new { transition: opacity 180ms ease; } @starting-style { .bblock.new { transform: none; } } .builder button:active { transform: none; } @starting-style { .btoast { transform: none; } } .btoast.out { transform: none; } @starting-style { .my-item.just { transform: none; } } }
   .my-item .acts { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
   .lib-item .n { font-weight: 600; }
   .lib-item .m { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
@@ -1625,7 +1628,7 @@ function pickLibrary(i) {
 // right edge for length; the rows below show the same blocks as numbers.
 const builder = (() => {
   const KEY = 'myWorkouts';
-  let list = [], edit = null, sel = -1, history = [], fresh = -1, currentFtp = null;
+  let list = [], edit = null, sel = -1, history = [], fresh = -1, currentFtp = null, justSaved = null;
   try { list = JSON.parse(localStorage.getItem(KEY) || '[]'); if (!Array.isArray(list)) list = []; } catch { list = []; }
   const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {} };
   const localFtp = () => { try { return Number(localStorage.getItem('ftp')) || 200; } catch { return 200; } };
@@ -1699,12 +1702,20 @@ const builder = (() => {
   function readDraft() { try { const d = JSON.parse(localStorage.getItem(DRAFT) || 'null'); return d && Array.isArray(d.blocks) ? d : null; } catch { return null; } }
   function dropDraft() { try { localStorage.removeItem(DRAFT); } catch {} }
   let toastTimer = null;
+  // Leaves the way it came in: fades back down.
+  function hideToast() {
+    clearTimeout(toastTimer);
+    const el = $('bToast').firstElementChild;
+    if (!el) return;
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 150);
+  }
   function toast(text, undoFn) {
     const t = $('bToast');
     clearTimeout(toastTimer);
-    t.innerHTML = `<div class="btoast"><span>${esc(text)}</span><button class="link" id="bToastUndo">Undo</button></div>`;
-    $('bToastUndo').addEventListener('click', () => { clearTimeout(toastTimer); t.innerHTML = ''; undoFn(); });
-    toastTimer = setTimeout(() => { t.innerHTML = ''; }, 8000);
+    t.innerHTML = `<div class="btoast"><span>${esc(text)}</span>${undoFn ? '<button class="link" id="bToastUndo">Undo</button>' : ''}</div>`;
+    if (undoFn) $('bToastUndo').addEventListener('click', () => { hideToast(); undoFn(); });
+    toastTimer = setTimeout(hideToast, undoFn ? 8000 : 4000);
   }
 
   // ---- Saved list.
@@ -1713,10 +1724,11 @@ const builder = (() => {
     const banner = d ? `<div class="btoast"><span>Unsaved workout “${esc(d.name.trim() || 'Untitled')}”</span><span><button class="sm" data-draft="resume">Resume</button> <button class="link" data-draft="discard">Discard</button></span></div>` : '';
     $('myList').innerHTML = banner + (list.length ? list.map((w, i) => {
       const segs = segments(w.blocks);
-      return `<div class="lib-item my-item"><span class="n">${esc(w.name)}</span>${miniProfile(segs)}
+      return `<div class="lib-item my-item${w.id === justSaved ? ' just' : ''}"><span class="n">${esc(w.name)}</span>${miniProfile(segs)}
         <span class="m">${fmtTime(total(segs))} · about ${stress(segs)} TSS</span>
         <span class="acts"><button class="sm" data-my-load="${i}">Load</button><button class="secondary sm" data-my-edit="${i}">Edit</button><button class="link" data-my-del="${i}">Delete</button></span></div>`;
     }).join('') : '<div class="muted" style="padding:8px 0">No workouts of your own yet. Press New workout to make one.</div>');
+    justSaved = null;
   }
 
   // ---- Rows.
@@ -1775,6 +1787,43 @@ const builder = (() => {
   const W = 1000, H = 200, PAD = 16;
   let geo = null; // { tot, top, bars: [{x, w, s}] }
   let over = null; // power dragged past a limit: { i, pk, v } in %, eased back to 0 on release
+
+  // ---- Motion: short eases that bridge what would otherwise jump. Each starts
+  // from what is on screen, so a new change mid-ease carries on from there.
+  // None of them run under reduced motion.
+  function cubicBezier(x1, y1, x2, y2) {
+    const f = (a, b, t) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3;
+    return x => { let lo = 0, hi = 1; for (let n = 0; n < 20; n++) { const m = (lo + hi) / 2; if (f(x1, x2, m) < x) lo = m; else hi = m; } return f(y1, y2, (lo + hi) / 2); };
+  }
+  const EASE_OUT = cubicBezier(0.23, 1, 0.32, 1);
+  const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const slides = new Map(); // block -> { from: x offset in the 1000-wide box, t0, ms }, eased to 0
+  let rescale = null;       // { from: { tot, top }, t0, ms }: the chart's scale blending into the new one
+  let raf = 0;
+  const progress = a => EASE_OUT(Math.min(1, (performance.now() - a.t0) / a.ms));
+  function slideOf(b) {
+    const a = slides.get(b);
+    if (!a) return 0;
+    const p = progress(a);
+    if (p >= 1) { slides.delete(b); return 0; }
+    return a.from * (1 - p);
+  }
+  function slide(b, from, ms) {
+    if (reduceMotion() || Math.abs(from) < 0.5) return;
+    slides.set(b, { from: from + slideOf(b), t0: performance.now(), ms });
+    kick();
+  }
+  function kick() {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      if (!edit) { slides.clear(); rescale = over = null; return; } // the editor closed mid-ease
+      renderChart(drag ? drag.fixed : undefined);
+      // Prune by time, not by drawing: undo swaps in new block objects, so an old key may never be drawn again.
+      for (const [k, v] of slides) if (progress(v) >= 1) slides.delete(k);
+      if (slides.size || rescale || (over && over.t0)) kick();
+    });
+  }
   function yOf(pct) { return H - (pct / geo.top) * (H - PAD); }
   // Where each block starts and how long it is, in seconds.
   function spans(blocks) {
@@ -1785,8 +1834,18 @@ const builder = (() => {
   // During a drag the scale stays fixed, so the block stays under the pointer.
   function renderChart(fixed) {
     const svg = $('bChart'), st = steps(edit.blocks);
-    const tot = fixed ? fixed.tot : Math.max(total(st.map(s => ({ durationSec: s.sec }))), 60);
-    const top = fixed ? fixed.top : Math.max(150, ...st.map(s => (s.pct ?? 0) + 15));
+    let tot = fixed ? fixed.tot : Math.max(total(st.map(s => ({ durationSec: s.sec }))), 60);
+    let top = fixed ? fixed.top : Math.max(150, ...st.map(s => (s.pct ?? 0) + 15));
+    if (!fixed && rescale) {
+      const p = progress(rescale);
+      if (p >= 1) rescale = null;
+      else { tot = rescale.from.tot + (tot - rescale.from.tot) * p; top = rescale.from.top + (top - rescale.from.top) * p; }
+    }
+    let ov = 0;
+    if (over) {
+      if (!over.t0) ov = over.v;
+      else { const p = progress(over); ov = over.from * (1 - p); if (p >= 1) over = null; }
+    }
     geo = { tot, top, bars: [] };
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     svg.setAttribute('preserveAspectRatio', 'none');
@@ -1800,10 +1859,11 @@ const builder = (() => {
     }
     const lift = drag && drag.mode === 'move' ? drag : null;
     st.forEach((s, k) => {
-      const w = (s.sec / tot) * W, extra = over && over.i === s.i && over.pk === s.pk ? over.v : 0;
+      const w = (s.sec / tot) * W, extra = over && over.i === s.i && over.pk === s.pk ? ov : 0;
       const y = clamp(yOf((s.pct ?? 40) + extra), 0, H - 2), lifted = lift && s.i === lift.bi;
+      const dx = (lifted ? lift.dx : 0) + slideOf(edit.blocks[s.i]);
       geo.bars.push({ x, w, s });
-      out += `<rect class="bar${s.i === sel ? ' sel' : ''}${lifted ? ' lift' : ''}" data-k="${k}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${Math.max(w - 0.6, 0.6).toFixed(2)}" height="${(H - y).toFixed(2)}" fill="${zoneColor(s.pct == null ? null : s.pct / 100)}"${s.pct == null ? ' fill-opacity="0.6"' : ''}${lifted ? ` transform="translate(${lift.dx.toFixed(2)} 0)"` : ''}/>`;
+      out += `<rect class="bar${s.i === sel ? ' sel' : ''}${lifted ? ' lift' : ''}" data-k="${k}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${Math.max(w - 0.6, 0.6).toFixed(2)}" height="${(H - y).toFixed(2)}" fill="${zoneColor(s.pct == null ? null : s.pct / 100)}"${s.pct == null ? ' fill-opacity="0.6"' : ''}${dx ? ` transform="translate(${dx.toFixed(2)} 0)"` : ''}/>`;
       x += w;
     });
     out += `<line x1="0" x2="${W}" y1="${yOf(100)}" y2="${yOf(100)}" stroke="#8b93a7" stroke-dasharray="4 4" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
@@ -1843,7 +1903,6 @@ const builder = (() => {
   const durStep = sec => (sec < 300 ? 15 : sec < 1200 ? 30 : 60);
   // Past a limit the bar follows less and less, like iOS rubber-banding.
   const rubber = (x, d = 60, c = 0.55) => (x * d * c) / (d + c * x);
-  const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function hit(clientX, r) {
     const xs = ((clientX - r.left) / r.width) * W;
     return geo.bars.findIndex(b => xs >= b.x && xs < b.x + b.w);
@@ -1854,6 +1913,7 @@ const builder = (() => {
     if (k < 0) return;
     const bar = geo.bars[k];
     remember();
+    rescale = null; // the scale on screen now is the one this drag keeps
     chart.setPointerCapture(e.pointerId);
     drag = { id: e.pointerId, mode: null, bar, r, fixed: { tot: geo.tot, top: geo.top }, x0: e.clientX, y0: e.clientY, lx: e.clientX, sec0: bar.s.sec, pct0: bar.s.pct ?? 40, bi: bar.s.i, pk: bar.s.pk, sk: bar.s.sk };
     drag.hold = setTimeout(liftBlock, HOLD_MS);
@@ -1873,6 +1933,7 @@ const builder = (() => {
   function moveBlock(clientX) {
     const b = edit.blocks;
     let i = drag.bi, sp = spans(b);
+    const before = new Map(b.map((x, j) => [x, sp[j].start]));
     const len = sp[i].len, c = clamp(pointerSec(clientX) - drag.grab + len / 2, len / 2, drag.fixed.tot - len / 2);
     // Swap with a neighbour once the lifted block's centre passes the neighbour's middle.
     for (;;) {
@@ -1881,7 +1942,12 @@ const builder = (() => {
       else break;
       sp = spans(b);
     }
-    if (i !== drag.bi) { drag.bi = sel = i; renderRows(); }
+    if (i !== drag.bi) {
+      drag.bi = sel = i;
+      renderRows();
+      // The blocks it passed slide over from where they were, instead of jumping.
+      b.forEach((x, j) => { if (j !== i) slide(x, ((before.get(x) - sp[j].start) / drag.fixed.tot) * W, 150); });
+    }
     drag.dx = ((c - (sp[i].start + sp[i].len / 2)) / drag.fixed.tot) * W;
   }
   function onMove(e) {
@@ -1924,30 +1990,23 @@ const builder = (() => {
     syncRow(drag.bi);
     tip(geo.bars.findIndex(x => x.s.i === drag.bi && x.s.pk === drag.pk), e.clientX);
   }
-  // Eases an overshoot back to the limit, from wherever it was let go.
-  function settle() {
-    if (!over || reduceMotion()) { over = null; renderChart(); return; }
-    const from = over.v, t0 = performance.now();
-    const frame = now => {
-      if (!over || drag) return;
-      const p = Math.min(1, (now - t0) / 240);
-      over.v = from * (1 - p) ** 3;
-      if (p >= 1) over = null;
-      renderChart();
-      if (over) requestAnimationFrame(frame);
-    };
-    requestAnimationFrame(frame);
-  }
   function onUp(e) {
     if (!drag || (e && e.pointerId != null && e.pointerId !== drag.id)) return;
     clearTimeout(drag.hold);
-    const moved = drag.mode === 'move';
+    const d = drag, moved = d.mode === 'move';
     drag = null;
+    // A moved block eases into its slot from where it was let go.
+    if (moved) slide(edit.blocks[d.bi], d.dx, 200);
+    // An overshoot past a power limit eases back.
+    if (over) { if (reduceMotion()) over = null; else Object.assign(over, { from: over.v, t0: performance.now(), ms: 240 }); }
+    // After a length or power drag the chart blends into its new scale instead of jumping.
+    if (!moved && !reduceMotion()) rescale = { from: d.fixed, t0: performance.now(), ms: 180 };
     $('bChart').style.cursor = '';
     if (e && e.pointerType !== 'mouse') $('bTip').classList.add('hidden');
     if (JSON.stringify(edit.blocks) === JSON.stringify(history[history.length - 1])) { history.pop(); $('bUndo').disabled = !history.length; } // a tap, not a change
     if (moved) renderRows();
-    if (over) settle(); else renderChart();
+    renderChart();
+    kick();
   }
 
   function msg(text, cls = '') { $('bMsg').textContent = text; $('bMsg').className = cls; }
@@ -1978,6 +2037,7 @@ const builder = (() => {
     if (at >= 0) list[at] = w; else list.push(w);
     persist();
     edit = null; history = [];
+    justSaved = w.id;
     dropDraft();
     renderEditor(); renderList();
     return w;
@@ -2086,7 +2146,8 @@ const builder = (() => {
     const v = Math.round(Number($('bFtp').value));
     if (v >= 50 && v <= 600) { try { localStorage.setItem('ftp', String(v)); } catch {} if (!gradient.token) currentFtp = v; renderRows(); renderChart(); }
   });
-  $('bSave').addEventListener('click', () => { if (save()) msg('Saved.', 'ok'); });
+  // The editor closes on save, so the confirmation lives under the list.
+  $('bSave').addEventListener('click', () => { const w = save(); if (w) toast(`Saved “${w.name}”.`); });
   $('bRide').addEventListener('click', () => { const w = save(); if (w) load(w); });
   $('bCancel').addEventListener('click', () => {
     const d = readDraft();
