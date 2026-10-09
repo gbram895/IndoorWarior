@@ -1731,6 +1731,7 @@ function renderRide() {
     $('stravaBtn').classList.toggle('hidden', !!onStrava);
     if (onStrava && !$('stravaStatus').dataset.busy) {
       $('stravaStatus').innerHTML = `On Strava: <a href="https://www.strava.com/activities/${Number(pending.strava.activityId)}" target="_blank" rel="noopener" style="color:var(--ok)">open the activity</a>.`;
+      if (pending.strava.map) $('stravaStatus').append(' ' + pending.strava.map);
     }
   }
 }
@@ -1870,8 +1871,12 @@ async function uploadToStrava(auto = false) {
     });
     r.strava = { activityId: res.activityId ?? null };
     if (r !== ride) store.set('unsavedRide', r); else saveUnsaved();
+    if (r.samples.some(x => x.lat != null) && (res.activityId || res.uploadId)) {
+      stravaMsg('Sent to Strava. Asking Strava to show the map and elevation…');
+      await showRouteMap(r, res);
+    }
     delete $('stravaStatus').dataset.busy;
-    if (res.activityId) renderRide();
+    if (r.strava.activityId) renderRide();
     else stravaMsg('Sent to Strava. It is still processing and will show up there shortly.', 'ok');
   } catch (err) {
     delete $('stravaStatus').dataset.busy;
@@ -1887,6 +1892,27 @@ async function uploadToStrava(auto = false) {
   } finally {
     $('stravaBtn').disabled = false;
   }
+}
+
+// Strava marks route rides as trainer rides and hides their map; Gradient
+// clears that and reports what Strava answered, which is shown under the ride.
+async function showRouteMap(r, res) {
+  let body = { activityId: res.activityId || undefined, uploadId: res.uploadId || undefined };
+  for (let i = 0; i < 6; i++) {
+    try {
+      const out = await gradientApi('/api/health/strava/route-map', { method: 'POST', body: JSON.stringify(body) });
+      if (out.pending) continue;
+      r.strava.activityId = out.activityId;
+      r.strava.map = out.trainer === false ? 'Map and elevation are showing on Strava.'
+        : out.error ? `Strava would not show the map: ${out.error}`
+        : 'Strava kept this ride marked as a trainer ride, so it still hides the map.';
+      break;
+    } catch (err) {
+      r.strava.map = err.status === 404 ? 'Gradient needs its latest update before it can show the map on Strava.' : `Could not ask Strava to show the map: ${err.message}`;
+      break;
+    }
+  }
+  if (r !== ride) store.set('unsavedRide', r); else saveUnsaved();
 }
 
 function saveFit() {
