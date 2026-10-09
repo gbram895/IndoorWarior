@@ -143,10 +143,22 @@ elevation as a virtual ride, so Strava shows the map.
 
 With a route loaded, the Route panel shows it in 3D by default (switch with
 **3D / Map**; the choice is remembered). The road follows the GPX's real
-shape and climbs; the land beside it (hills, trees, a sign every kilometre) is
-made up from a fixed seed, so a route always looks the same. A rider pedals at
-your cadence and the camera follows behind. **Full screen** fills the screen
-with the view, power, speed, gradient and distance on top.
+shape and climbs. The land around it is made up from a fixed seed, so a route
+always looks the same: it sits at the road's average height over 1.2 km rather
+than copying the road, so a climb starts in a cutting and ends on a shoulder,
+and on a climb the land rises on one side and falls away on the other.
+Mountains stand on a level horizon, there is a sky, textured asphalt and
+grass, and the sun casts shadows near the rider.
+
+Heights are drawn 1.6x steeper than they are, because a real 8% looks flat
+from a chase camera; gradient, speed and the trainer use the real figures.
+
+The rider and bike are built in code. The legs follow the pedals at your
+cadence (two-bone IK from the hip to the pedal), the arms reach the hoods,
+and on a real gradient above 6% the rider gets out of the saddle and rocks
+the bike. **Camera** switches between behind, close behind and the roadside;
+**Full screen** fills the screen with the view, power, speed, gradient and
+distance on top.
 
 It uses three.js r149 (`web/vendor/three.min.js`, MIT, loaded only when the 3D
 view is first shown) and `web/world3d.js`. Both are classic scripts so the
