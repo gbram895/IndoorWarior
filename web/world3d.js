@@ -38,9 +38,12 @@
     const lat0 = res[0].lat, lon0 = res[0].lon, k = Math.cos((lat0 * Math.PI) / 180);
     const raw = res.map(p => [(p.lon - lon0) * 111320 * k, -(p.lat - lat0) * 110540]);
     // GPS wobble makes the road zigzag; average a few points either side.
+    // The window stays centred, so the ends don't get pulled inwards (that
+    // left a 30 m gap at the line of a loop); a loop averages round the line.
     const xz = raw.map((_, i) => {
+      const w = route.loop ? 3 : Math.min(3, i, n - 1 - i);
       let x = 0, z = 0, c = 0;
-      for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++) { x += raw[j][0]; z += raw[j][1]; c++; }
+      for (let j = i - w; j <= i + w; j++) { const q = raw[route.loop ? (((j % (n - 1)) + n - 1) % (n - 1)) : j]; x += q[0]; z += q[1]; c++; } // a loop's last point is its first
       return [x / c, z / c];
     });
     // Heights are drawn 1.6x steeper than they are. From a chase camera a true
@@ -49,7 +52,8 @@
     const y = res.map(p => (p.ele - res[0].ele) * LIFT);
     // Right-hand side of the direction of travel, flat.
     const side = xz.map((_, i) => {
-      const a = xz[Math.max(0, i - 1)], b = xz[Math.min(n - 1, i + 1)];
+      // A loop's ends share one direction, so the road closes without a crack at the line.
+      const a = xz[route.loop && i === 0 ? n - 2 : Math.max(0, i - 1)], b = xz[route.loop && i === n - 1 ? 1 : Math.min(n - 1, i + 1)];
       const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
       return [-dz / l, dx / l];
     });
