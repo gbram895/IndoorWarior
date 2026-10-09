@@ -2443,7 +2443,7 @@ async function startRide() {
   renderHrGaps();
   countdown.unlock(); // sound needs a click to be allowed
   rideMsg('');
-  if (route) Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
+  if (route) Object.assign(routeState, { dist: 0, lap: 0, speed: 0, lastGrade: null, finished: false });
   applyStep();
   renderRide();
 }
@@ -3034,7 +3034,9 @@ renderRide();
 // ERG is off the trainer gets the gradient under your wheels.
 const ROUTE_STEP = 10; // metres between resampled points
 let route = null;      // { name, total, pts: [{x, y}], res: [{d, lat, lon, ele}], climb: [cumulative ascent] }
-const routeState = { dist: 0, speed: 0, lastGrade: null, lastGradeAt: 0, gradeBusy: false, finished: false };
+const routeState = { dist: 0, lap: 0, speed: 0, lastGrade: null, lastGradeAt: 0, gradeBusy: false, finished: false };
+// Distance ridden on this route so far, over all laps of a loop.
+const routeRidden = () => (route ? routeState.lap * route.total + routeState.dist : 0);
 const routeCfg = Object.assign({ mass: 84, difficulty: 0.5 }, store.get('routeCfg', {}));
 
 function haversine(a, b) {
@@ -3091,7 +3093,9 @@ function routeFromPoints(raw, name) {
   const climb = [0];
   for (let i = 1; i < res.length; i++) climb.push(climb[i - 1] + Math.max(0, res[i].ele - res[i - 1].ele));
 
-  return { name, total: res[res.length - 1].d, res, climb };
+  // A loop (it ends where it starts) is ridden round and round rather than stopping at the line.
+  const loop = res.length > 100 && haversine(raw[0], raw[raw.length - 1]) < 60;
+  return { name, total: res[res.length - 1].d, res, climb, loop };
 }
 
 function routeAt(d) {
@@ -3103,6 +3107,10 @@ function routeAt(d) {
 
 // Average gradient (%) between two distances.
 function gradeBetween(d1, d2) {
+  if (route.loop) { // round past the line into the next lap
+    const L = route.total, w = d => ((d % L) + L) % L;
+    return d2 - d1 < 1 ? 0 : ((routeAt(w(d2)).ele - routeAt(w(d1)).ele) / (d2 - d1)) * 100;
+  }
   d1 = Math.max(0, Math.min(route.total, d1));
   d2 = Math.max(0, Math.min(route.total, d2));
   if (d2 - d1 < 1) return 0;
@@ -3135,6 +3143,15 @@ function routeTick(dt) {
   if (!route || routeState.finished) return;
   const grade = gradeBetween(routeState.dist - 25, routeState.dist + 25);
   const v = advanceSpeed(currentPower(), grade, dt);
+  if (route.loop) {
+    routeState.dist += v * dt;
+    if (routeState.dist >= route.total) {
+      routeState.dist -= route.total; routeState.lap++;
+      routeMsg(`Lap ${routeState.lap + 1}.`, 'ok');
+    }
+    sendGrade(grade);
+    return;
+  }
   routeState.dist = Math.min(route.total, routeState.dist + v * dt);
   if (routeState.dist >= route.total) {
     routeState.finished = true;
@@ -3163,7 +3180,7 @@ function routeMsg(text, cls = '') { $('routeMsg').textContent = text; $('routeMs
 function routeSample() {
   if (!route) return {};
   const p = routeAt(routeState.dist);
-  return { lat: p.lat, lon: p.lon, alt: p.ele, d: routeState.dist, s: routeState.speed * 3.6 };
+  return { lat: p.lat, lon: p.lon, alt: p.ele, d: routeRidden(), s: routeState.speed * 3.6 };
 }
 
 // ---- Drawing.
@@ -3244,7 +3261,7 @@ function renderRoute() {
   drawMap();
   drawElevation();
   const d = routeState.dist;
-  $('rDist').textContent = `${fmtKm(d)} / ${fmtKm(route.total)} km`;
+  $('rDist').textContent = `${fmtKm(d)} / ${fmtKm(route.total)} km${routeState.lap ? ` · lap ${routeState.lap + 1}` : ''}`;
   $('rGrade').textContent = fmtGrade(gradeBetween(d - 25, d + 25));
   $('rNext').textContent = d >= route.total - 1 ? '--' : fmtGrade(gradeBetween(d, Math.min(route.total, d + 1000)));
   const i = Math.min(route.climb.length - 1, Math.floor(d / ROUTE_STEP));
@@ -3282,7 +3299,7 @@ async function loadCourse(id) {
 function useRoute(next) {
   if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before loading another route.', 'bad');
   route = next;
-  Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
+  Object.assign(routeState, { dist: 0, lap: 0, speed: 0, lastGrade: null, finished: false });
   $('routeBox').classList.remove('hidden');
   $('routeName').textContent = route.name;
   view3d.refresh();
@@ -3327,7 +3344,7 @@ const view3d = (() => {
     document.head.append(el);
   });
   const state = () => {
-    const d = routeState.dist, cad = parseInt($('cadence').textContent, 10);
+    const d = route?.loop ? routeRidden() : routeState.dist, cad = parseInt($('cadence').textContent, 10); // laps: the 3D view rides on round
     return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0 };
   };
   async function ensure() {
@@ -3360,7 +3377,7 @@ const view3d = (() => {
     $('h3Power').textContent = $('watts').textContent;
     $('h3Speed').textContent = (routeState.speed * 3.6).toFixed(1);
     $('h3Grade').textContent = fmtGrade(gradeBetween(d - 25, d + 25));
-    $('h3Dist').textContent = fmtKm(d);
+    $('h3Dist').textContent = fmtKm(routeRidden());
   }
   $('routeViewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.view); });
   // Camera: behind (default), close behind, or from the roadside. Remembered.

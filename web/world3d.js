@@ -78,7 +78,7 @@
     // Road points in 100 m buckets, to find the road near any spot quickly.
     const hash = new Map();
     xz.forEach(([x, z], i) => { const k = bucket(x, z); hash.get(k)?.push(i) || hash.set(k, [i]); });
-    return { n, xz, y, side, base, tilt, bend, hash };
+    return { n, xz, y, side, base, tilt, bend, hash, loop: !!route.loop };
   }
 
   const BUCKET = 100;
@@ -765,7 +765,9 @@
     // past the end it carries straight on along the first or last stretch, so
     // the camera behind the rider at 0 m sits on the road, not inside him.
     function at(d, out) {
-      const g = world.userData.g, f = d / STEP, i = Math.min(g.n - 2, Math.max(0, Math.floor(f))), t = f - i;
+      const g = world.userData.g;
+      if (g.loop) { const L = (g.n - 1) * STEP; d = ((d % L) + L) % L; } // a loop: round and round
+      const f = d / STEP, i = Math.min(g.n - 2, Math.max(0, Math.floor(f))), t = f - i;
       const a = g.xz[i], b = g.xz[i + 1], h = Math.min(1, Math.max(0, t));
       return out.set(a[0] + (b[0] - a[0]) * t, g.y[i] + (g.y[i + 1] - g.y[i]) * h, a[1] + (b[1] - a[1]) * t);
     }
