@@ -1,0 +1,3481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IndoorWarior</title>
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="icons/icon-192.png">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --text: #f2f4f8; --muted: #8b93a7;
+    --accent: #ff7a1a; --ok: #3ecf8e; --warn: #f5b84b; --bad: #ff5d5d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 16px;
+    background: var(--accent); color: #111; cursor: pointer;
+  }
+  button.secondary { background: #2a2f3a; color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #status { color: var(--muted); margin-top: 10px; }
+  #status.bad { color: var(--bad); }
+  .power { text-align: center; padding: 8px 0 16px; }
+  #watts { font-size: clamp(96px, 22vw, 180px); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .unit { color: var(--muted); }
+  #avg3 { font-size: 22px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { background: #20242d; border-radius: 8px; padding: 10px 12px; }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #fresh { text-align: center; color: var(--muted); font-size: 13px; margin-top: 12px; }
+  #fresh.stale { color: var(--warn); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  #erg.yes { color: var(--ok); } #erg.no { color: var(--warn); }
+  .hidden { display: none !important; }
+  .gear-big { font-size: 56px; font-weight: 700; line-height: 1; margin-top: 12px; font-variant-numeric: tabular-nums; }
+  .gear-big .unit { font-size: 18px; font-weight: 400; margin-left: 8px; color: #9aa3b2; }
+  .di2log { background: #11141a; border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 10px 0; }
+  .route-map { width: 100%; height: 260px; display: block; background: #12151b; border-radius: 8px; }
+  .route-elev { width: 100%; height: 110px; display: block; background: #12151b; border-radius: 8px; margin-top: 8px; }
+  .route-settings { margin-top: 12px; gap: 16px; color: var(--muted); font-size: 14px; }
+  .route-settings input[type=number] { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #2f3542; background: #11141a; color: var(--text); }
+  .route-settings input[type=range] { accent-color: var(--accent); vertical-align: middle; }
+  .filebtn input { display: none; }
+  .filebtn span { display: inline-block; font-weight: 600; border-radius: 8px; padding: 10px 16px; background: #2a2f3a; color: var(--text); cursor: pointer; }
+  #routeMsg.bad { color: var(--bad); } #routeMsg.ok { color: var(--ok); }
+  .sensors { display: grid; gap: 8px; margin-top: 14px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
+  .sensor { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .sensor .label { color: var(--muted); font-size: 13px; }
+  .sensor-state { font-size: 15px; }
+  .sensor-state.ok { color: var(--ok); } .sensor-state.bad { color: var(--bad); }
+  .erg-head { display: flex; justify-content: space-between; align-items: center; }
+  .switch { position: relative; width: 56px; height: 32px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: #2a2f3a; border-radius: 16px; cursor: pointer; transition: background .15s; }
+  .slider::before { content: ""; position: absolute; width: 24px; height: 24px; left: 4px; top: 4px; background: #fff; border-radius: 50%; transition: transform .15s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(24px); }
+  .switch input:disabled + .slider { opacity: .4; cursor: default; }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--text); outline-offset: 2px; }
+  .target { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 16px 0 8px; }
+  .target button { min-width: 56px; }
+  #targetWatts { font-size: 56px; font-weight: 700; min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
+  #targetRange { width: 100%; accent-color: var(--accent); }
+  #ergStatus { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  #ergStatus.bad { color: var(--bad); } #ergStatus.ok { color: var(--ok); }
+  .keys { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .ergOff .target, .ergOff #targetRange { opacity: .45; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .timer { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .signin { display: grid; gap: 8px; margin-top: 12px; max-width: 420px; }
+  .signin p { margin: 0; }
+  input[type=email], input[type=password], input[type=url], #rpeNotes {
+    font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid #2f3542; background: #11141a; color: var(--text); width: 100%;
+  }
+  details summary { color: var(--muted); font-size: 14px; cursor: pointer; margin-bottom: 6px; }
+  button.link { background: none; color: var(--muted); padding: 10px 4px; text-decoration: underline; font-weight: 400; }
+  button.sm { padding: 6px 10px; min-width: 0; }
+  .wname { font-weight: 600; font-size: 18px; margin: 12px 0 8px; }
+  .sim-badge { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; background: var(--warn); color: #111; border-radius: 6px; padding: 2px 8px; vertical-align: middle; margin-left: 8px; }
+  #simPanel { border: 1px solid var(--warn); }
+  .sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; }
+  .sim-grid label { font-size: 14px; color: var(--muted); }
+  .sim-grid b { color: var(--text); font-weight: 600; float: right; }
+  .sim-grid input { width: 100%; }
+  @media (max-width: 560px) { .sim-grid { grid-template-columns: 1fr; } }
+  #liveChart { width: 100%; height: 190px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 8px; }
+  .legend { display: flex; gap: 14px; font-size: 13px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  #libBox { margin-top: 12px; }
+  #libSearch { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #12151b; color: var(--text); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chips button { padding: 6px 12px; font-weight: 500; background: #2a2f3a; color: var(--text); }
+  .chips button[aria-pressed="true"] { background: var(--text); color: #111; }
+  #libList { max-height: 340px; overflow-y: auto; border-radius: 8px; background: #12151b; }
+  .lib-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: 100%; text-align: left; background: none; color: var(--text); font-weight: 400; border-radius: 0; border-bottom: 1px solid #20242d; padding: 10px 12px; }
+  .lib-item:hover { background: #1c2029; }
+  .builder { margin-top: 10px; padding: 12px; background: #171a21; border-radius: 10px; }
+  .builder input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #2f3542; background: #11141a; color: var(--text); }
+  .builder #bName { width: 100%; margin-bottom: 8px; }
+  .bblock { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px solid #20242d; }
+  .bblock .k { color: var(--muted); font-size: 13px; min-width: 64px; }
+  .bblock input.d { width: 64px; } .bblock input.p { width: 56px; } .bblock input.n { width: 48px; }
+  .bblock .tools { margin-left: auto; display: flex; gap: 4px; }
+  .bblock { border-radius: 8px; padding: 8px; margin: 2px -8px; border-bottom: none; transition: background-color 150ms ease; }
+  .bblock.sel { background: #232836; box-shadow: inset 3px 0 0 var(--accent); }
+  .bblock .sw { width: 10px; height: 28px; border-radius: 3px; flex: none; }
+  .bblock .w { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; min-width: 52px; }
+  .bblock .x { font-variant-numeric: tabular-nums; }
+  @starting-style { .bblock.new { opacity: 0; transform: translateY(4px); } }
+  .bblock.new { transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease; }
+  .bchart { position: relative; margin-top: 4px; padding-bottom: 16px; touch-action: none; user-select: none; }
+  #bChart { display: block; width: 100%; height: 180px; background: #11141a; border-radius: 8px; cursor: grab; }
+  #bChart .lift { fill-opacity: 0.85; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
+  #bChart .ins { stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .baxis { position: absolute; inset: 0; pointer-events: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .baxis span { position: absolute; white-space: nowrap; }
+  .baxis .t { bottom: 0; transform: translateX(-50%); }
+  .baxis .ftp { right: 6px; transform: translateY(calc(-100% - 2px)); padding: 0 4px; border-radius: 4px; background: rgba(11, 13, 17, 0.8); color: #c4cad6; }
+  .bnote { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .btoast { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 12px; margin: 8px 0; border-radius: 8px; background: #232836; font-size: 14px; transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1); }
+  @starting-style { .btoast { opacity: 0; transform: translateY(4px); } }
+  .btoast.out { opacity: 0; transform: translateY(4px); transition-duration: 150ms; }
+  .my-item.just { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1), background-color 1200ms ease; }
+  @starting-style { .my-item.just { opacity: 0; transform: translateY(4px); background-color: rgba(255, 122, 26, 0.22); } }
+  #bChart .sel { stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .btip { position: absolute; top: 6px; transform: translateX(-50%); background: #0b0d11; border: 1px solid #2f3542; border-radius: 6px; padding: 4px 8px; font-size: 13px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+  .bhelp { font-size: 12px; margin-top: 4px; }
+  .binfo { margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
+  .binfo b { font-weight: 600; }
+  .bpresets { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .bpresets button { padding: 5px 10px; font-weight: 500; font-size: 13px; background: #232836; color: var(--text); border-left: 4px solid var(--c); }
+  .builder button { transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
+  .builder button:active:not(:disabled) { transform: scale(0.97); }
+  @media (prefers-reduced-motion: reduce) { .bblock.new { transition: opacity 180ms ease; } @starting-style { .bblock.new { transform: none; } } .builder button:active { transform: none; } @starting-style { .btoast { transform: none; } } .btoast.out { transform: none; } @starting-style { .my-item.just { transform: none; } } }
+  .my-item .acts { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
+  .lib-item .n { font-weight: 600; }
+  .lib-item .m { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
+  .lib-item svg { width: 120px; height: 24px; grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+  #wChart { width: 100%; height: 90px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 12px; }
+  .value.small { font-size: 18px; }
+  .countdown { position: fixed; inset: auto 0 18vh 0; margin: 0 auto; width: max-content; padding: 10px 28px;
+    background: rgba(20, 23, 30, 0.92); border: 2px solid var(--accent); border-radius: 16px; text-align: center; z-index: 50; pointer-events: none; }
+  .countdown .n { font-size: 96px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--accent); }
+  .countdown .next { font-size: 20px; margin-top: 4px; }
+  .rpe { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .rpe button { min-width: 40px; }
+  .rpe button.on { background: var(--accent); color: #111; }
+  #rideMsg { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  #rideMsg.bad { color: var(--bad); } #rideMsg.ok { color: var(--ok); }
+  #savedBox { margin-top: 12px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="erg-head" style="margin-bottom:16px">
+    <h1 style="margin:0">IndoorWarior <span id="simBadge" class="sim-badge hidden">Simulator</span></h1>
+    <button id="simToggle" class="link">Test without hardware</button>
+  </div>
+<section class="panel hidden" id="simPanel">
+  <div class="erg-head">
+    <h2 style="margin:0">Simulator</h2>
+    <div class="row"><button id="simAll" class="sm">Connect everything</button><button id="simOff" class="secondary sm">Leave simulator</button></div>
+  </div>
+  <p class="muted" style="margin:8px 0 12px">Nothing real is connected. Every Connect button picks a virtual device: a trainer that copies yours (ERG, gradient, 50–600 W), a power meter, a heart rate strap and a 12-speed Di2. Your Gradient sign-in is real; a finished test ride is not sent to Strava unless you press Upload.</p>
+  <div class="sim-grid">
+    <label>Cadence <b id="simCadV"></b><input type="range" id="simCad" min="0" max="120" step="1"></label>
+    <label>Your power with ERG off <b id="simPowV"></b><input type="range" id="simPow" min="0" max="500" step="5"></label>
+    <label>Trainer reads vs power meter <b id="simBiasV"></b><input type="range" id="simBias" min="-10" max="10" step="1"></label>
+    <label>Heart rate fitness <b id="simFitV"></b><input type="range" id="simFit" min="-20" max="20" step="1"></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <span class="muted">Di2</span>
+    <button class="secondary sm" id="simDown">Gear −1</button>
+    <button class="secondary sm" id="simUp">Gear +1</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <span class="muted">Drop out</span>
+    <button class="secondary sm" data-drop="trainer">Trainer</button>
+    <button class="secondary sm" data-drop="pm">Power meter</button>
+    <button class="secondary sm" data-drop="hr">Strap</button>
+    <button class="secondary sm" data-drop="di2">Di2</button>
+    <button class="secondary sm" id="simSteal">Another app takes the trainer</button>
+  </div>
+  <div class="muted" id="simInfo" style="margin-top:10px;font-variant-numeric:tabular-nums"></div>
+</section>
+
+
+  <section class="panel" id="connectPanel">
+    <div class="row">
+      <button id="connectBtn">Connect trainer</button>
+      <button id="disconnectBtn" class="secondary hidden">Disconnect</button>
+    </div>
+    <div id="status">Close Zwift or any other app using the trainer, pedal to wake it, then connect.</div>
+    <div class="sensors">
+      <div class="sensor">
+        <div><div class="label">Heart rate strap</div><div class="sensor-state" id="hrState">Not connected</div></div>
+        <button id="hrBtn" class="secondary">Connect</button>
+      </div>
+      <div class="sensor">
+        <div><div class="label">Power meter (power and cadence)</div><div class="sensor-state" id="pmState">Not connected</div></div>
+        <button id="pmBtn" class="secondary">Connect</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="livePanel">
+    <h2 id="trainerName">Trainer</h2>
+    <div class="power">
+      <div id="watts">--</div>
+      <div class="unit" id="powerSource">watts</div>
+      <div id="avg3">3s average --</div>
+    </div>
+    <div class="grid">
+      <div class="stat"><div class="label">Cadence</div><div class="value" id="cadence">--</div></div>
+      <div class="stat"><div class="label">Speed</div><div class="value" id="speed">--</div></div>
+      <div class="stat"><div class="label">Heart rate</div><div class="value" id="hr">--</div></div>
+      <div class="stat"><div class="label">Power meter</div><div class="value" id="pmWatts">--</div></div>
+      <div class="stat"><div class="label">Trainer power</div><div class="value" id="trainerWatts">--</div></div>
+      <div class="stat hidden" id="gearStat"><div class="label">Gear (Di2)</div><div class="value" id="gearTile">--</div></div>
+    </div>
+    <div id="fresh">Waiting for the first reading…</div>
+  </section>
+
+  <section class="panel" id="ridePanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Ride</h2>
+      <div id="rideTimer" class="timer">0:00:00</div>
+    </div>
+
+    <form id="signInForm" class="signin hidden">
+      <p class="muted">Sign in to Gradient to load today's planned ride. Only a sign-in token is kept on this laptop, never your password.</p>
+      <input id="gEmail" type="email" placeholder="Gradient email" autocomplete="username" required>
+      <input id="gPassword" type="password" placeholder="Password" autocomplete="current-password" required>
+      <details><summary>Gradient address</summary><input id="gUrl" type="url"></details>
+      <div class="row"><button type="submit">Sign in</button></div>
+    </form>
+    <div id="signedIn" class="row hidden" style="margin-top:12px">
+      <button id="loadTodayBtn" class="secondary">Load today's ride</button>
+      <button id="libBtn" class="secondary">Choose from library</button>
+      <button id="signOutBtn" class="link">Sign out of Gradient</button>
+    </div>
+    <div id="libBox" class="hidden">
+      <input id="libSearch" type="search" placeholder="Search your workouts" aria-label="Search workouts">
+      <div class="chips" id="libChips">
+        <button data-cat="" aria-pressed="true">All</button>
+        <button data-cat="ENDURANCE" aria-pressed="false">Endurance</button>
+        <button data-cat="TEMPO" aria-pressed="false">Tempo</button>
+        <button data-cat="THRESHOLD" aria-pressed="false">Threshold</button>
+        <button data-cat="VO2MAX" aria-pressed="false">VO2max</button>
+        <button data-sort="dur" aria-pressed="false">Shortest first</button>
+      </div>
+      <div id="libList"></div>
+    </div>
+
+    <div class="row" style="margin-top:8px"><button id="myBtn" class="secondary">My workouts</button></div>
+    <div id="myBox" class="hidden">
+      <div id="myList"></div>
+      <div class="row" style="margin-top:8px"><button id="myNew" class="secondary sm">New workout</button></div>
+      <div id="bToast" role="status"></div>
+      <div id="myEditor" class="hidden builder">
+        <input id="bName" placeholder="Workout name" maxlength="80" aria-label="Workout name">
+        <div class="bchart" id="bChartWrap">
+          <svg id="bChart" aria-label="Workout profile. Drag a block up or down to change its power, sideways to change its length, or press and hold to move it."></svg>
+          <div class="baxis" id="bAxis"></div>
+          <div class="btip hidden" id="bTip"></div>
+        </div>
+        <div class="bhelp muted">Drag a block up or down for power, sideways for length. Press and hold to move it. Click one to edit it below.</div>
+        <div id="bInfo" class="binfo"></div>
+        <div class="bnote" id="bInsNote"></div>
+        <div class="bpresets" id="bPresets" aria-label="Add a block"></div>
+        <div id="bBlocks"></div>
+        <div class="row" style="margin-top:6px">
+          <button class="secondary sm" id="bAddStep">+ Step</button>
+          <button class="secondary sm" id="bAddRep">+ Intervals</button>
+          <button class="link" id="bUndo" disabled>Undo</button>
+        </div>
+        <label class="muted" id="bFtpRow" style="display:block;margin-top:6px">FTP <input type="number" id="bFtp" min="50" max="600" step="1" style="width:80px"> W, used while you are not signed in to Gradient</label>
+        <div class="row" style="margin-top:8px">
+          <button id="bSave">Save</button>
+          <button id="bRide" class="secondary">Save and load</button>
+          <button id="bCancel" class="link">Cancel</button>
+        </div>
+        <div id="bMsg"></div>
+      </div>
+    </div>
+
+    <div id="workoutBox" class="hidden">
+      <div class="wname" id="wName"></div>
+      <svg id="wChart" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="grid">
+        <div class="stat"><div class="label" id="stepLabel">Step</div><div class="value" id="stepTarget">--</div><div class="label" id="stepLeft">&nbsp;</div></div>
+        <div class="stat"><div class="label">Next</div><div class="value small" id="stepNext">--</div></div>
+        <div class="stat"><div class="label">Intensity</div>
+          <div class="row" style="flex-wrap:nowrap"><button class="secondary sm" data-int="-0.05">−5%</button><span class="value small" id="intensity">100%</span><button class="secondary sm" data-int="0.05">+5%</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="countdown" class="countdown hidden" aria-live="assertive"><div class="n" id="cdNum">5</div><div class="next" id="cdNext"></div></div>
+    <label class="muted" id="beepRow" style="display:block;margin-top:6px"><input type="checkbox" id="beepToggle"> Beep in the last seconds before each step changes</label>
+
+    <div id="liveBox" class="hidden">
+      <canvas id="liveChart" aria-label="Live ride chart"></canvas>
+      <div class="legend"><span><i style="background:#f2f4f8"></i>Power</span><span><i style="background:#ff5d5d"></i>Heart rate</span><span><i style="background:#8b93a7"></i>Target</span><span id="liveSpan">Last 4 min · next 6 min</span></div>
+      <div id="hrGaps" class="muted hidden" style="font-size:13px;margin-top:4px"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="startBtn">Start ride</button>
+      <button id="pauseBtn" class="secondary hidden">Pause</button>
+      <button id="resumeBtn" class="hidden">Resume</button>
+      <button id="skipBtn" class="secondary hidden">Skip step</button>
+      <button id="finishBtn" class="secondary hidden">Finish</button>
+      <button id="pipBtn" class="secondary hidden">Mini window</button>
+    </div>
+    <label class="muted hidden" id="pipRow" style="display:block;margin-top:6px"><input type="checkbox" id="pipToggle"> Open a mini window when I start, to keep the ride live over a show in another tab</label>
+    <div id="rideMsg"></div>
+
+    <div id="savedBox" class="hidden">
+      <div id="rideSummary"></div>
+      <div id="rpeBox" style="margin-top:8px">
+        <div>How hard did it feel? <span class="muted">(1 very easy, 10 all-out)</span></div>
+        <div class="rpe" id="rpeButtons"></div>
+        <input id="rpeNotes" placeholder="Notes (optional)" maxlength="2000" style="margin-top:6px;width:100%">
+        <div id="rpeStatus" class="muted" style="margin-top:4px"></div>
+      </div>
+      <div id="stravaStatus" class="muted" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="stravaBtn">Upload to Strava</button>
+        <a id="stravaAllow" class="hidden" target="_blank" rel="noopener"><button type="button">Allow uploads to Strava</button></a>
+        <button id="saveFitBtn" class="secondary">Save .fit</button>
+        <button id="discardBtn" class="secondary">Discard</button>
+      </div>
+      <p class="muted">When you are signed in to Gradient, a finished ride goes to Strava by itself, and Gradient picks it up from there. Save .fit is a backup.</p>
+    </div>
+  </section>
+
+  <section class="panel" id="routePanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Route</h2>
+      <div class="row">
+        <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,application/gpx+xml"><span>Load GPX</span></label>
+      </div>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Load a GPX file (a Strava or Komoot route export works) or drop one here.</p>
+    <div id="routeBox" class="hidden">
+      <div class="wname" id="routeName"></div>
+      <canvas id="routeMap" class="route-map"></canvas>
+      <canvas id="routeElev" class="route-elev"></canvas>
+      <div class="grid" style="margin-top:12px">
+        <div class="stat"><div class="label">Distance</div><div class="value small" id="rDist">--</div></div>
+        <div class="stat"><div class="label">Gradient now</div><div class="value small" id="rGrade">--</div></div>
+        <div class="stat"><div class="label">Next km</div><div class="value small" id="rNext">--</div></div>
+        <div class="stat"><div class="label">Climbed</div><div class="value small" id="rClimb">--</div></div>
+        <div class="stat"><div class="label">Road speed</div><div class="value small" id="rSpeed">--</div></div>
+      </div>
+      <div class="row route-settings">
+        <label>Rider + bike <input type="number" id="rMass" min="40" max="200" step="1" style="width:5em"> kg</label>
+        <label>Trainer difficulty <input type="range" id="rDifficulty" min="0" max="100" step="5"> <span id="rDifficultyLabel"></span></label>
+        <button id="routeClear" class="link">Remove route</button>
+      </div>
+    </div>
+    <div id="routeMsg" class="muted" style="margin-top:8px"></div>
+  </section>
+
+  <section class="panel hidden ergOff" id="ergPanel">
+    <div class="erg-head">
+      <h2 style="margin:0">ERG</h2>
+      <label class="switch" title="Toggle ERG (E)">
+        <input type="checkbox" id="ergToggle" aria-label="ERG mode">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="target">
+      <button class="secondary" data-step="-25">−25</button>
+      <button class="secondary" data-step="-5">−5</button>
+      <div><div id="targetWatts">150</div><div class="unit" style="text-align:center">target W</div></div>
+      <button class="secondary" data-step="5">+5</button>
+      <button class="secondary" data-step="25">+25</button>
+    </div>
+    <input type="range" id="targetRange" min="50" max="600" step="5" value="150" aria-label="Target watts">
+    <div id="ergStatus">ERG is off. The trainer rides like a flat road.</div>
+    <label class="muted" id="matchRow" style="display:block;margin-top:8px"><input type="checkbox" id="matchToggle"> Hold the target on my power meter (power match)</label>
+    <div class="keys">Keys: E toggles ERG, ↑/↓ change target by 5 W, Shift+↑/↓ by 25 W.</div>
+  </section>
+
+  <section class="panel hidden" id="calPanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Calibration</h2>
+      <button id="calBtn" class="secondary">Calibrate trainer</button>
+      <button id="calCancel" class="secondary hidden">Cancel</button>
+    </div>
+    <div id="calStatus" class="muted" style="margin-top:8px"></div>
+    <p class="muted" style="margin:8px 0 0">A spin-down: ride up to the speed shown, then stop pedalling and let the trainer coast to a stop. Do it after about 10 minutes of riding, when the trainer is warm, and again whenever the tyre pressure or the bike changes.</p>
+  </section>
+
+  <section class="panel" id="di2Panel">
+    <div class="erg-head">
+      <h2 style="margin:0">Di2 gears (experimental)</h2>
+      <button id="di2Btn" class="secondary">Connect Di2</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Shows your current gear, read from what the derailleur broadcasts (worked out from a GRX RX827; Shimano does not publish this). Shift once first to wake it, and close the E-TUBE app.</p>
+    <div id="di2State" class="muted" style="margin-top:8px"></div>
+    <div id="di2Box" class="hidden">
+      <div class="gear-big"><span id="gearRear">--</span><span class="unit" id="gearOf"></span></div>
+      <div class="muted" id="gearFront"></div>
+      <details style="margin-top:8px">
+        <summary class="muted">Di2 log (for troubleshooting)</summary>
+        <div class="muted" style="margin-top:8px" id="di2Services"></div>
+        <pre id="di2Log" class="di2log"></pre>
+        <div class="row"><button id="di2Copy" class="secondary">Copy Di2 log</button><button id="di2Mark" class="secondary">Mark: I just shifted</button></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="reportPanel">
+    <h2>What this trainer supports</h2>
+    <dl>
+      <dt>Trainer</dt><dd id="rTrainer">reading…</dd>
+      <dt>ERG</dt><dd id="erg">reading…</dd>
+      <dt>Power range</dt><dd id="rRange">--</dd>
+    </dl>
+    <div class="row" style="margin-top:12px">
+      <button id="copyBtn" class="secondary">Copy trainer report</button>
+    </div>
+  </section>
+  <section class="panel" id="dataPanel">
+    <h2>Your settings and workouts</h2>
+    <p class="muted" style="margin:0 0 10px">They live in this browser, separately for the app and for the HTML file. To move them across, save them here and load the file on the other one. The file includes your Gradient sign-in, so keep it to yourself.</p>
+    <div class="row">
+      <button class="secondary" id="dataSave">Save to a file</button>
+      <button class="secondary" id="dataLoad">Load from a file</button>
+      <input type="file" id="dataFile" accept=".json,application/json" class="hidden">
+      <button class="secondary hidden" id="installBtn">Install app</button>
+    </div>
+    <div id="dataMsg"></div>
+  </section>
+</main>
+
+<script>
+// ---- Simulator. With it on, navigator.bluetooth hands out virtual devices
+// that speak the same Bluetooth services as the real ones (FTMS trainer,
+// Cycling Power meter, heart rate strap, Shimano Di2), so every part of the
+// page runs unchanged without hardware nearby. Switch it on with the "Test
+// without hardware" button, or by opening the page with #sim on the end.
+const SIM = (() => {
+  let on = false;
+  try { on = localStorage.getItem('simulator') === 'on'; } catch {}
+  if (/(^|[?#&])sim\b/.test(location.search + location.hash)) on = true;
+  const toggle = document.getElementById('simToggle');
+  const leave = () => {
+    try { localStorage.setItem('simulator', 'off'); } catch {}
+    location.href = location.href.split('#')[0].split('?')[0];
+  };
+  toggle.addEventListener('click', () => {
+    try { localStorage.setItem('simulator', 'on'); } catch {}
+    location.reload();
+  });
+  if (!on) return null;
+  toggle.classList.add('hidden');
+  document.getElementById('simPanel').classList.remove('hidden');
+  document.getElementById('simBadge').classList.remove('hidden');
+  document.getElementById('simOff').addEventListener('click', leave);
+
+  const u16 = n => `0000${n.toString(16).padStart(4, '0')}-0000-1000-8000-00805f9b34fb`;
+  const shimano = n => `0000${n.toString(16)}-5348-494d-414e-4f5f424c4500`;
+  const norm = u => (typeof u === 'number' ? u16(u) : String(u).toLowerCase());
+  const dv = bytes => new DataView(new Uint8Array(bytes).buffer);
+  const text = s => new DataView(new TextEncoder().encode(s).buffer);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const le16 = v => [v & 0xff, (v >> 8) & 0xff];
+
+  const cfg = { cadence: 90, power: 180, bias: 5, fit: 0 };
+  try { Object.assign(cfg, JSON.parse(localStorage.getItem('simCfg') || '{}')); } catch {}
+  const saveCfg = () => { try { localStorage.setItem('simCfg', JSON.stringify(cfg)); } catch {} };
+
+  // What the virtual rider and trainer are doing.
+  const world = {
+    mode: 'free', target: 150, grade: 0, controlled: false,
+    power: 0, trainerReads: 0, hr: 68, speed: 0, gear: 6,
+    revs: 0, crankTime: 0, t: 0, spin: null,
+  };
+
+  // ---- Minimal Web Bluetooth objects.
+  function characteristic(uuid, props, read) {
+    const c = new EventTarget();
+    c.uuid = uuid;
+    c.properties = { read: !!props.read, write: !!props.write, notify: !!props.notify, indicate: !!props.indicate, writeWithoutResponse: false };
+    c.notifying = false;
+    const alive = () => { if (!c.service.device.gatt.connected) throw new DOMException('GATT Server is disconnected. Cannot perform GATT operations.', 'NetworkError'); };
+    c.readValue = async () => { alive(); await sleep(20); return typeof read === 'function' ? read() : read || dv([]); };
+    c.startNotifications = async () => { alive(); c.notifying = true; return c; };
+    c.stopNotifications = async () => { c.notifying = false; return c; };
+    c.writeValue = c.writeValueWithResponse = async () => { alive(); };
+    c.emit = view => {
+      if (!c.notifying || !c.service.device.gatt.connected) return;
+      Object.defineProperty(c, 'value', { value: view, configurable: true });
+      c.dispatchEvent(new Event('characteristicvaluechanged'));
+    };
+    return c;
+  }
+
+  function device(id, name, services) {
+    const dev = new EventTarget();
+    dev.id = id;
+    dev.name = name;
+    const alive = () => { if (!dev.gatt.connected) throw new DOMException('GATT Server is disconnected. Cannot retrieve services.', 'NetworkError'); };
+    const svcs = services.map(s => {
+      const svc = {
+        uuid: s.uuid, device: dev, isPrimary: true,
+        getCharacteristics: async () => { alive(); return s.chars; },
+        getCharacteristic: async u => {
+          alive();
+          const c = s.chars.find(x => x.uuid === norm(u));
+          if (!c) throw new DOMException('No Characteristics matching UUID found in Service.', 'NotFoundError');
+          return c;
+        },
+      };
+      s.chars.forEach(c => { c.service = svc; });
+      return svc;
+    });
+    const server = {
+      device: dev,
+      get connected() { return dev.gatt.connected; },
+      getPrimaryServices: async () => { alive(); return svcs; },
+      getPrimaryService: async u => {
+        alive();
+        const s = svcs.find(x => x.uuid === norm(u));
+        if (!s) throw new DOMException('No Services matching UUID found in Device.', 'NotFoundError');
+        return s;
+      },
+    };
+    dev.gatt = {
+      device: dev, connected: false,
+      connect: async () => {
+        await sleep(200);
+        services.forEach(s => s.chars.forEach(c => { c.notifying = false; }));
+        dev.gatt.connected = true;
+        return server;
+      },
+      disconnect: () => {
+        if (!dev.gatt.connected) return;
+        dev.gatt.connected = false;
+        dev.dispatchEvent(new Event('gattserverdisconnected'));
+      },
+    };
+    return dev;
+  }
+
+  // ---- Trainer: a copy of Bram's (FTMS power, resistance, simulation and
+  // spin-down targets, 50-600 W in 1 W steps, reports power and speed only).
+  const bikeData = characteristic(u16(0x2ad2), { notify: true });
+  const status = characteristic(u16(0x2ada), { notify: true });
+  const controlPoint = characteristic(u16(0x2ad9), { write: true, indicate: true });
+  controlPoint.writeValue = controlPoint.writeValueWithResponse = async bytes => {
+    if (!trainer.gatt.connected) throw new DOMException('GATT Server is disconnected.', 'NetworkError');
+    const a = Array.from(new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength));
+    const op = a[0];
+    let result = 1;
+    const s16 = (lo, hi) => { const v = lo | (hi << 8); return v & 0x8000 ? v - 0x10000 : v; };
+    if (op === 0x00) world.controlled = true;
+    else if (op === 0x01) { world.controlled = false; world.mode = 'free'; }
+    else if (op === 0x07) { /* start */ }
+    else if (!world.controlled) result = 5;
+    else if (op === 0x05) {
+      const w = s16(a[1], a[2]);
+      if (w < 50 || w > 600) result = 3; else { world.target = w; world.mode = 'erg'; }
+    } else if (op === 0x11) { world.grade = s16(a[3], a[4]) / 100; world.mode = 'grade'; }
+    else if (op === 0x13) {
+      // Spin-down: answer with the target speed band (20-30 km/h), then
+      // report progress on Fitness Machine Status.
+      if (a[1] === 0x01) {
+        world.spin = 'up'; world.mode = 'free';
+        setTimeout(() => controlPoint.emit(dv([0x80, op, 1, 0xd0, 0x07, 0xb8, 0x0b])), 40);
+        setTimeout(() => status.emit(dv([0x14, 0x01])), 80);
+        return;
+      }
+      world.spin = null;
+    }
+    else result = 2;
+    setTimeout(() => controlPoint.emit(dv([0x80, op, result])), 40);
+  };
+  const trainer = device('sim-trainer', 'SIM Trainer', [
+    { uuid: u16(0x1826), chars: [
+      characteristic(u16(0x2acc), { read: true }, dv([0x01, 0x40, 0, 0, 0x0c, 0xa0, 0, 0])),
+      bikeData,
+      characteristic(u16(0x2ad8), { read: true }, dv([50, 0, 0x58, 0x02, 1, 0])),
+      controlPoint, status,
+    ] },
+    { uuid: u16(0x1818), chars: [characteristic(u16(0x2a63), { notify: true })] },
+    { uuid: u16(0x180a), chars: [
+      characteristic(u16(0x2a29), { read: true }, text('SIMULATOR')),
+      characteristic(u16(0x2a24), { read: true }, text('338332 (virtual)')),
+      characteristic(u16(0x2a26), { read: true }, text('sim')),
+    ] },
+  ]);
+
+  const pmData = characteristic(u16(0x2a63), { notify: true });
+  const pm = device('sim-pm', 'SIM Power meter', [
+    { uuid: u16(0x1818), chars: [pmData] },
+    { uuid: u16(0x180f), chars: [characteristic(u16(0x2a19), { read: true }, dv([88]))] },
+  ]);
+
+  const hrData = characteristic(u16(0x2a37), { notify: true });
+  const hr = device('sim-hr', 'SIM HR strap', [{ uuid: u16(0x180d), chars: [hrData] }]);
+
+  // ---- Di2, as an RD-RX827 broadcasts it: rear position in byte 5 and the
+  // number of rear gears in byte 6 of message type 0x00 on 18ef/2ac1.
+  const di2State = characteristic(shimano(0x2ac1), { notify: true });
+  const di2Shift = characteristic(shimano(0x2ac2), { indicate: true });
+  const di2 = device('sim-di2', 'SIM RDRX827', [
+    { uuid: shimano(0x18ef), chars: [
+      characteristic(shimano(0x2ac0), { read: true, indicate: true }, dv([0x50, 0, 0, 0, 0, 0, 1])),
+      di2State, di2Shift,
+      characteristic(shimano(0x2ac3), { read: true, indicate: true }, dv([7, 0x11, 3, 0, 0xff, 7, 0x12, 3, 0, 0xff, 0, 0, 0xff, 0, 0xff, 0, 0, 0xff, 0, 0xff])),
+      characteristic(shimano(0x2ac4), { write: true, indicate: true }),
+    ] },
+    { uuid: u16(0x180f), chars: [characteristic(u16(0x2a19), { read: true, notify: true }, dv([80]))] },
+    { uuid: u16(0x180a), chars: [characteristic(u16(0x2a29), { read: true }, text('SHIMANO'))] },
+  ]);
+
+  const devices = { trainer, pm, hr, di2 };
+  Object.defineProperty(navigator, 'bluetooth', {
+    configurable: true,
+    value: {
+      getAvailability: async () => true,
+      requestDevice: async opts => {
+        await sleep(300);
+        const wanted = (opts.filters || []).flatMap(f => f.services || []);
+        if (opts.acceptAllDevices) return di2;
+        if (wanted.includes(0x1826)) return trainer;
+        if (wanted.includes(0x180d)) return hr;
+        if (wanted.includes(0x1818)) return pm;
+        throw new DOMException('User cancelled the requestDevice() chooser.', 'NotFoundError');
+      },
+    },
+  });
+
+  // ---- Physics, four times a second.
+  // Road speed for the trainer's speed field: rider + bike 84 kg, Crr 0.004,
+  // CdA 0.32, 97% drivetrain, on the gradient the trainer was last given.
+  function roadSpeed(watts, grade) {
+    const m = 84, g = 9.81, th = Math.atan(grade / 100);
+    const f = v => v * m * g * (0.004 * Math.cos(th) + Math.sin(th)) + 0.5 * 1.2 * 0.32 * v * v * v;
+    const p = watts * 0.97;
+    let lo = 0, hi = 40;
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (f(mid) < p) lo = mid; else hi = mid; }
+    return lo;
+  }
+
+  const DT = 0.25;
+  setInterval(() => {
+    world.t += DT;
+    // During a spin-down the virtual rider does as told: sprint, then coast.
+    const cadence = world.spin === 'coast' ? 0 : cfg.cadence > 0 ? cfg.cadence + (Math.random() - 0.5) * 3 : 0;
+    const k = 1 + cfg.bias / 100;
+    // ERG holds the trainer's OWN reading at the target; the real watts at
+    // the pedals are what the power meter sees.
+    let want = 0;
+    if (cadence > 0) want = world.spin === 'up' ? Math.max(cfg.power, 320) : world.mode === 'erg' && trainer.gatt.connected ? world.target / k : cfg.power;
+    world.power += (want - world.power) * (1 - Math.exp(-DT / 1.5));
+    const pedals = Math.max(0, world.power * (1 + (Math.random() - 0.5) * 0.04));
+    world.trainerReads = pedals * k;
+    const grade = world.mode === 'grade' ? world.grade : 0;
+    world.speed += (roadSpeed(pedals, grade) * 3.6 - world.speed) * (1 - Math.exp(-DT / 4));
+    if (world.spin === 'up' && world.speed > 30) { world.spin = 'coast'; status.emit(dv([0x14, 0x04])); }
+    else if (world.spin === 'coast' && world.speed < 20) { world.spin = null; status.emit(dv([0x14, 0x02])); }
+    const hrWant = cadence > 0 ? 55 + 0.42 * world.power - cfg.fit : 70;
+    world.hr += (hrWant - world.hr) * (1 - Math.exp(-DT / 25));
+    const before = Math.floor(world.revs);
+    world.revs += (cadence / 60) * DT;
+    // Crank event time: the moment the last whole revolution was completed.
+    if (Math.floor(world.revs) !== before) world.crankTime = Math.round((world.t - (world.revs % 1) / (cadence / 60)) * 1024) & 0xffff;
+
+    const tick = Math.round(world.t / DT);
+    if (tick % 2 === 0) {
+      bikeData.emit(dv([0x40, 0x00, ...le16(Math.round(world.speed * 100)), ...le16(Math.round(world.trainerReads))]));
+      pmData.emit(dv([0x20, 0x00, ...le16(Math.round(pedals)), ...le16(Math.floor(world.revs)), ...le16(world.crankTime)]));
+    }
+    if (tick % 4 === 0) hrData.emit(dv([0x00, Math.round(world.hr)]));
+    // Di2 cycles its three state messages, as the real one does.
+    const msgs = [[4, 0xff, 0xff], [6, 0x12, 0x11, 0, 0, 0x0f], [0, 0, 3, 0xff, 0xff, world.gear, 0x0c, 0x80, 0x80, 0x80, 0xf4, 0xee, 0x12, 0xff, 0xff, 0x15, 0]];
+    di2State.emit(dv(msgs[tick % 3]));
+  }, DT * 1000);
+
+  // ---- Controls.
+  const $s = id => document.getElementById(id);
+  const sliders = [['simCad', 'cadence', v => `${v} rpm`], ['simPow', 'power', v => `${v} W`],
+    ['simBias', 'bias', v => `${v > 0 ? '+' : ''}${v}%`], ['simFit', 'fit', v => (v ? `${v > 0 ? '−' : '+'}${Math.abs(v)} bpm` : 'normal')]];
+  for (const [id, key, label] of sliders) {
+    const el = $s(id);
+    el.value = cfg[key];
+    $s(`${id}V`).textContent = label(cfg[key]);
+    el.addEventListener('input', () => { cfg[key] = Number(el.value); $s(`${id}V`).textContent = label(cfg[key]); saveCfg(); });
+  }
+  const shift = d => {
+    const g = Math.max(1, Math.min(12, world.gear + d));
+    if (g === world.gear) return;
+    world.gear = g;
+    di2Shift.emit(dv([0x10, 0x03]));
+  };
+  $s('simDown').addEventListener('click', () => shift(-1));
+  $s('simUp').addEventListener('click', () => shift(1));
+  document.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => devices[b.dataset.drop].gatt.disconnect()));
+  $s('simSteal').addEventListener('click', () => {
+    world.controlled = false;
+    world.mode = 'free';
+    status.emit(dv([0xff]));
+  });
+  setInterval(() => {
+    const mode = world.mode === 'erg' ? `ERG ${world.target} W` : world.mode === 'grade' ? `gradient ${world.grade.toFixed(1)}%` : 'free';
+    $s('simInfo').textContent = `Rider ${Math.round(world.power)} W · trainer reads ${Math.round(world.trainerReads)} W · ` +
+      `${Math.round(world.hr)} bpm · ${world.speed.toFixed(1)} km/h · trainer ${mode} · gear ${world.gear} of 12`;
+  }, 1000);
+
+  return { world, cfg, devices };
+})();
+</script>
+<script>
+// ---- Byte parsers for the standard Bluetooth SIG cycling characteristics.
+// All fields little-endian. Each takes a DataView and returns null if short.
+const BLE = (() => {
+  function reader(view) {
+    let o = 0;
+    const need = n => o + n <= view.byteLength;
+    return {
+      skip(n) { if (!need(n)) return false; o += n; return true; },
+      u8() { if (!need(1)) return null; const v = view.getUint8(o); o += 1; return v; },
+      u16() { if (!need(2)) return null; const v = view.getUint16(o, true); o += 2; return v; },
+      s16() { if (!need(2)) return null; const v = view.getInt16(o, true); o += 2; return v; },
+      u32() { if (!need(4)) return null; const v = view.getUint32(o, true); o += 4; return v; },
+    };
+  }
+
+  // Cycling Power Measurement (0x2A63): flags u16, power s16, then optional
+  // fields in flag order. Read up to crank revolution data.
+  function cyclingPower(view) {
+    const r = reader(view);
+    const flags = r.u16(), power = r.s16();
+    if (flags === null || power === null) return null;
+    const out = { power, crankRevs: null, crankTime: null };
+    if (flags & 0x0001 && !r.skip(1)) return null; // pedal power balance
+    if (flags & 0x0004 && !r.skip(2)) return null; // accumulated torque
+    if (flags & 0x0010 && !r.skip(6)) return null; // wheel revolution data
+    if (flags & 0x0020) {                           // crank revolution data
+      out.crankRevs = r.u16(); out.crankTime = r.u16();
+      if (out.crankTime === null) return null;
+    }
+    return out;
+  }
+
+  // Indoor Bike Data (0x2AD2). A reading can be split over several
+  // notifications, so every field may be absent.
+  function indoorBike(view) {
+    const r = reader(view);
+    const flags = r.u16();
+    if (flags === null) return null;
+    const has = bit => (flags & (1 << bit)) !== 0;
+    const out = { speedKmh: null, cadence: null, resistance: null, power: null, heartRate: null };
+    // Bit 0 is "More Data": instantaneous speed is present when it is CLEAR.
+    if (!has(0)) { const v = r.u16(); if (v === null) return null; out.speedKmh = v / 100; }
+    if (has(1) && !r.skip(2)) return null;           // average speed
+    if (has(2)) { const v = r.u16(); if (v === null) return null; out.cadence = v / 2; }
+    if (has(3) && !r.skip(2)) return null;           // average cadence
+    if (has(4) && !r.skip(3)) return null;           // total distance (u24)
+    if (has(5)) { const v = r.s16(); if (v === null) return null; out.resistance = v; }
+    if (has(6)) { const v = r.s16(); if (v === null) return null; out.power = v; }
+    if (has(7) && !r.skip(2)) return null;           // average power
+    if (has(8) && !r.skip(5)) return null;           // expended energy
+    if (has(9)) { const v = r.u8(); if (v === null) return null; out.heartRate = v; }
+    return out;
+  }
+
+  // Fitness Machine Feature (0x2ACC): u32 machine features, u32 target settings.
+  function ftmsFeatures(view) {
+    const r = reader(view);
+    const machine = r.u32(), targets = r.u32();
+    if (machine === null || targets === null) return null;
+    const t = bit => (targets & (1 << bit)) !== 0;
+    const m = bit => (machine & (1 << bit)) !== 0;
+    return {
+      machine, targets,
+      powerTarget: t(3),        // ERG
+      resistanceTarget: t(2),
+      simulation: t(13),        // grade/wind, what SIM mode uses
+      spinDown: t(15),
+      reportsCadence: m(1),
+      reportsHeartRate: m(10),
+      reportsPower: m(14),
+    };
+  }
+
+  // Supported Power Range (0x2AD8): s16 min, s16 max, u16 increment.
+  function powerRange(view) {
+    const r = reader(view);
+    const min = r.s16(), max = r.s16(), step = r.u16();
+    return step === null ? null : { min, max, step };
+  }
+
+  // Cumulative crank revolutions -> rpm. The trainer repeats the last event
+  // while you stop pedalling, so drop to 0 after 3 s without a new one.
+  function crankCadence() {
+    let last = null, lastAdvance = 0, rpm = null;
+    return function update(revs, time, now = Date.now()) {
+      if (last === null) { last = { revs, time }; lastAdvance = now; return null; }
+      const dRevs = (revs - last.revs) & 0xffff;
+      const dTime = (time - last.time) & 0xffff; // 1/1024 s, wraps at 65536
+      if (dRevs === 0 || dTime === 0) {
+        if (now - lastAdvance > 3000) rpm = 0;
+        return rpm;
+      }
+      last = { revs, time }; lastAdvance = now;
+      const value = dRevs * 60 * 1024 / dTime;
+      if (value < 250) rpm = value;
+      return rpm;
+    };
+  }
+
+  // Heart Rate Measurement (0x2A37): flags u8; bit 0 set = u16 heart rate, else u8.
+  function heartRate(view) {
+    const r = reader(view);
+    const flags = r.u8();
+    if (flags === null) return null;
+    return flags & 0x01 ? r.u16() : r.u8();
+  }
+  // Bits 1-2 of the same flags: bit 2 = the strap reports skin contact, bit 1 = it has it.
+  // null when the strap does not say.
+  function heartContact(view) {
+    if (!view || view.byteLength < 1) return null;
+    const flags = view.getUint8(0);
+    return flags & 0x04 ? !!(flags & 0x02) : null;
+  }
+
+  return { cyclingPower, indoorBike, ftmsFeatures, powerRange, crankCadence, heartRate, heartContact };
+})();
+
+// ---- GATT identifiers.
+const WAHOO_CONTROL = 'a026e005-0a7d-4ab3-97fa-f1500f9feb8b';
+const TACX_FEC = '6e40fec1-b5a3-f393-e0a9-e50e24dcca9e';
+const uuid16 = n => `0000${n.toString(16).padStart(4, '0')}-0000-1000-8000-00805f9b34fb`;
+const NAMES = {
+  [uuid16(0x1818)]: 'Cycling Power', [uuid16(0x1826)]: 'Fitness Machine (FTMS)',
+  [uuid16(0x1816)]: 'Cycling Speed and Cadence', [uuid16(0x180d)]: 'Heart Rate',
+  [uuid16(0x180a)]: 'Device Information', [uuid16(0x180f)]: 'Battery',
+  [uuid16(0x2a63)]: 'Cycling Power Measurement', [uuid16(0x2a65)]: 'Cycling Power Feature',
+  [uuid16(0x2a66)]: 'Cycling Power Control Point', [uuid16(0x2ad2)]: 'Indoor Bike Data',
+  [uuid16(0x2acc)]: 'Fitness Machine Feature', [uuid16(0x2ad3)]: 'Training Status',
+  [uuid16(0x2ad6)]: 'Supported Resistance Range', [uuid16(0x2ad8)]: 'Supported Power Range',
+  [uuid16(0x2ad9)]: 'Fitness Machine Control Point', [uuid16(0x2ada)]: 'Fitness Machine Status',
+  [uuid16(0x2a29)]: 'Manufacturer Name', [uuid16(0x2a24)]: 'Model Number',
+  [uuid16(0x2a26)]: 'Firmware Revision',
+  [WAHOO_CONTROL]: 'Wahoo trainer control (proprietary)',
+  [TACX_FEC]: 'Tacx FE-C over BLE (proprietary)',
+};
+const nameOf = u => NAMES[u] || u;
+
+// ---- Connection state.
+const $ = id => document.getElementById(id);
+
+// ---- Ride clock. In a background tab Chrome and Edge slow page timers to
+// once a second, and after about 5 minutes hidden to once a MINUTE. The ride
+// runs on these ticks (workout steps and their ERG targets, route gradient,
+// power match, recording), so they ran a minute late while another tab was in
+// front. A worker's timers are not slowed like that, so a worker beats too;
+// whichever of the two arrives first after 200 ms makes the tick.
+const clock = (() => {
+  const fns = [];
+  let n = 0, last = -Infinity;
+  const beat = () => {
+    const now = performance.now();
+    if (now - last < 200) return;
+    last = now; n++;
+    for (const f of fns) f(n);
+  };
+  setInterval(beat, 250);
+  try {
+    const w = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 250);'], { type: 'text/javascript' })));
+    w.onmessage = beat;
+  } catch { /* page timers alone: fine while the tab is in front */ }
+  return { every: f => fns.push(f) };
+})();
+let device = null, wakeLock = null;
+let state;
+function resetState() {
+  state = {
+    cpWatts: null, ftmsWatts: null, cadence: null, speed: null, lastPacket: null,
+    samples: [], crank: BLE.crankCadence(),
+    live: { power: null, cadence: null, speed: null, hr: null, at: 0 },
+    report: { manufacturer: null, model: null, firmware: null, services: [], characteristics: [],
+              features: null, range: null, controlPoint: false, errors: [] },
+  };
+}
+resetState();
+
+function setStatus(text, bad = false) {
+  $('status').textContent = text;
+  $('status').className = bad ? 'bad' : '';
+}
+
+// Shows the headline power. The power meter wins while it is sending;
+// otherwise the trainer's own reading is shown.
+function recordPower(watts, source) {
+  const now = Date.now();
+  state.lastPacket = now;
+  $('powerSource').textContent = source === 'pm' ? 'watts · power meter' : 'watts · trainer';
+  state.samples.push({ at: now, watts });
+  state.samples = state.samples.filter(s => now - s.at <= 3000);
+  $('watts').textContent = watts;
+  const avg = Math.round(state.samples.reduce((a, s) => a + s.watts, 0) / state.samples.length);
+  $('avg3').textContent = `3s average ${avg} W`;
+}
+
+function ergVerdict(r) {
+  if (r.features) {
+    if (r.features.powerTarget && r.controlPoint) return ['yes', 'Yes. FTMS power target is supported, so ERG can use the standard control point.'];
+    if (r.controlPoint) return ['no', 'Not through FTMS power targets. The control point exists but power target is not advertised.'];
+    return ['no', 'FTMS features are readable, but no control point was found.'];
+  }
+  if (r.characteristics.some(c => c.startsWith('Wahoo') || c.startsWith('Tacx'))) {
+    return ['no', 'No FTMS, but a proprietary control channel is present.'];
+  }
+  return ['no', 'Unknown so far. The trainer has not shown FTMS features.'];
+}
+
+function hex32(n) { return '0x' + (n >>> 0).toString(16).toUpperCase().padStart(8, '0'); }
+
+function reportText() {
+  const r = state.report, f = r.features;
+  const lines = [
+    `Trainer: ${r.manufacturer ?? '?'} ${r.model ?? '?'} (firmware ${r.firmware ?? '?'})`,
+    `ERG: ${ergVerdict(r)[1]}`,
+  ];
+  if (f) {
+    lines.push(`FTMS targets: power ${f.powerTarget}, resistance ${f.resistanceTarget}, simulation ${f.simulation}, spin-down ${f.spinDown}`);
+    lines.push(`FTMS reports: power ${f.reportsPower}, cadence ${f.reportsCadence}, heart rate ${f.reportsHeartRate}`);
+    lines.push(`FTMS feature raw: machine ${hex32(f.machine)}, targets ${hex32(f.targets)}`);
+  }
+  if (r.range) lines.push(`Power range: ${r.range.min}-${r.range.max} W in ${r.range.step} W steps`);
+  lines.push(`Power seen: Cycling Power ${state.cpWatts ?? 'none'}, FTMS ${state.ftmsWatts ?? 'none'}`);
+  lines.push(`Services: ${r.services.join(', ')}`);
+  lines.push(`Characteristics: ${r.characteristics.join(', ')}`);
+  if (r.errors.length) lines.push(`Errors: ${r.errors.join('; ')}`);
+  lines.push(`Browser: ${navigator.userAgent}`);
+  return lines.join('\n');
+}
+
+function renderReport() {
+  const r = state.report;
+  $('rTrainer').textContent = [r.manufacturer, r.model].filter(Boolean).join(' ') || 'reading…';
+  const [cls, text] = ergVerdict(r);
+  $('erg').textContent = text;
+  $('erg').className = cls;
+  $('rRange').textContent = r.range ? `${r.range.min}–${r.range.max} W` : '--';
+}
+
+const decoder = new TextDecoder();
+
+// ---- Extra sensors: a heart rate strap and a power meter, each its own
+// Bluetooth connection next to the trainer's.
+const FRESH_MS = 3000;
+const isFresh = at => !!at && Date.now() - at < FRESH_MS;
+const hrFresh = () => isFresh(ext.hr.at);
+// Longest wait between two trainer messages during a ride, tab in front and behind.
+const trainerWait = { at: 0, front: 0, back: 0 };
+function noteTrainerMsg(now) {
+  if (trainerWait.at && ride.status === 'riding') {
+    const k = document.hidden ? 'back' : 'front';
+    trainerWait[k] = Math.max(trainerWait[k], now - trainerWait.at);
+  }
+  trainerWait.at = now;
+}
+const ext = {
+  hr: { device: null, manual: false, value: null, at: 0, noContactAt: 0, msgAt: 0, waitFront: 0, waitBack: 0 },
+  pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null },
+};
+
+function trainerPower(watts) {
+  state.live.power = watts;
+  state.live.at = Date.now();
+  $('trainerWatts').textContent = `${watts} W`;
+  if (!isFresh(ext.pm.at)) recordPower(watts, 'trainer');
+}
+
+function trainerCadence(rpm) {
+  state.live.cadence = rpm;
+  if (!isFresh(ext.pm.cadenceAt)) $('cadence').textContent = `${Math.round(rpm)} rpm`;
+}
+
+function sensorState(kind, text, cls = '') {
+  $(`${kind}State`).textContent = text;
+  $(`${kind}State`).className = `sensor-state ${cls}`;
+}
+
+function renderSensors() {
+  for (const kind of ['hr', 'pm']) $(`${kind}Btn`).textContent = ext[kind].device ? 'Disconnect' : 'Connect';
+  if (ext.hr.device || ext.pm.device || device) $('livePanel').classList.remove('hidden');
+}
+
+function onSensorValue(kind, view) {
+  const now = Date.now();
+  if (kind === 'hr') {
+    // The longest wait between two messages, with the tab in front and behind.
+    if (ext.hr.msgAt && ride.status === 'riding') {
+      const k = document.hidden ? 'waitBack' : 'waitFront';
+      ext.hr[k] = Math.max(ext.hr[k], now - ext.hr.msgAt);
+    }
+    ext.hr.msgAt = now;
+    const v = BLE.heartRate(view);
+    // 0 bpm or "no skin contact": the strap is there but cannot read the heart.
+    if (!v || BLE.heartContact(view) === false) { ext.hr.noContactAt = now; return; }
+    ext.hr.value = v;
+    ext.hr.at = now;
+    $('hr').textContent = `${v} bpm`;
+    return;
+  }
+  const m = BLE.cyclingPower(view);
+  if (!m) return;
+  ext.pm.power = m.power;
+  ext.pm.at = now;
+  $('pmWatts').textContent = `${m.power} W`;
+  recordPower(m.power, 'pm');
+  if (m.crankRevs !== null) {
+    const rpm = ext.pm.crank(m.crankRevs, m.crankTime);
+    if (rpm !== null) {
+      ext.pm.cadence = rpm;
+      ext.pm.cadenceAt = now;
+      $('cadence').textContent = `${Math.round(rpm)} rpm`;
+    }
+  }
+}
+
+async function subscribeSensor(kind) {
+  const s = ext[kind];
+  sensorState(kind, 'Connecting…');
+  const server = await s.device.gatt.connect();
+  const service = await server.getPrimaryService(kind === 'hr' ? 0x180d : 0x1818);
+  const ch = await service.getCharacteristic(kind === 'hr' ? 0x2a37 : 0x2a63);
+  s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
+  ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
+  await ch.startNotifications();
+  sensorState(kind, s.device.name || 'Connected', 'ok');
+}
+
+function forgetSensor(kind) {
+  const s = ext[kind];
+  s.device = null;
+  s.at = 0;
+  if (kind === 'pm') { s.cadenceAt = 0; $('pmWatts').textContent = '--'; $('cadence').textContent = '--'; }
+  else $('hr').textContent = '--';
+  renderSensors();
+}
+
+async function toggleSensor(kind) {
+  const s = ext[kind];
+  if (s.device) {
+    s.manual = true;
+    s.device.gatt.disconnect();
+    return;
+  }
+  if (!navigator.bluetooth) return sensorState(kind, 'This browser has no Web Bluetooth. Use Chrome or Edge.', 'bad');
+  try {
+    sensorState(kind, kind === 'hr' ? 'Pick your heart rate strap in the pop-up…' : 'Pick your power meter (not the trainer) in the pop-up…');
+    const picked = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [kind === 'hr' ? 0x180d : 0x1818] }],
+      optionalServices: [0x180f, 0x180a],
+    });
+    if (kind === 'pm' && device && picked.id === device.id) {
+      return sensorState(kind, 'That is the trainer. Connect again and pick your power meter.', 'bad');
+    }
+    s.device = picked;
+    s.manual = false;
+    if (kind === 'pm') s.crank = BLE.crankCadence();
+    picked.addEventListener('gattserverdisconnected', () => onSensorDisconnected(kind, picked));
+    renderSensors();
+    await subscribeSensor(kind);
+  } catch (e) {
+    if (e.name === 'NotFoundError') sensorState(kind, s.device ? sensorStateText(kind) : 'Not connected');
+    else { sensorState(kind, `Could not connect: ${e.message}`, 'bad'); if (s.device) { s.manual = true; s.device.gatt.disconnect(); forgetSensor(kind); } }
+  }
+}
+
+function sensorStateText(kind) { return ext[kind].device?.name || 'Connected'; }
+
+// Straps and power meters drop out now and then; try to get them back.
+async function onSensorDisconnected(kind, which) {
+  const s = ext[kind];
+  if (s.device !== which) return;
+  if (s.manual) { forgetSensor(kind); sensorState(kind, 'Not connected'); return; }
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    sensorState(kind, `Connection lost. Reconnecting (${attempt} of 3)…`, 'bad');
+    await new Promise(r => setTimeout(r, 2000 * attempt));
+    if (s.device !== which || s.manual) return;
+    try { await subscribeSensor(kind); return; } catch { /* next attempt */ }
+  }
+  forgetSensor(kind);
+  sensorState(kind, 'Connection lost. Press Connect to try again.', 'bad');
+}
+
+function onValue(uuid, view) {
+  switch (uuid) {
+    case uuid16(0x2a63): {
+      const m = BLE.cyclingPower(view);
+      if (!m) return;
+      state.cpWatts = m.power;
+      trainerPower(m.power);
+      if (m.crankRevs !== null) {
+        const rpm = state.crank(m.crankRevs, m.crankTime);
+        if (rpm !== null) trainerCadence(rpm);
+      }
+      break;
+    }
+    case uuid16(0x2ad2): {
+      const d = BLE.indoorBike(view);
+      if (!d) return;
+      state.lastPacket = Date.now();
+      state.live.at = Date.now();
+      noteTrainerMsg(state.live.at);
+      if (d.power !== null) {
+        state.ftmsWatts = d.power;
+        trainerPower(d.power);
+      }
+      if (d.cadence !== null) trainerCadence(d.cadence);
+      if (d.speedKmh !== null) { state.live.speed = d.speedKmh; $('speed').textContent = `${d.speedKmh.toFixed(1)} km/h`; }
+      if (d.heartRate) {
+        state.live.hr = d.heartRate;
+        if (!hrFresh()) $('hr').textContent = `${d.heartRate} bpm`;
+      }
+      break;
+    }
+    case uuid16(0x2acc): state.report.features = BLE.ftmsFeatures(view); break;
+    case uuid16(0x2ad8): state.report.range = BLE.powerRange(view); break;
+    case uuid16(0x2a29): state.report.manufacturer = decoder.decode(view).replace(/\0/g, '').trim(); break;
+    case uuid16(0x2a24): state.report.model = decoder.decode(view).replace(/\0/g, '').trim(); break;
+    case uuid16(0x2a26): state.report.firmware = decoder.decode(view).replace(/\0/g, '').trim(); break;
+  }
+  renderReport();
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setStatus('This browser has no Web Bluetooth. Open this page in Chrome or Edge on Windows.', true);
+    return;
+  }
+  try {
+    setStatus('Pick your trainer in the browser’s pop-up…');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [0x1818] }, { services: [0x1826] }],
+      optionalServices: [0x180a, 0x180d, 0x180f, 0x1816, TACX_FEC],
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    trainerManual = false;
+    await setupTrainer();
+  } catch (e) {
+    if (e.name === 'NotFoundError') setStatus('No trainer picked. Pedal to wake it and try again.');
+    else setStatus(`Could not connect: ${e.message}`, true);
+  }
+}
+
+// Connects to the picked trainer and subscribes to everything; also used to
+// reconnect after a dropout, which needs no new pick.
+async function setupTrainer() {
+  resetState();
+  setStatus(`Connecting to ${device.name || 'trainer'}…`);
+  const server = await device.gatt.connect();
+
+  const services = await server.getPrimaryServices();
+  for (const service of services) {
+    state.report.services.push(nameOf(service.uuid));
+    let chars = [];
+    try { chars = await service.getCharacteristics(); }
+    catch (e) { state.report.errors.push(`${nameOf(service.uuid)}: ${e.message}`); continue; }
+    for (const c of chars) {
+      state.report.characteristics.push(nameOf(c.uuid));
+      try {
+        if (c.uuid === uuid16(0x2a63) || c.uuid === uuid16(0x2ad2)) {
+          c.addEventListener('characteristicvaluechanged', e => onValue(c.uuid, e.target.value));
+          await c.startNotifications();
+        } else if ([0x2acc, 0x2ad8, 0x2a29, 0x2a24, 0x2a26].map(uuid16).includes(c.uuid)) {
+          onValue(c.uuid, await c.readValue());
+        } else if (c.uuid === uuid16(0x2ad9)) {
+          state.report.controlPoint = true;
+          c.addEventListener('characteristicvaluechanged', e => ERG.indication(e.target.value));
+          await c.startNotifications(); // indications carry the command answers
+          ERG.attach(c);
+        } else if (c.uuid === uuid16(0x2ada)) {
+          // Fitness Machine Status: 0xFF means another app took control.
+          c.addEventListener('characteristicvaluechanged', e => {
+            if (e.target.value.getUint8(0) === 0x14 && e.target.value.byteLength > 1) calibration.status(e.target.value.getUint8(1));
+            if (e.target.value.getUint8(0) === 0xff) {
+              const wasOn = ERG.on;
+              ERG.controlLost();
+              renderErg();
+              if (wasOn) ergStatus('Another app took control of the trainer. ERG is off.', 'bad');
+            }
+          });
+          await c.startNotifications();
+        }
+      } catch (e) {
+        state.report.errors.push(`${nameOf(c.uuid)}: ${e.message}`);
+      }
+    }
+  }
+
+  $('trainerName').textContent = device.name || 'Trainer';
+  $('livePanel').classList.remove('hidden');
+  $('reportPanel').classList.remove('hidden');
+  $('ergPanel').classList.remove('hidden');
+  $('calPanel').classList.toggle('hidden', !(state.report.controlPoint && state.report.features && state.report.features.spinDown));
+  calibration.render();
+  const canErg = state.report.controlPoint && (!state.report.features || state.report.features.powerTarget);
+  $('ergToggle').disabled = !canErg;
+  if (state.report.range) { $('targetRange').min = state.report.range.min; $('targetRange').max = state.report.range.max; }
+  ERG.setTarget(ERG.target);
+  ergStatus(canErg ? 'ERG is off. Switch it on to hold the target power.' : 'This trainer does not accept power targets.', canErg ? '' : 'bad');
+  if (ride.status === 'riding') applyStep();
+  $('connectBtn').classList.add('hidden');
+  $('disconnectBtn').classList.remove('hidden');
+  setStatus(`Connected to ${device.name || 'trainer'}.`);
+  renderReport();
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+}
+
+// A dropout mid-ride reconnects on its own, up to five times, and puts ERG
+// back as it was; Disconnect does not.
+let trainerManual = false;
+async function onDisconnected() {
+  calibration.stop(calibration.active ? 'Trainer disconnected during calibration. Try again once it is back.' : '', 'bad');
+  const which = device, ergWasOn = ERG.on;
+  ERG.detach();
+  renderErg();
+  if (!trainerManual && which) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      ergStatus(ergWasOn ? `Trainer connection lost. ERG paused while reconnecting (${attempt} of 5)…` : `Trainer connection lost. Reconnecting (${attempt} of 5)…`, 'bad');
+      setStatus(`Trainer connection lost. Reconnecting (${attempt} of 5)…`, true);
+      await new Promise(r => setTimeout(r, 1500 * attempt));
+      if (device !== which || trainerManual) return;
+      try {
+        await setupTrainer();
+        // A plan step puts ERG back itself (setupTrainer calls applyStep).
+        if (ergWasOn && !ERG.on && !$('ergToggle').disabled) { ERG.setOn(true); renderErg(); }
+        return;
+      } catch { /* next attempt */ }
+    }
+  }
+  ergStatus('Trainer disconnected. ERG is off.');
+  setStatus(trainerManual ? 'Disconnected.' : 'Trainer connection lost. Pedal to wake it and press Connect trainer.', !trainerManual);
+  $('connectBtn').classList.remove('hidden');
+  $('disconnectBtn').classList.add('hidden');
+  wakeLock?.release().catch(() => {});
+  wakeLock = null;
+}
+
+// ---- ERG through the FTMS control point (0x2AD9).
+// Every write is answered by an indication: 0x80, request op code, result.
+// Writes go one at a time; the next waits for the previous answer.
+const FTMS_RESULT = { 1: 'success', 2: 'not supported', 3: 'invalid parameter', 4: 'operation failed', 5: 'control not permitted' };
+const OP = { requestControl: 0x00, reset: 0x01, setTargetPower: 0x05, start: 0x07, setSimulation: 0x11, spinDown: 0x13 };
+
+// ---- Power match. Trainers and power meters often disagree by 5-10%. With
+// a power meter sending, ERG aims the trainer at target x factor, where the
+// factor is a slow average of (trainer watts / power meter watts) while
+// pedalling, so the power meter reads the target. A ratio rather than a fixed
+// difference, so the correction scales between a 120 W and a 300 W step.
+// Without a fresh power meter reading for 10 s the factor falls back to 1 and
+// ERG uses the trainer alone.
+const match = (() => {
+  let enabled = true, factor = 1, lastPm = 0, lost = false;
+  try { enabled = localStorage.getItem('powerMatch') !== 'off'; } catch {}
+  const LIMIT = 0.15, ALPHA = 0.05; // within 15%; about a 20 s time constant at 1 Hz
+  return {
+    get enabled() { return enabled; },
+    set enabled(v) { enabled = v; try { localStorage.setItem('powerMatch', v ? 'on' : 'off'); } catch {} if (!v) factor = 1; },
+    active() { return enabled && Date.now() - lastPm < 10000; },
+    factor() { return this.active() ? factor : 1; },
+    // The power meter was matching and has gone quiet.
+    get lost() { return enabled && lost; },
+    // Called once a second.
+    tick() {
+      if (!enabled) return;
+      const pmOk = isFresh(ext.pm.at), trOk = !!state && isFresh(state.live.at);
+      if (pmOk) { lastPm = Date.now(); lost = false; }
+      else if (lastPm && Date.now() - lastPm >= 10000 && factor !== 1) { factor = 1; lost = true; }
+      if (!pmOk || !trOk || !ERG.on || ext.pm.power < 30 || state.live.power < 30) return;
+      const ratio = state.live.power / ext.pm.power;
+      factor = Math.max(1 - LIMIT, Math.min(1 + LIMIT, factor + ALPHA * (ratio - factor)));
+    },
+  };
+})();
+
+const ERG = (() => {
+  let cp = null, queue = Promise.resolve(), pending = null;
+  let on = false, target = 150, hasControl = false, sendTimer = null, lastSent = 0, lastNudge = 0;
+
+  function commanded() {
+    const r = state.report.range || { min: 50, max: 600 };
+    return Math.max(r.min, Math.min(r.max, Math.round(target * match.factor())));
+  }
+
+  function onIndication(view) {
+    if (view.byteLength < 3 || view.getUint8(0) !== 0x80 || !pending) return;
+    if (view.getUint8(1) !== pending.op) return;
+    const p = pending; pending = null;
+    clearTimeout(p.timer);
+    p.resolve(p.full ? view : view.getUint8(2));
+  }
+
+  // Write one command and wait for its answer. Resolves with the result code.
+  function send(bytes, full = false) {
+    const run = () => new Promise((resolve, reject) => {
+      if (!cp) return reject(new Error('not connected'));
+      pending = { op: bytes[0], full, resolve, timer: setTimeout(() => { pending = null; reject(new Error('trainer did not answer')); }, 3000) };
+      cp.writeValueWithResponse(new Uint8Array(bytes)).catch(e => {
+        if (pending) { clearTimeout(pending.timer); pending = null; }
+        reject(e);
+      });
+    });
+    const result = queue.then(run, run);
+    queue = result.catch(() => {});
+    return result;
+  }
+
+  async function ensureControl() {
+    if (hasControl) return;
+    const r = await send([OP.requestControl]);
+    if (r !== 1) throw new Error(`trainer refused control (${FTMS_RESULT[r] || r})`);
+    hasControl = true;
+    await send([OP.start]).catch(() => {}); // some trainers want Start first; harmless otherwise
+  }
+
+  function powerBytes(w) { return [OP.setTargetPower, w & 0xff, (w >> 8) & 0xff]; }
+  // Flat road: wind 0 m/s, grade 0 %, Crr 0.0040, Cw 0.51 kg/m.
+  const FLAT_ROAD = [OP.setSimulation, 0, 0, 0, 0, 40, 51];
+
+  async function applyTarget() {
+    await ensureControl();
+    const w = commanded();
+    const r = await send(powerBytes(w));
+    if (r !== 1) throw new Error(`target refused (${FTMS_RESULT[r] || r})`);
+    lastSent = w;
+    if (match.active()) ergStatus(`Holding ${target} W on your power meter (trainer set to ${w} W).`, 'ok');
+    else if (match.lost) ergStatus(`Power meter silent: holding ${target} W on the trainer's own reading.`, 'bad');
+    else ergStatus(`Holding ${target} W.`, 'ok');
+  }
+
+  async function release() {
+    const f = state.report.features;
+    if (f && f.simulation) {
+      await ensureControl();
+      const r = await send(FLAT_ROAD);
+      if (r === 1) { ergStatus('ERG is off. The trainer rides like a flat road.'); return; }
+    }
+    // No simulation mode: hand control back, which ends the power target.
+    const r = await send([OP.reset]);
+    hasControl = false;
+    ergStatus(r === 1 ? 'ERG is off. Control handed back to the trainer.' : `ERG off, but reset was refused (${FTMS_RESULT[r] || r}).`);
+  }
+
+  return {
+    attach(characteristic) { cp = characteristic; hasControl = false; pending = null; queue = Promise.resolve(); },
+    indication: onIndication,
+    get on() { return on; },
+    get target() { return target; },
+    // Indoor Bike Simulation with a gradient (%), no wind, Crr 0.0040, Cw 0.51.
+    async setGrade(pct) {
+      await ensureControl();
+      const g = Math.round(pct * 100) & 0xffff;
+      const r = await send([OP.setSimulation, 0, 0, g & 0xff, g >> 8, 40, 51]);
+      if (r !== 1) throw new Error(`trainer refused the gradient (${FTMS_RESULT[r] || r})`);
+    },
+    get connected() { return !!cp && !$('ergToggle').disabled; },
+    // FTMS Spin Down Control: start (1) answers with the target speed band in
+    // 0.01 km/h; ignore (2) cancels it.
+    async spinDown(start) {
+      await ensureControl();
+      const v = await send([OP.spinDown, start ? 1 : 2], true);
+      const r = v.getUint8(2);
+      if (r !== 1) throw new Error(FTMS_RESULT[r] || `code ${r}`);
+      if (!start || v.byteLength < 7) return null;
+      return { low: v.getUint16(3, true) / 100, high: v.getUint16(5, true) / 100 };
+    },
+    detach() { cp = null; on = false; hasControl = false; pending = null; },
+    // Another app took over: stop without sending anything, so we do not grab it back.
+    controlLost() { hasControl = false; on = false; clearTimeout(sendTimer); },
+    // Watts actually sent to the trainer: the target scaled by power match.
+    get sent() { return lastSent; },
+    // Power match changed its factor: resend, at most every 5 s and only for 3 W or more.
+    nudge(force = false) {
+      if (!on || !cp) return;
+      const w = commanded();
+      if ((Math.abs(w - lastSent) < 2 && !force) || (!force && Date.now() - lastNudge < 5000)) return;
+      lastNudge = Date.now();
+      applyTarget().catch(e => ergStatus(`Target not set: ${e.message}`, 'bad'));
+    },
+    async setOn(value) {
+      on = value;
+      try { on ? await applyTarget() : await release(); }
+      catch (e) {
+        ergStatus(`ERG ${on ? 'could not start' : 'could not stop'}: ${e.message}`, 'bad');
+        if (on) { on = false; renderErg(); }
+      }
+    },
+    setTarget(w) {
+      const r = state.report.range || { min: 50, max: 600 };
+      target = Math.max(r.min, Math.min(r.max, Math.round(w)));
+      renderErg();
+      if (!on) return;
+      // Coalesce rapid clicks and slider drags into one write.
+      clearTimeout(sendTimer);
+      sendTimer = setTimeout(() => applyTarget().catch(e => ergStatus(`Target not set: ${e.message}`, 'bad')), 250);
+    },
+  };
+})();
+
+$('matchToggle').checked = match.enabled;
+$('matchToggle').addEventListener('change', e => { match.enabled = e.target.checked; ERG.nudge(true); });
+clock.every(n => {
+  if (n % 4) return; // once a second
+  const wasLost = match.lost;
+  match.tick();
+  $('matchRow').classList.toggle('hidden', !ext.pm.device);
+  if (ERG.on) ERG.nudge(match.lost !== wasLost);
+});
+
+// ---- Spin-down calibration. The trainer names a speed band; the rider
+// rides above it, stops pedalling, and the trainer measures how it coasts
+// down, which sets its own power reading. Progress comes as Fitness Machine
+// Status 0x14: 1 speed up, 4 stop pedalling, 2 done, 3 failed.
+const calibration = (() => {
+  let active = false, band = null, phase = '', timer = null, speedTimer = null;
+  const last = () => { try { return localStorage.getItem('lastCalibration'); } catch { return null; } };
+  function msg(text, cls = '') { $('calStatus').textContent = text; $('calStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : ''; }
+  const riding = () => ride.status === 'riding' || ride.status === 'paused';
+  function render() {
+    $('calBtn').classList.toggle('hidden', active);
+    $('calCancel').classList.toggle('hidden', !active);
+    $('calBtn').disabled = riding();
+    if (active) return;
+    const when = last();
+    msg(riding() ? 'Finish the ride to calibrate.'
+      : when ? `Last calibrated ${new Date(Number(when)).toLocaleString()}.` : 'Not calibrated from this page yet.');
+  }
+  function stop(text, cls) {
+    active = false; band = null; phase = '';
+    clearTimeout(timer); clearInterval(speedTimer);
+    render();
+    if (text) msg(text, cls);
+  }
+  function showPhase() {
+    const v = state.live.speed != null ? `${state.live.speed.toFixed(1)} km/h` : 'no speed yet';
+    if (phase === 'up') msg(`Pedal hard until you are above ${band ? `${Math.ceil(band.high)} km/h` : 'the trainer’s target speed'}. Now ${v}.`);
+    else if (phase === 'coast') msg(`Stop pedalling now and let the trainer coast to a stop. Now ${v}.`);
+  }
+  async function start() {
+    if (active || riding()) return;
+    active = true; phase = 'up'; render();
+    msg('Asking the trainer to start a spin-down…');
+    try {
+      if (ERG.on) { await ERG.setOn(false); renderErg(); }
+      band = await ERG.spinDown(true);
+    } catch (e) {
+      stop(`The trainer would not start a spin-down: ${e.message}.`, 'bad');
+      return;
+    }
+    if (!active) return;
+    showPhase();
+    speedTimer = setInterval(showPhase, 500);
+    timer = setTimeout(() => stop('No result from the trainer after 2 minutes. Try again, or calibrate in the trainer’s own app.', 'bad'), 120000);
+  }
+  function cancel() {
+    if (!active) return;
+    stop('Calibration cancelled.');
+    ERG.spinDown(false).catch(() => {});
+  }
+  function status(code) {
+    if (!active) return;
+    if (code === 1) { phase = 'up'; showPhase(); }
+    else if (code === 4) { phase = 'coast'; showPhase(); }
+    else if (code === 2) {
+      try { localStorage.setItem('lastCalibration', String(Date.now())); } catch {}
+      stop('Calibrated. The trainer’s power reading now comes from this spin-down.', 'ok');
+    } else if (code === 3) stop('The spin-down failed. Get above the target speed, then stop pedalling completely, and try again.', 'bad');
+  }
+  return { start, cancel, status, render, stop, get active() { return active; } };
+})();
+$('calBtn').addEventListener('click', () => calibration.start());
+$('calCancel').addEventListener('click', () => calibration.cancel());
+
+function ergStatus(text, cls = '') { $('ergStatus').textContent = text; $('ergStatus').className = cls; }
+
+function renderErg() {
+  $('ergToggle').checked = ERG.on;
+  $('targetWatts').textContent = ERG.target;
+  $('targetRange').value = ERG.target;
+  $('ergPanel').classList.toggle('ergOff', !ERG.on);
+}
+
+$('ergToggle').addEventListener('change', e => { ERG.setOn(e.target.checked); renderErg(); });
+document.querySelectorAll('[data-step]').forEach(b =>
+  b.addEventListener('click', () => ERG.setTarget(ERG.target + Number(b.dataset.step))));
+$('targetRange').addEventListener('input', e => ERG.setTarget(Number(e.target.value)));
+document.addEventListener('keydown', e => {
+  if ($('ergPanel').classList.contains('hidden') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') return; // the slider handles its own arrows
+  if (e.key === 'e' || e.key === 'E') { if (!$('ergToggle').disabled) { ERG.setOn(!ERG.on); renderErg(); } }
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const step = (e.shiftKey ? 25 : 5) * (e.key === 'ArrowUp' ? 1 : -1);
+    ERG.setTarget(ERG.target + step);
+  }
+});
+renderErg();
+
+// ---- Ride: today's workout from Gradient, a step player that drives ERG,
+// and a 1 Hz recorder that saves a .fit file.
+const GRADIENT_DEFAULT = 'https://training-dashboard-peiv.onrender.com';
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+let gradient = store.get('gradient', { url: GRADIENT_DEFAULT, token: null });
+
+function rideMsg(text, cls = '') { $('rideMsg').textContent = text; $('rideMsg').className = cls; }
+
+async function gradientApi(path, options = {}) {
+  const base = (gradient.url || GRADIENT_DEFAULT).replace(/\/+$/, '');
+  let res;
+  try {
+    res = await fetch(base + path, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(gradient.token ? { Authorization: `Bearer ${gradient.token}` } : {}) },
+    });
+  } catch {
+    throw new Error(`Could not reach Gradient at ${base}. Check the laptop is online and the address under "Gradient address".`);
+  }
+  const body = await res.json().catch(() => null);
+  if (res.status === 401 && gradient.token) {
+    gradient.token = null;
+    store.set('gradient', gradient);
+    renderGradient();
+    throw new Error('Your Gradient sign-in expired. Sign in again.');
+  }
+  if (!res.ok) {
+    const err = new Error(body && typeof body.error === 'string' ? body.error : `Gradient answered ${res.status}.`);
+    err.status = res.status;
+    err.reconnect = !!(body && body.reconnect);
+    throw err;
+  }
+  return body;
+}
+
+function renderGradient() {
+  $('signInForm').classList.toggle('hidden', !!gradient.token);
+  $('signedIn').classList.toggle('hidden', !gradient.token);
+  $('gUrl').value = gradient.url || GRADIENT_DEFAULT;
+}
+
+async function signIn(e) {
+  e.preventDefault();
+  gradient.url = $('gUrl').value.trim() || GRADIENT_DEFAULT;
+  rideMsg('Signing in to Gradient. If it has been asleep this can take up to a minute…');
+  try {
+    const { token } = await gradientApi('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: $('gEmail').value.trim(), password: $('gPassword').value }),
+    });
+    gradient.token = token;
+    store.set('gradient', gradient);
+    $('gPassword').value = '';
+    renderGradient();
+    await loadToday();
+  } catch (err) {
+    rideMsg(`Sign-in failed: ${err.message}`, 'bad');
+  }
+}
+
+async function loadToday() {
+  if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+  rideMsg('Loading today’s ride from Gradient. If it has been asleep this can take up to a minute…');
+  try {
+    const [day, thresholds] = await Promise.all([
+      gradientApi('/api/training-plan/today'),
+      gradientApi('/api/settings/thresholds'),
+    ]);
+    if (!day) return rideMsg('Gradient has no training plan set up yet.');
+    if (day.isRestDay) return rideMsg(`Today is a rest day${day.restReason ? `: ${day.restReason}` : '.'}`);
+    if (day.discipline !== 'BIKE') return rideMsg(`Today’s session is a ${String(day.discipline || 'other').toLowerCase()} session, not a ride. You can still start a free ride.`);
+    const segments = Array.isArray(day.segments) ? day.segments : [];
+    if (!segments.length) return rideMsg(`Today’s ride “${day.name}” has no steps to follow. You can still start a free ride.`);
+    if (!thresholds || !thresholds.ftpWatts) return rideMsg('Set your FTP in Gradient first. The steps are in % of FTP.', 'bad');
+    loadWorkout(day.name || 'Today’s ride', segments, thresholds.ftpWatts);
+  } catch (err) {
+    rideMsg(err.message, 'bad');
+  }
+}
+
+// ---- Workout library: every ride in the Dropbox library Gradient reads.
+// Gradient parses and caches the files; the first load after new files land
+// can take a while on its free instance.
+let library = null; // { workouts, ftp }
+const libView = { q: '', cat: '', sort: 'name' };
+
+async function openLibrary() {
+  if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+  const box = $('libBox');
+  if (!box.classList.contains('hidden') && library) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  if (library) return renderLibrary();
+  $('libList').innerHTML = '<div class="muted" style="padding:12px">Loading your workout library from Gradient. The first time can take up to a minute…</div>';
+  try {
+    const [all, thresholds] = await Promise.all([
+      gradientApi('/api/workout-library'),
+      gradientApi('/api/settings/thresholds'),
+    ]);
+    if (!thresholds || !thresholds.ftpWatts) { box.classList.add('hidden'); return rideMsg('Set your FTP in Gradient first. The steps are in % of FTP.', 'bad'); }
+    const workouts = (Array.isArray(all) ? all : [])
+      .filter(w => w.discipline === 'BIKE' && Array.isArray(w.segments) && w.segments.some(x => x.durationSec > 0));
+    library = { workouts, ftp: thresholds.ftpWatts };
+    renderLibrary();
+  } catch (err) {
+    $('libList').innerHTML = '';
+    box.classList.add('hidden');
+    rideMsg(err.message, 'bad');
+  }
+}
+
+const workoutSeconds = w => w.segments.reduce((a, x) => a + (x.durationSec > 0 ? x.durationSec : 0), 0);
+const CATEGORY_LABEL = { ENDURANCE: 'Endurance', TEMPO: 'Tempo', THRESHOLD: 'Threshold', VO2MAX: 'VO2max' };
+
+// A small profile of the workout, same colours as the big chart.
+function miniProfile(segments) {
+  const steps = segments.filter(x => x.durationSec > 0);
+  const total = steps.reduce((a, x) => a + x.durationSec, 0) || 1;
+  const frac = x => (x.targetMetric && x.targetMetric !== 'power' ? null : x.intensityFraction ?? null);
+  const maxF = Math.max(1.2, ...steps.map(x => frac(x) ?? 0));
+  let x = 0, out = '';
+  for (const st of steps) {
+    const w = (st.durationSec / total) * 120, f = frac(st), h = ((f ?? 0.4) / maxF) * 24;
+    out += `<rect x="${x.toFixed(1)}" y="${(24 - h).toFixed(1)}" width="${Math.max(w, 0.5).toFixed(1)}" height="${h.toFixed(1)}" fill="${zoneColor(f)}"/>`;
+    x += w;
+  }
+  return `<svg viewBox="0 0 120 24" preserveAspectRatio="none" aria-hidden="true">${out}</svg>`;
+}
+
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// JOIN names every ride "JOIN Cycling - …"; the prefix says nothing here.
+const workoutTitle = w => String(w.name || 'Workout').replace(/^JOIN Cycling\s*-\s*/i, '');
+
+function renderLibrary() {
+  if (!library) return;
+  const q = libView.q.trim().toLowerCase();
+  let list = library.workouts.filter(w => (!libView.cat || w.category === libView.cat) && (!q || workoutTitle(w).toLowerCase().includes(q)));
+  list = list.slice().sort(libView.sort === 'dur'
+    ? (a, b) => workoutSeconds(a) - workoutSeconds(b)
+    : (a, b) => workoutTitle(a).localeCompare(workoutTitle(b)));
+  document.querySelectorAll('#libChips [data-cat]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cat === libView.cat)));
+  document.querySelector('#libChips [data-sort]').setAttribute('aria-pressed', String(libView.sort === 'dur'));
+  if (!list.length) {
+    $('libList').innerHTML = `<div class="muted" style="padding:12px">${library.workouts.length ? 'No ride matches.' : 'Gradient found no rides in your workout library.'}</div>`;
+    return;
+  }
+  $('libList').innerHTML = list.map(w => {
+    const i = library.workouts.indexOf(w);
+    const meta = [fmtTime(workoutSeconds(w)), CATEGORY_LABEL[w.category]].filter(Boolean).join(' · ');
+    return `<button class="lib-item" data-i="${i}"><span class="n">${esc(workoutTitle(w))}</span>${miniProfile(w.segments)}<span class="m">${esc(meta)}</span></button>`;
+  }).join('');
+}
+
+function pickLibrary(i) {
+  const w = library && library.workouts[i];
+  if (!w) return;
+  if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+  $('libBox').classList.add('hidden');
+  loadWorkout(workoutTitle(w), w.segments, library.ftp);
+}
+
+// ---- Workout builder: your own sessions in % of FTP, kept in this browser.
+// A workout is a list of blocks: a single step, or intervals (n x on/off).
+// Each expands to plain steps, so it rides exactly like a library workout.
+// The profile is the main control: drag a block's height for power and its
+// right edge for length; the rows below show the same blocks as numbers.
+const builder = (() => {
+  const KEY = 'myWorkouts';
+  let list = [], edit = null, sel = -1, history = [], fresh = -1, currentFtp = null, justSaved = null;
+  try { list = JSON.parse(localStorage.getItem(KEY) || '[]'); if (!Array.isArray(list)) list = []; } catch { list = []; }
+  const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {} };
+  const localFtp = () => { try { return Number(localStorage.getItem('ftp')) || 200; } catch { return 200; } };
+  const ftpNow = () => currentFtp || localFtp();
+  const clone = x => JSON.parse(JSON.stringify(x));
+
+  const PRESETS = [
+    { label: 'Warm-up', b: { type: 'step', sec: 600, pct: 55 } },
+    { label: 'Endurance', b: { type: 'step', sec: 1200, pct: 68 } },
+    { label: 'Tempo', b: { type: 'step', sec: 900, pct: 83 } },
+    { label: 'Sweet spot', b: { type: 'repeat', n: 3, onSec: 600, onPct: 90, offSec: 300, offPct: 55 } },
+    { label: 'Threshold', b: { type: 'repeat', n: 2, onSec: 720, onPct: 100, offSec: 360, offPct: 55 } },
+    { label: 'VO2max', b: { type: 'repeat', n: 5, onSec: 180, onPct: 115, offSec: 180, offPct: 50 } },
+    { label: '30/30s', b: { type: 'repeat', n: 10, onSec: 30, onPct: 130, offSec: 30, offPct: 50 } },
+    { label: 'Sprints', b: { type: 'repeat', n: 6, onSec: 15, onPct: 180, offSec: 285, offPct: 50 } },
+    { label: 'Cool-down', b: { type: 'step', sec: 600, pct: 50 } },
+  ];
+
+  // "45" is minutes; "4:30" minutes and seconds; "1:05:00" hours too.
+  function parseDur(t) {
+    const parts = String(t).trim().split(':').map(x => x.trim());
+    if (!parts[0] || parts.some(x => !/^\d+$/.test(x)) || parts.length > 3) return null;
+    const n = parts.map(Number);
+    const sec = n.length === 1 ? n[0] * 60 : n.length === 2 ? n[0] * 60 + n[1] : n[0] * 3600 + n[1] * 60 + n[2];
+    return sec > 0 && sec <= 6 * 3600 ? sec : null;
+  }
+  const fmtDur = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  const parsePct = t => { const v = String(t).trim(); if (!v) return null; const n = Number(v); return n >= 20 && n <= 300 ? Math.round(n) : NaN; };
+  const watts = pct => (pct == null ? 'free' : `${Math.round(ftpNow() * pct / 100)} W`);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  // Expanded steps, each remembering which block and which field it came from.
+  function steps(blocks) {
+    const out = [];
+    blocks.forEach((b, i) => {
+      if (b.type === 'step') out.push({ i, sec: b.sec, pct: b.pct, sk: 'sec', pk: 'pct' });
+      else for (let r = 0; r < b.n; r++) {
+        out.push({ i, sec: b.onSec, pct: b.onPct, sk: 'onSec', pk: 'onPct' });
+        if (b.offSec) out.push({ i, sec: b.offSec, pct: b.offPct, sk: 'offSec', pk: 'offPct' });
+      }
+    });
+    return out;
+  }
+  const segments = blocks => steps(blocks).map(s => ({ durationSec: s.sec, intensityFraction: s.pct == null ? null : s.pct / 100 }));
+  // Rough training stress: free steps counted as easy (50%).
+  const stress = segs => Math.round(segs.reduce((a, x) => a + x.durationSec * (x.intensityFraction ?? 0.5) ** 2, 0) / 36);
+  const total = segs => segs.reduce((a, x) => a + x.durationSec, 0);
+
+  // ---- Undo: a snapshot before every change that is not mid-drag or mid-typing.
+  function remember() { history.push(clone(edit.blocks)); if (history.length > 50) history.shift(); $('bUndo').disabled = false; }
+  function undo() {
+    if (!history.length) return;
+    edit.blocks = history.pop();
+    $('bUndo').disabled = !history.length;
+    sel = Math.min(sel, edit.blocks.length - 1);
+    renderRows(); renderChart();
+  }
+
+  // ---- Unsaved work survives Cancel (as an Undo) and a closed tab (as Resume).
+  const DRAFT = 'builderDraft';
+  const snap = () => JSON.stringify({ name: $('bName').value.trim(), blocks: edit.blocks });
+  // Only this editor's own changes touch the draft, so opening another workout
+  // never wipes an older unsaved one until something is actually changed.
+  function keepDraft() {
+    if (!edit || edit.orig === undefined) return;
+    try {
+      if (snap() !== edit.orig) { localStorage.setItem(DRAFT, JSON.stringify({ id: edit.id, name: $('bName').value, blocks: edit.blocks })); edit.drafted = true; }
+      else if (edit.drafted) localStorage.removeItem(DRAFT);
+    } catch {}
+  }
+  function readDraft() { try { const d = JSON.parse(localStorage.getItem(DRAFT) || 'null'); return d && Array.isArray(d.blocks) ? d : null; } catch { return null; } }
+  function dropDraft() { try { localStorage.removeItem(DRAFT); } catch {} }
+  let toastTimer = null;
+  // Leaves the way it came in: fades back down.
+  function hideToast() {
+    clearTimeout(toastTimer);
+    const el = $('bToast').firstElementChild;
+    if (!el) return;
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 150);
+  }
+  function toast(text, undoFn) {
+    const t = $('bToast');
+    clearTimeout(toastTimer);
+    t.innerHTML = `<div class="btoast"><span>${esc(text)}</span>${undoFn ? '<button class="link" id="bToastUndo">Undo</button>' : ''}</div>`;
+    if (undoFn) $('bToastUndo').addEventListener('click', () => { hideToast(); undoFn(); });
+    toastTimer = setTimeout(hideToast, undoFn ? 8000 : 4000);
+  }
+
+  // ---- Saved list.
+  function renderList() {
+    const d = !edit && readDraft();
+    const banner = d ? `<div class="btoast"><span>Unsaved workout “${esc(d.name.trim() || 'Untitled')}”</span><span><button class="sm" data-draft="resume">Resume</button> <button class="link" data-draft="discard">Discard</button></span></div>` : '';
+    $('myList').innerHTML = banner + (list.length ? list.map((w, i) => {
+      const segs = segments(w.blocks);
+      return `<div class="lib-item my-item${w.id === justSaved ? ' just' : ''}"><span class="n">${esc(w.name)}</span>${miniProfile(segs)}
+        <span class="m">${fmtTime(total(segs))} · about ${stress(segs)} TSS</span>
+        <span class="acts"><button class="sm" data-my-load="${i}">Load</button><button class="secondary sm" data-my-edit="${i}">Edit</button><button class="link" data-my-del="${i}">Delete</button></span></div>`;
+    }).join('') : '<div class="muted" style="padding:8px 0">No workouts of your own yet. Press New workout to make one.</div>');
+    justSaved = null;
+  }
+
+  // ---- Rows.
+  function blockRow(b, i) {
+    const tools = `<span class="tools"><button class="secondary sm" data-b-dup="${i}" title="Duplicate" aria-label="Duplicate block ${i + 1}">⧉</button><button class="secondary sm" data-b-del="${i}" title="Remove (Alt+↑/↓ moves a block)" aria-label="Remove block ${i + 1}">✕</button></span>`;
+    const cls = `bblock${i === sel ? ' sel' : ''}${i === fresh ? ' new' : ''}`;
+    const pctIn = (k, v, label) => `<input class="p" data-k="${k}" value="${v ?? ''}" placeholder="free" inputmode="numeric" aria-label="${label}"> %<span class="w" data-w="${k}">${watts(v)}</span>`;
+    if (b.type === 'step') return `<div class="${cls}" data-i="${i}"><span class="sw" style="background:${zoneColor(b.pct == null ? null : b.pct / 100)}"></span><span class="k">Step</span>
+      <input class="d" data-k="sec" value="${fmtDur(b.sec)}" aria-label="Duration"> at ${pctIn('pct', b.pct, 'Percent of FTP')}${tools}</div>`;
+    return `<div class="${cls}" data-i="${i}"><span class="sw" style="background:${zoneColor(b.onPct == null ? null : b.onPct / 100)}"></span><span class="k">Intervals</span>
+      <input class="n" data-k="n" value="${b.n}" inputmode="numeric" aria-label="Repeats"> <span class="x">×</span>
+      <input class="d" data-k="onSec" value="${fmtDur(b.onSec)}" aria-label="Effort duration"> at ${pctIn('onPct', b.onPct, 'Effort percent of FTP')} then
+      <input class="d" data-k="offSec" value="${b.offSec ? fmtDur(b.offSec) : ''}" placeholder="none" aria-label="Recovery duration"> at ${pctIn('offPct', b.offPct, 'Recovery percent of FTP')}${tools}</div>`;
+  }
+  function renderRows() {
+    $('bBlocks').innerHTML = edit.blocks.map(blockRow).join('');
+    fresh = -1;
+  }
+  function select(i, scroll) {
+    sel = i;
+    document.querySelectorAll('#bBlocks .bblock').forEach(r => r.classList.toggle('sel', Number(r.dataset.i) === i));
+    if (scroll) document.querySelector(`#bBlocks .bblock[data-i="${i}"]`)?.scrollIntoView({ block: 'nearest' });
+    renderChart();
+  }
+  // Puts one block's values back into its row without rebuilding it, so typing keeps focus.
+  function syncRow(i) {
+    const row = document.querySelector(`#bBlocks .bblock[data-i="${i}"]`), b = edit.blocks[i];
+    if (!row || !b) return;
+    row.querySelectorAll('input').forEach(inp => {
+      if (inp === document.activeElement) return;
+      const k = inp.dataset.k, v = b[k];
+      inp.value = k === 'n' ? v : /Sec$|^sec$/.test(k) ? (v ? fmtDur(v) : '') : (v ?? '');
+      inp.style.borderColor = '';
+    });
+    row.querySelectorAll('[data-w]').forEach(w => { w.textContent = watts(b[w.dataset.w]); });
+    const lead = b.type === 'step' ? b.pct : b.onPct;
+    row.querySelector('.sw').style.background = zoneColor(lead == null ? null : lead / 100);
+  }
+
+  // Reads one input into the block; marks it red and returns false if invalid.
+  function readInput(inp) {
+    const b = edit.blocks[Number(inp.closest('.bblock').dataset.i)], k = inp.dataset.k, v = inp.value;
+    let val;
+    if (k === 'sec' || k === 'onSec') val = parseDur(v);
+    else if (k === 'offSec') val = v.trim() ? parseDur(v) : 0;
+    else if (k === 'n') { val = Number(v); if (!(Number.isInteger(val) && val >= 1 && val <= 50)) val = null; }
+    else { val = parsePct(v); if (Number.isNaN(val)) val = undefined; }
+    const bad = val === undefined || (val === null && !/pct$/i.test(k));
+    inp.style.borderColor = bad ? 'var(--bad)' : '';
+    if (!bad) b[k] = val;
+    return !bad;
+  }
+  const allValid = () => [...document.querySelectorAll('#bBlocks input')].every(i => i.style.borderColor === '');
+
+  // ---- Chart. x in seconds, y in % of FTP; drawn in a 1000 x 200 box.
+  const W = 1000, H = 200, PAD = 16;
+  let geo = null; // { tot, top, bars: [{x, w, s}] }
+  let over = null; // power dragged past a limit: { i, pk, v } in %, eased back to 0 on release
+
+  // ---- Motion: short eases that bridge what would otherwise jump. Each starts
+  // from what is on screen, so a new change mid-ease carries on from there.
+  // None of them run under reduced motion.
+  function cubicBezier(x1, y1, x2, y2) {
+    const f = (a, b, t) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3;
+    return x => { let lo = 0, hi = 1; for (let n = 0; n < 20; n++) { const m = (lo + hi) / 2; if (f(x1, x2, m) < x) lo = m; else hi = m; } return f(y1, y2, (lo + hi) / 2); };
+  }
+  const EASE_OUT = cubicBezier(0.23, 1, 0.32, 1);
+  const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const slides = new Map(); // block -> { from: x offset in the 1000-wide box, t0, ms }, eased to 0
+  let rescale = null;       // { from: { tot, top }, t0, ms }: the chart's scale blending into the new one
+  let raf = 0;
+  const progress = a => EASE_OUT(Math.min(1, (performance.now() - a.t0) / a.ms));
+  function slideOf(b) {
+    const a = slides.get(b);
+    if (!a) return 0;
+    const p = progress(a);
+    if (p >= 1) { slides.delete(b); return 0; }
+    return a.from * (1 - p);
+  }
+  function slide(b, from, ms) {
+    if (reduceMotion() || Math.abs(from) < 0.5) return;
+    slides.set(b, { from: from + slideOf(b), t0: performance.now(), ms });
+    kick();
+  }
+  function kick() {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      if (!edit) { slides.clear(); rescale = over = null; return; } // the editor closed mid-ease
+      renderChart(drag ? drag.fixed : undefined);
+      // Prune by time, not by drawing: undo swaps in new block objects, so an old key may never be drawn again.
+      for (const [k, v] of slides) if (progress(v) >= 1) slides.delete(k);
+      if (slides.size || rescale || (over && over.t0)) kick();
+    });
+  }
+  function yOf(pct) { return H - (pct / geo.top) * (H - PAD); }
+  // Where each block starts and how long it is, in seconds.
+  function spans(blocks) {
+    let t = 0;
+    return blocks.map(b => { const len = b.type === 'step' ? b.sec : b.n * (b.onSec + (b.offSec || 0)); const s = { start: t, len }; t += len; return s; });
+  }
+  const blockLabel = b => (b.type === 'step' ? `${fmtDur(b.sec)} at ${b.pct == null ? 'free' : `${b.pct}%`}` : `${b.n} × ${fmtDur(b.onSec)} at ${b.onPct == null ? 'free' : `${b.onPct}%`}`);
+  // During a drag the scale stays fixed, so the block stays under the pointer.
+  function renderChart(fixed) {
+    const svg = $('bChart'), st = steps(edit.blocks);
+    let tot = fixed ? fixed.tot : Math.max(total(st.map(s => ({ durationSec: s.sec }))), 60);
+    let top = fixed ? fixed.top : Math.max(150, ...st.map(s => (s.pct ?? 0) + 15));
+    if (!fixed && rescale) {
+      const p = progress(rescale);
+      if (p >= 1) rescale = null;
+      else { tot = rescale.from.tot + (tot - rescale.from.tot) * p; top = rescale.from.top + (top - rescale.from.top) * p; }
+    }
+    let ov = 0;
+    if (over) {
+      if (!over.t0) ov = over.v;
+      else { const p = progress(over); ov = over.from * (1 - p); if (p >= 1) over = null; }
+    }
+    geo = { tot, top, bars: [] };
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    // Grid and time labels at a spacing that leaves room for the labels.
+    const px = svg.getBoundingClientRect().width || 600;
+    const grid = [300, 600, 900, 1200, 1800, 3600].find(g => (g / tot) * px >= 56) || 3600;
+    let x = 0, out = '', axis = '';
+    for (let m = grid; m < tot; m += grid) {
+      out += `<line x1="${(m / tot) * W}" x2="${(m / tot) * W}" y1="0" y2="${H}" stroke="#20242d" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+      axis += `<span class="t" style="left:${((m / tot) * 100).toFixed(2)}%">${m / 60} min</span>`;
+    }
+    const lift = drag && drag.mode === 'move' ? drag : null;
+    st.forEach((s, k) => {
+      const w = (s.sec / tot) * W, extra = over && over.i === s.i && over.pk === s.pk ? ov : 0;
+      const y = clamp(yOf((s.pct ?? 40) + extra), 0, H - 2), lifted = lift && s.i === lift.bi;
+      const dx = (lifted ? lift.dx : 0) + slideOf(edit.blocks[s.i]);
+      geo.bars.push({ x, w, s });
+      out += `<rect class="bar${s.i === sel ? ' sel' : ''}${lifted ? ' lift' : ''}" data-k="${k}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${Math.max(w - 0.6, 0.6).toFixed(2)}" height="${(H - y).toFixed(2)}" fill="${zoneColor(s.pct == null ? null : s.pct / 100)}"${s.pct == null ? ' fill-opacity="0.6"' : ''}${dx ? ` transform="translate(${dx.toFixed(2)} 0)"` : ''}/>`;
+      x += w;
+    });
+    out += `<line x1="0" x2="${W}" y1="${yOf(100)}" y2="${yOf(100)}" stroke="#8b93a7" stroke-dasharray="4 4" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+    // Where a preset or + Step will go.
+    if (!drag && edit.blocks.length) {
+      const sp = spans(edit.blocks), at = sel >= 0 && sel < sp.length ? sp[sel].start + sp[sel].len : tot, ix = Math.min((at / tot) * W, W - 1);
+      out += `<line class="ins" x1="${ix}" x2="${ix}" y1="0" y2="${H}" stroke-dasharray="3 3"/>`;
+    }
+    svg.innerHTML = out;
+    axis += `<span class="ftp" style="top:${((yOf(100) / H) * 100).toFixed(2)}%">FTP ${ftpNow()} W</span>`;
+    $('bAxis').innerHTML = axis;
+    $('bInsNote').textContent = !edit.blocks.length ? '' : sel >= 0 && edit.blocks[sel]
+      ? `New blocks go after block ${sel + 1} (${blockLabel(edit.blocks[sel])}). Esc to add at the end instead.`
+      : 'New blocks go at the end.';
+    const segs = segments(edit.blocks);
+    $('bInfo').innerHTML = !segs.length ? 'Add a block to start: pick one below.'
+      : `<b>${fmtTime(total(segs))}</b> · ${segs.length} steps · about <b>${stress(segs)}</b> TSS · FTP ${ftpNow()} W` + (allValid() ? '' : ' · <span style="color:var(--bad)">fix the fields in red</span>');
+    if (!drag) keepDraft();
+  }
+
+  function tip(k, clientX, text) {
+    const t = $('bTip'), bar = geo && geo.bars[k];
+    if (!bar && !text) { t.classList.add('hidden'); return; }
+    const r = $('bChart').getBoundingClientRect();
+    t.textContent = text || `${fmtDur(bar.s.sec)} at ${bar.s.pct == null ? 'free' : `${bar.s.pct}% · ${watts(bar.s.pct)}`}`;
+    t.style.left = `${clamp(clientX - r.left, 60, r.width - 60)}px`;
+    t.classList.remove('hidden');
+  }
+
+  // Dragging a block: the first ~6 px decide what the drag means. Up or down
+  // sets power (5% steps, Shift for 1%), sideways sets length (15 s steps
+  // under 5 min, 30 s under 20 min, else 1 min). Press and hold lifts the
+  // block so it can be moved. The whole column of a step is its target, and
+  // the chart itself holds the pointer, since it is redrawn on every move.
+  let drag = null;
+  const HOLD_MS = 350, SLOP = 6;
+  const durStep = sec => (sec < 300 ? 15 : sec < 1200 ? 30 : 60);
+  // Past a limit the bar follows less and less, like iOS rubber-banding.
+  const rubber = (x, d = 60, c = 0.55) => (x * d * c) / (d + c * x);
+  function hit(clientX, r) {
+    const xs = ((clientX - r.left) / r.width) * W;
+    return geo.bars.findIndex(b => xs >= b.x && xs < b.x + b.w);
+  }
+  function onDown(e) {
+    if (drag || !e.isPrimary || e.button > 0) return; // a second finger never takes over
+    const chart = $('bChart'), r = chart.getBoundingClientRect(), k = hit(e.clientX, r);
+    if (k < 0) return;
+    const bar = geo.bars[k];
+    remember();
+    rescale = null; // the scale on screen now is the one this drag keeps
+    chart.setPointerCapture(e.pointerId);
+    drag = { id: e.pointerId, mode: null, bar, r, fixed: { tot: geo.tot, top: geo.top }, x0: e.clientX, y0: e.clientY, lx: e.clientX, sec0: bar.s.sec, pct0: bar.s.pct ?? 40, bi: bar.s.i, pk: bar.s.pk, sk: bar.s.sk };
+    drag.hold = setTimeout(liftBlock, HOLD_MS);
+    if (bar.s.i !== sel) select(bar.s.i, true);
+    e.preventDefault();
+  }
+  const pointerSec = clientX => ((clientX - drag.r.left) / drag.r.width) * drag.fixed.tot;
+  function liftBlock() {
+    if (!drag || drag.mode) return;
+    const sp = spans(edit.blocks)[drag.bi];
+    Object.assign(drag, { mode: 'move', grab: pointerSec(drag.lx) - sp.start, dx: 0 });
+    $('bChart').style.cursor = 'grabbing';
+    navigator.vibrate?.(8);
+    renderChart(drag.fixed);
+    tip(-1, drag.lx, `Move ${blockLabel(edit.blocks[drag.bi])}`);
+  }
+  function moveBlock(clientX) {
+    const b = edit.blocks;
+    let i = drag.bi, sp = spans(b);
+    const before = new Map(b.map((x, j) => [x, sp[j].start]));
+    const len = sp[i].len, c = clamp(pointerSec(clientX) - drag.grab + len / 2, len / 2, drag.fixed.tot - len / 2);
+    // Swap with a neighbour once the lifted block's centre passes the neighbour's middle.
+    for (;;) {
+      if (i < b.length - 1 && c > sp[i + 1].start + sp[i + 1].len / 2) { [b[i], b[i + 1]] = [b[i + 1], b[i]]; i++; }
+      else if (i > 0 && c < sp[i - 1].start + sp[i - 1].len / 2) { [b[i], b[i - 1]] = [b[i - 1], b[i]]; i--; }
+      else break;
+      sp = spans(b);
+    }
+    if (i !== drag.bi) {
+      drag.bi = sel = i;
+      renderRows();
+      // The blocks it passed slide over from where they were, instead of jumping.
+      b.forEach((x, j) => { if (j !== i) slide(x, ((before.get(x) - sp[j].start) / drag.fixed.tot) * W, 150); });
+    }
+    drag.dx = ((c - (sp[i].start + sp[i].len / 2)) / drag.fixed.tot) * W;
+  }
+  function onMove(e) {
+    const chart = $('bChart');
+    if (!drag) {
+      const k = hit(e.clientX, chart.getBoundingClientRect());
+      if (k >= 0 && e.pointerType === 'mouse') tip(k, e.clientX); else $('bTip').classList.add('hidden');
+      return;
+    }
+    if (e.pointerId !== drag.id) return;
+    if (e.pointerType === 'mouse' && !e.buttons) return onUp(e); // the button came up somewhere we never heard about
+    drag.lx = e.clientX;
+    const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+    if (!drag.mode) {
+      if (Math.hypot(dx, dy) < SLOP) return;
+      clearTimeout(drag.hold);
+      drag.mode = Math.abs(dx) > Math.abs(dy) ? 'len' : 'pow';
+      chart.style.cursor = drag.mode === 'len' ? 'ew-resize' : 'ns-resize';
+    }
+    const b = edit.blocks[drag.bi];
+    if (drag.mode === 'move') {
+      moveBlock(e.clientX);
+      renderChart(drag.fixed);
+      tip(-1, e.clientX, `Move ${blockLabel(edit.blocks[drag.bi])}`);
+      return;
+    }
+    if (drag.mode === 'pow') {
+      const raw = drag.pct0 - (dy / drag.r.height) * (H / (H - PAD)) * drag.fixed.top;
+      const stepP = e.shiftKey ? 1 : 5;
+      b[drag.pk] = Math.round(clamp(raw, 20, 300) / stepP) * stepP;
+      const past = raw > 300 ? rubber(raw - 300) : raw < 20 ? -rubber(20 - raw) : 0;
+      over = past ? { i: drag.bi, pk: drag.pk, v: past } : null;
+    } else {
+      const dSec = (dx / drag.r.width) * drag.fixed.tot;
+      const reps = b.type === 'repeat' ? b.n : 1; // every repeat stretches together
+      const raw = drag.sec0 + dSec / reps, stepS = durStep(raw);
+      b[drag.sk] = clamp(Math.round(raw / stepS) * stepS, 15, 6 * 3600);
+    }
+    renderChart(drag.fixed);
+    syncRow(drag.bi);
+    tip(geo.bars.findIndex(x => x.s.i === drag.bi && x.s.pk === drag.pk), e.clientX);
+  }
+  function onUp(e) {
+    if (!drag || (e && e.pointerId != null && e.pointerId !== drag.id)) return;
+    clearTimeout(drag.hold);
+    const d = drag, moved = d.mode === 'move';
+    drag = null;
+    // A moved block eases into its slot from where it was let go.
+    if (moved) slide(edit.blocks[d.bi], d.dx, 200);
+    // An overshoot past a power limit eases back.
+    if (over) { if (reduceMotion()) over = null; else Object.assign(over, { from: over.v, t0: performance.now(), ms: 240 }); }
+    // After a length or power drag the chart blends into its new scale instead of jumping.
+    if (!moved && !reduceMotion()) rescale = { from: d.fixed, t0: performance.now(), ms: 180 };
+    $('bChart').style.cursor = '';
+    if (e && e.pointerType !== 'mouse') $('bTip').classList.add('hidden');
+    if (JSON.stringify(edit.blocks) === JSON.stringify(history[history.length - 1])) { history.pop(); $('bUndo').disabled = !history.length; } // a tap, not a change
+    if (moved) renderRows();
+    renderChart();
+    kick();
+  }
+
+  function msg(text, cls = '') { $('bMsg').textContent = text; $('bMsg').className = cls; }
+
+  function renderEditor() {
+    $('myEditor').classList.toggle('hidden', !edit);
+    if (!edit) return;
+    $('bName').value = edit.name;
+    $('bFtp').value = localFtp();
+    $('bFtpRow').classList.toggle('hidden', !!gradient.token);
+    $('bUndo').disabled = !history.length;
+    renderRows(); renderChart();
+  }
+
+  async function ftp() {
+    if (gradient.token) {
+      try { const t = await gradientApi('/api/settings/thresholds'); if (t && t.ftpWatts) return (currentFtp = t.ftpWatts); } catch { /* fall back */ }
+    }
+    return (currentFtp = localFtp());
+  }
+
+  function save() {
+    document.querySelectorAll('#bBlocks input').forEach(readInput);
+    if (!allValid() || !edit.blocks.length) { msg('Some fields are not valid yet (marked in red), or there are no blocks.', 'bad'); renderChart(); return null; }
+    edit.name = $('bName').value.trim() || 'My workout';
+    const w = { id: edit.id || `w${Date.now()}`, name: edit.name, blocks: clone(edit.blocks) };
+    const at = list.findIndex(x => x.id === w.id);
+    if (at >= 0) list[at] = w; else list.push(w);
+    persist();
+    edit = null; history = [];
+    justSaved = w.id;
+    dropDraft();
+    renderEditor(); renderList();
+    return w;
+  }
+
+  async function load(w) {
+    if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+    const f = await ftp();
+    $('myBox').classList.add('hidden');
+    loadWorkout(w.name, segments(w.blocks), f);
+  }
+
+  function add(b, at = sel >= 0 ? sel + 1 : edit.blocks.length) {
+    remember();
+    edit.blocks.splice(at, 0, clone(b));
+    fresh = at; sel = at;
+    renderRows(); renderChart();
+    document.querySelector(`#bBlocks .bblock[data-i="${at}"]`)?.scrollIntoView({ block: 'nearest' });
+  }
+  function open(w, restored) {
+    edit = w; sel = -1; history = []; msg('');
+    $('bToast').innerHTML = '';
+    renderEditor();
+    edit.orig = restored ? '' : snap();
+    edit.drafted = !!restored;
+    keepDraft();
+    renderList();
+  }
+
+  // ---- Events.
+  $('bPresets').innerHTML = PRESETS.map((p, i) => {
+    const lead = p.b.type === 'step' ? p.b.pct : p.b.onPct;
+    return `<button data-preset="${i}" style="--c:${zoneColor(lead / 100)}" title="Add ${p.label}">${p.label}</button>`;
+  }).join('');
+  $('bPresets').addEventListener('click', e => { const t = e.target.closest('[data-preset]'); if (t) add(PRESETS[Number(t.dataset.preset)].b); });
+  $('myBtn').addEventListener('click', () => { $('myBox').classList.toggle('hidden'); renderList(); ftp().then(() => edit && renderChart()); });
+  $('myNew').addEventListener('click', () => {
+    open({ id: null, name: '', blocks: [clone(PRESETS[0].b), clone(PRESETS[5].b), clone(PRESETS[8].b)] });
+    $('bName').focus();
+  });
+  $('bAddStep').addEventListener('click', () => add({ type: 'step', sec: 300, pct: 65 }));
+  $('bAddRep').addEventListener('click', () => add({ type: 'repeat', n: 5, onSec: 60, onPct: 120, offSec: 60, offPct: 50 }));
+  $('bUndo').addEventListener('click', undo);
+  $('myEditor').addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && e.target.tagName !== 'INPUT') { e.preventDefault(); undo(); }
+    if (e.key === 'Escape' && sel >= 0) { if (e.target.tagName === 'INPUT') e.target.blur(); select(-1); }
+  });
+  let typing = false;
+  $('bBlocks').addEventListener('focusin', e => {
+    if (e.target.tagName === 'INPUT') { if (!typing) remember(); typing = true; select(Number(e.target.closest('.bblock').dataset.i)); }
+  });
+  $('bBlocks').addEventListener('focusout', () => { typing = false; });
+  $('bBlocks').addEventListener('input', e => {
+    if (e.target.tagName !== 'INPUT') return;
+    readInput(e.target);
+    syncRow(Number(e.target.closest('.bblock').dataset.i));
+    renderChart();
+  });
+  // Arrow keys nudge: durations by 15 s (Shift: 1 min), power by 1% (Shift: 5%), repeats by 1.
+  $('bBlocks').addEventListener('keydown', e => {
+    const inp = e.target;
+    if (inp.tagName !== 'INPUT' || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    if (e.altKey) { // Alt+arrows move the whole block, keeping the cursor in the same field
+      const i = Number(inp.closest('.bblock').dataset.i), j = i + (e.key === 'ArrowUp' ? -1 : 1), b = edit.blocks;
+      if (j < 0 || j >= b.length) return;
+      document.querySelectorAll('#bBlocks input').forEach(readInput);
+      remember();
+      [b[i], b[j]] = [b[j], b[i]]; sel = j;
+      renderRows(); renderChart();
+      document.querySelector(`#bBlocks .bblock[data-i="${j}"] input[data-k="${inp.dataset.k}"]`)?.focus();
+      return;
+    }
+    const b = edit.blocks[Number(inp.closest('.bblock').dataset.i)], k = inp.dataset.k, dir = e.key === 'ArrowUp' ? 1 : -1;
+    if (k === 'n') b.n = clamp(b.n + dir, 1, 50);
+    else if (/Sec$|^sec$/.test(k)) b[k] = clamp((b[k] || 0) + dir * (e.shiftKey ? 60 : 15), k === 'offSec' ? 0 : 15, 6 * 3600);
+    else b[k] = clamp((b[k] ?? 50) + dir * (e.shiftKey ? 5 : 1), 20, 300);
+    inp.value = k === 'n' ? b.n : /Sec$|^sec$/.test(k) ? (b[k] ? fmtDur(b[k]) : '') : b[k];
+    inp.style.borderColor = '';
+    syncRow(Number(inp.closest('.bblock').dataset.i));
+    renderChart();
+  });
+  $('bBlocks').addEventListener('click', e => {
+    const row = e.target.closest('.bblock');
+    const t = e.target.closest('button');
+    if (!t) { if (row && Number(row.dataset.i) !== sel) select(Number(row.dataset.i)); return; }
+    document.querySelectorAll('#bBlocks input').forEach(readInput);
+    remember();
+    const b = edit.blocks, d = t.dataset;
+    if (d.bDel != null) { b.splice(Number(d.bDel), 1); sel = -1; }
+    else if (d.bDup != null) { const i = Number(d.bDup); b.splice(i + 1, 0, clone(b[i])); fresh = sel = i + 1; }
+    else history.pop();
+    $('bUndo').disabled = !history.length;
+    renderRows(); renderChart();
+  });
+  const chart = $('bChart');
+  chart.addEventListener('pointerdown', onDown);
+  chart.addEventListener('pointermove', onMove);
+  chart.addEventListener('pointerup', onUp);
+  chart.addEventListener('pointercancel', onUp);
+  chart.addEventListener('lostpointercapture', onUp);
+  chart.addEventListener('pointerleave', () => { if (!drag) $('bTip').classList.add('hidden'); });
+  $('bName').addEventListener('input', keepDraft);
+  window.addEventListener('resize', () => { if (edit && !drag) renderChart(); });
+  $('bFtp').addEventListener('change', () => {
+    const v = Math.round(Number($('bFtp').value));
+    if (v >= 50 && v <= 600) { try { localStorage.setItem('ftp', String(v)); } catch {} if (!gradient.token) currentFtp = v; renderRows(); renderChart(); }
+  });
+  // The editor closes on save, so the confirmation lives under the list.
+  $('bSave').addEventListener('click', () => { const w = save(); if (w) toast(`Saved “${w.name}”.`); });
+  $('bRide').addEventListener('click', () => { const w = save(); if (w) load(w); });
+  $('bCancel').addEventListener('click', () => {
+    const d = readDraft();
+    edit = null; history = []; msg('');
+    dropDraft();
+    renderEditor(); renderList();
+    if (d) toast(`Discarded changes to “${d.name.trim() || 'Untitled'}”.`, () => open({ id: d.id, name: d.name, blocks: d.blocks }, true));
+  });
+  $('myList').addEventListener('click', e => {
+    const t = e.target.closest('button'); if (!t) return;
+    const d = t.dataset;
+    if (d.draft === 'resume') { const w = readDraft(); if (w) open({ id: w.id, name: w.name, blocks: w.blocks }, true); }
+    else if (d.draft === 'discard') { const w = readDraft(); dropDraft(); renderList(); if (w) toast(`Discarded “${w.name.trim() || 'Untitled'}”.`, () => { try { localStorage.setItem(DRAFT, JSON.stringify(w)); } catch {} renderList(); }); }
+    else if (d.myLoad != null) load(list[Number(d.myLoad)]);
+    else if (d.myEdit != null) { const w = list[Number(d.myEdit)]; open({ id: w.id, name: w.name, blocks: clone(w.blocks) }); }
+    else if (d.myDel != null) {
+      const i = Number(d.myDel), [w] = list.splice(i, 1);
+      persist(); renderList();
+      toast(`Deleted “${w.name}”.`, () => { list.splice(Math.min(i, list.length), 0, w); persist(); renderList(); });
+    }
+  });
+  return { segments, parseDur };
+})();
+
+// ---- Live ride chart: the last 4 minutes of power, heart rate and target,
+// and the workout's next 6 minutes drawn ahead of "now".
+const LIVE_PAST = 240, LIVE_AHEAD = 360;
+
+// Seconds into the workout, counting skipped steps as done.
+function workoutPosition() {
+  if (!workout) return 0;
+  if (ride.workoutDone && ride.status !== 'idle') return workout.steps.reduce((a, x) => a + x.sec, 0);
+  return workout.steps.slice(0, ride.step).reduce((a, x) => a + x.sec, 0) + (ride.status === 'idle' ? 0 : ride.stepElapsed);
+}
+
+function drawLive() {
+  const cv = $('liveChart');
+  const active = ride.status === 'riding' || ride.status === 'paused';
+  const show = active || (!!workout && ride.status !== 'finished');
+  $('liveBox').classList.toggle('hidden', !show);
+  if (!show) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  const ahead = workout ? LIVE_AHEAD : 0;
+  const past = workout ? LIVE_PAST : LIVE_PAST + LIVE_AHEAD; // a free ride uses the whole width for history
+  $('liveSpan').textContent = workout ? 'Last 4 min · next 6 min' : 'Last 10 min';
+  const span = past + ahead;
+  const nowX = (past / span) * W;
+  const xOf = dt => nowX + (dt / span) * W; // dt: seconds relative to now
+
+  const samples = ride.samples.slice(-past);
+  // Steps still to come, as [startDt, endDt, watts|null].
+  const future = [];
+  if (workout && !(ride.workoutDone && active)) {
+    let at = -workoutPosition();
+    for (const st of workout.steps) {
+      const a = at, b = at + st.sec;
+      at = b;
+      if (b <= 0) continue;
+      if (a >= ahead) break;
+      future.push([Math.max(a, 0), Math.min(b, ahead), stepWatts(st), st.fraction]);
+    }
+  }
+
+  // Watts scale: room for the hardest thing in view, never under FTP x 1.3.
+  const ftp = workout ? workout.ftp : 250;
+  const topW = Math.max(ftp * 1.3, ...samples.map(x => x.p || 0), ...samples.map(x => x.tg || 0), ...future.map(f => f[2] || 0)) * 1.08;
+  const yW = w => H - 6 - (w / topW) * (H - 12);
+  const HR_LO = 60, HR_HI = 200;
+  const yHr = hr => H - 6 - ((Math.min(HR_HI, Math.max(HR_LO, hr)) - HR_LO) / (HR_HI - HR_LO)) * (H - 12);
+
+  // FTP line.
+  if (workout) {
+    g.strokeStyle = 'rgba(139,147,167,.35)'; g.setLineDash([4, 4]); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, yW(ftp)); g.lineTo(W, yW(ftp)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = 'rgba(139,147,167,.8)'; g.font = '11px "Segoe UI", system-ui, sans-serif';
+    g.textAlign = 'right'; g.fillText(`FTP ${ftp} W`, W - 6, yW(ftp) - 4); g.textAlign = 'left';
+  }
+
+  // Steps ahead, as zone-coloured blocks.
+  for (const [a, b, w, f] of future) {
+    const x0 = xOf(a), x1 = xOf(b);
+    g.fillStyle = zoneColor(f);
+    g.globalAlpha = 0.8;
+    const top = w == null ? yW(ftp * 0.4) : yW(w);
+    g.fillRect(x0, top, Math.max(1, x1 - x0 - 1), H - top);
+    g.globalAlpha = 1;
+    if (w != null && x1 - x0 > 34) { g.fillStyle = '#f2f4f8'; g.font = '600 11px "Segoe UI", system-ui, sans-serif'; g.fillText(`${w}`, x0 + 4, Math.max(12, top - 4)); }
+  }
+
+  // Past target, a stepped grey line.
+  const line = (pts, color, width) => {
+    g.strokeStyle = color; g.lineWidth = width; g.lineJoin = 'round';
+    g.beginPath(); let on = false;
+    for (const pt of pts) {
+      if (pt == null) { on = false; continue; }
+      if (!on) { g.moveTo(pt[0], pt[1]); on = true; } else g.lineTo(pt[0], pt[1]);
+    }
+    g.stroke();
+  };
+  const n = samples.length;
+  const dtOf = i => i - n + 1; // the newest sample sits on the now line
+  line(samples.map((x, i) => (x.tg ? [xOf(dtOf(i)), yW(x.tg)] : null)), '#8b93a7', 2);
+  // Power, 3 s smoothed.
+  line(samples.map((x, i) => {
+    const w3 = samples.slice(Math.max(0, i - 2), i + 1);
+    return [xOf(dtOf(i)), yW(w3.reduce((a, y) => a + (y.p || 0), 0) / w3.length)];
+  }), '#f2f4f8', 2);
+  line(samples.map((x, i) => (x.hr ? [xOf(dtOf(i)), yHr(x.hr)] : null)), '#ff5d5d', 1.5);
+
+  // Now.
+  g.fillStyle = 'rgba(242,244,248,.6)';
+  g.fillRect(nowX - 0.5, 0, 1, H);
+  if (!n && !active) { g.fillStyle = '#8b93a7'; g.font = '12px "Segoe UI", system-ui, sans-serif'; g.fillText('Starts here', nowX + 6, 14); }
+}
+window.addEventListener('resize', drawLive);
+
+// ---- Workout and player.
+let workout = null; // { name, ftp, steps: [{ sec, fraction }] }
+let intensity = 1;
+const ride = { status: 'idle', step: 0, stepElapsed: 0, workoutDone: true, samples: [], events: [], name: null, lastTick: performance.now() };
+
+function loadWorkout(name, segments, ftp) {
+  workout = {
+    name, ftp,
+    steps: segments.filter(s => s.durationSec > 0).map(s => ({
+      sec: s.durationSec,
+      // Rides are prescribed in % of FTP. A step aimed at heart rate or pace
+      // has no wattage, so it is ridden free with ERG off.
+      fraction: s.targetMetric && s.targetMetric !== 'power' ? null : (s.intensityFraction ?? null),
+    })),
+  };
+  intensity = 1;
+  drawChart();
+  $('workoutBox').classList.remove('hidden');
+  const total = workout.steps.reduce((a, s) => a + s.sec, 0);
+  rideMsg(`Loaded “${name}”, ${fmtTime(total)} long, at FTP ${ftp} W. Press Start ride when you are on the bike.`, 'ok');
+  renderRide();
+}
+
+const stepWatts = s => (s.fraction == null ? null : Math.round(workout.ftp * s.fraction * intensity));
+const currentStep = () => (workout && !ride.workoutDone ? workout.steps[ride.step] : null);
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function zoneColor(f) {
+  if (f == null) return '#4a5162';
+  if (f < 0.56) return '#7f8aa3';
+  if (f < 0.76) return '#3b82f6';
+  if (f < 0.91) return '#3ecf8e';
+  if (f < 1.06) return '#f5b84b';
+  if (f < 1.21) return '#ff7a1a';
+  return '#ff5d5d';
+}
+
+function drawChart() {
+  const svg = $('wChart');
+  const total = workout.steps.reduce((a, s) => a + s.sec, 0);
+  const maxF = Math.max(1.2, ...workout.steps.map(s => s.fraction ?? 0));
+  let x = 0, parts = '';
+  for (const s of workout.steps) {
+    const w = (s.sec / total) * 1000;
+    const h = ((s.fraction ?? 0.4) / maxF) * 100;
+    parts += `<rect x="${x.toFixed(2)}" y="${(100 - h).toFixed(2)}" width="${Math.max(w - 0.6, 0.4).toFixed(2)}" height="${h.toFixed(2)}" fill="${zoneColor(s.fraction)}"/>`;
+    x += w;
+  }
+  svg.setAttribute('viewBox', '0 0 1000 100');
+  svg.innerHTML = parts + '<rect id="wProgress" x="0" y="0" width="4" height="100" fill="#fff"/>';
+}
+
+// Put the current step on the trainer: ERG at the step's watts, or ERG off
+// (flat road) for a free step. A free ride without a workout leaves ERG to you.
+function applyStep() {
+  if (ride.status !== 'riding' || !ERG.connected || !workout) return;
+  const s = currentStep();
+  const w = s ? stepWatts(s) : null;
+  if (w != null) {
+    ERG.setTarget(w);
+    if (!ERG.on) ERG.setOn(true);
+  } else if (ERG.on) {
+    ERG.setOn(false);
+  }
+  renderErg();
+}
+
+async function startRide() {
+  // In the simulator, a ride started with nothing connected connects every
+  // virtual device first, so power and speed come in.
+  if (SIM && !ERG.connected && !ext.pm.device && !ext.hr.device) await simConnectAll();
+  if (!ERG.connected && !ext.pm.device && !ext.hr.device && !confirm('Nothing is connected, so nothing will be recorded. Start anyway?')) return;
+  const now = Date.now() / 1000;
+  Object.assign(ride, {
+    status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
+    samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
+    rpe: null, rpeNotes: '', rpeSent: null, hrGaps: { contact: 0, silent: 0, silentHidden: 0 },
+  });
+  Object.assign(ext.hr, { waitFront: 0, waitBack: 0 });
+  Object.assign(trainerWait, { front: 0, back: 0 });
+  renderHrGaps();
+  countdown.unlock(); // sound needs a click to be allowed
+  rideMsg('');
+  if (route) Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
+  applyStep();
+  renderRide();
+}
+
+function pauseRide() {
+  ride.status = 'paused';
+  ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'stop' });
+  // Never leave ERG holding watts while you are not pedalling.
+  if (ERG.on) { ERG.setOn(false); renderErg(); }
+  saveUnsaved();
+  renderRide();
+}
+
+function resumeRide() {
+  if (calibration.active) calibration.cancel();
+  ride.status = 'riding';
+  calibration.render();
+  ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'start' });
+  applyStep();
+  renderRide();
+}
+
+function nextStep() {
+  ride.stepElapsed = 0;
+  ride.step++;
+  if (ride.step >= workout.steps.length) {
+    ride.workoutDone = true;
+    rideMsg('Workout done. Keep riding to cool down, or press Finish.', 'ok');
+  }
+  applyStep();
+}
+
+function finishRide() {
+  if (ride.status === 'riding') ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'stop' });
+  ride.status = 'finished';
+  calibration.render();
+  if (ERG.on) { ERG.setOn(false); renderErg(); }
+  else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
+  saveUnsaved();
+  renderRide();
+  // A simulator ride never goes to Strava by itself.
+  if (SIM) stravaMsg('Simulator ride, so it was not sent to Strava. Discard it, or press Upload to Strava to send it anyway.');
+  else uploadToStrava(true);
+}
+
+function recordSample() {
+  const t = Math.floor(Date.now() / 1000);
+  const last = ride.samples[ride.samples.length - 1];
+  if (last && last.t === t) return;
+  const l = state.live;
+  const trainerFresh = isFresh(l.at);
+  ride.samples.push({
+    t,
+    // Power meter first, then the trainer; heart rate strap first, then the trainer.
+    p: isFresh(ext.pm.at) ? ext.pm.power : trainerFresh ? (l.power ?? 0) : 0,
+    c: isFresh(ext.pm.cadenceAt) ? Math.round(ext.pm.cadence) : trainerFresh && l.cadence != null ? Math.round(l.cadence) : null,
+    s: trainerFresh ? l.speed : null,
+    hr: hrFresh() ? ext.hr.value : trainerFresh ? l.hr : null,
+    ...routeSample(), // position, elevation, distance and road speed on a route
+    tg: ERG.on ? ERG.target : null, // ERG target, for the live chart
+    st: workout && !ride.workoutDone ? ride.step : null, // workout step, saved as a lap
+  });
+  // Why heart rate is missing, so a gap in the chart can be explained.
+  const s = ride.samples[ride.samples.length - 1];
+  if (ext.hr.device && s.hr == null) {
+    const g = ride.hrGaps;
+    if (isFresh(ext.hr.noContactAt)) g.contact++;
+    else { g.silent++; if (document.hidden) g.silentHidden++; }
+    renderHrGaps();
+  }
+  if (ride.samples.length % 30 === 0) saveUnsaved();
+}
+
+function renderHrGaps() {
+  const g = ride.hrGaps, el = $('hrGaps');
+  if (!g || !(g.contact || g.silent)) { el.classList.add('hidden'); return; }
+  const parts = [];
+  if (g.contact) parts.push(`${g.contact} s the strap had no skin contact (wet its pads, or tighten it)`);
+  if (g.silent) parts.push(`${g.silent} s the strap sent nothing` + (g.silentHidden ? `, ${g.silentHidden} s of it with this tab in the background` : ', all with this tab in front'));
+  const w = ms => `${(ms / 1000).toFixed(1)} s`;
+  el.textContent = `Heart rate missing this ride: ${parts.join('; ')}. Longest wait between strap messages: ${w(ext.hr.waitFront)} in front, ${w(ext.hr.waitBack)} in the background` +
+    (trainerWait.at ? `; between trainer messages: ${w(trainerWait.front)} in front, ${w(trainerWait.back)} in the background.` : '.');
+  el.classList.remove('hidden');
+}
+
+// A copy of the ride survives a closed tab or a crash until it is saved or discarded.
+function saveUnsaved() {
+  if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null,
+    rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null });
+}
+
+// ---- Mini window: a small always-on-top window (Document Picture-in-Picture,
+// Chrome and Edge 116+) with power, heart rate, cadence and the step. Besides
+// being handy over a show, a page with a mini window open stays a visible page
+// to the browser, so it is not treated as a background tab while you ride.
+const pip = (() => {
+  const supported = 'documentPictureInPicture' in window;
+  let win = null;
+  const CSS = `body{margin:0;background:#0f1115;color:#f2f4f8;font:14px/1.3 "Segoe UI",system-ui,sans-serif;padding:10px 12px;user-select:none}
+    .big{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}.big small{font-size:14px;color:#8b93a7;margin-left:4px}
+    .row{display:flex;gap:14px;margin-top:8px}.row div{display:flex;flex-direction:column}.row b{font-size:18px;font-variant-numeric:tabular-nums}
+    .row i{font-style:normal;font-size:11px;color:#8b93a7}.foot{display:flex;justify-content:space-between;margin-top:8px;color:#8b93a7;font-variant-numeric:tabular-nums}`;
+  async function open() {
+    if (!supported || win) return;
+    try { win = await documentPictureInPicture.requestWindow({ width: 320, height: 160 }); }
+    catch (e) { rideMsg(`Could not open the mini window: ${e.message}`, 'bad'); return; }
+    const d = win.document;
+    d.title = 'IndoorWarior';
+    const st = d.createElement('style'); st.textContent = CSS; d.head.append(st);
+    d.body.innerHTML = `<div class="big"><span id="pW">--</span><small>W</small></div>
+      <div class="row"><div><b id="pHr">--</b><i>Heart rate</i></div><div><b id="pCad">--</b><i>Cadence</i></div><div><b id="pT">--</b><i id="pStep">Target</i></div></div>
+      <div class="foot"><span id="pLeft"></span><span id="pTime"></span></div>`;
+    win.addEventListener('pagehide', () => { win = null; render(); });
+    update(); render();
+  }
+  function update() {
+    if (!win) return;
+    const d = win.document, t = id => $(id).textContent, set = (id, v) => { const el = d.getElementById(id); if (el.textContent !== v) el.textContent = v; };
+    set('pW', t('watts')); set('pHr', t('hr')); set('pCad', t('cadence'));
+    set('pT', workout ? t('stepTarget') : '--'); set('pStep', workout ? t('stepLabel') : 'Target');
+    set('pLeft', workout ? t('stepLeft').trim() : ''); set('pTime', t('rideTimer'));
+  }
+  function render() {
+    $('pipBtn').classList.toggle('hidden', !supported || !!win || !(ride.status === 'riding' || ride.status === 'paused'));
+    $('pipRow').classList.toggle('hidden', !supported);
+  }
+  let pref = true;
+  try { pref = localStorage.getItem('pip') !== 'off'; } catch {}
+  $('pipToggle').checked = pref;
+  $('pipToggle').addEventListener('change', e => { try { localStorage.setItem('pip', e.target.checked ? 'on' : 'off'); } catch {} });
+  $('pipBtn').addEventListener('click', open);
+  return { open, update, render, get isOpen() { return !!win; }, get wanted() { return supported && $('pipToggle').checked; } };
+})();
+
+function tick() {
+  const t = performance.now();
+  const dt = (t - ride.lastTick) / 1000;
+  ride.lastTick = t;
+  if (ride.status !== 'riding') return;
+  routeTick(dt);
+  recordSample();
+  if (workout && !ride.workoutDone) {
+    ride.stepElapsed += dt;
+    while (!ride.workoutDone && ride.stepElapsed >= workout.steps[ride.step].sec) {
+      const over = ride.stepElapsed - workout.steps[ride.step].sec;
+      nextStep();
+      ride.stepElapsed = ride.workoutDone ? 0 : over;
+    }
+  }
+  // Nothing to look at while hidden, unless the mini window is open; the step countdown still beeps.
+  if (document.hidden && !pip.isOpen) countdown.update();
+  else { renderRide(); renderRoute(); }
+  pip.update();
+}
+
+function rideSeconds() { return ride.samples.length; }
+
+function summarize(samples) {
+  const n = samples.length || 1;
+  const watts = samples.map(s => s.p || 0);
+  const avg = Math.round(watts.reduce((a, b) => a + b, 0) / n);
+  const kj = Math.round(watts.reduce((a, b) => a + b, 0) / 1000);
+  return { avg, max: Math.max(0, ...watts), kj, seconds: samples.length };
+}
+
+function renderRide() {
+  const active = ride.status === 'riding' || ride.status === 'paused';
+  drawLive();
+  countdown.update();
+  $('beepRow').classList.toggle('hidden', !workout);
+  $('rideTimer').textContent = fmtTime(rideSeconds());
+  $('startBtn').classList.toggle('hidden', active);
+  $('startBtn').textContent = workout ? 'Start ride' : 'Start free ride';
+  $('pauseBtn').classList.toggle('hidden', ride.status !== 'riding');
+  $('resumeBtn').classList.toggle('hidden', ride.status !== 'paused');
+  $('finishBtn').classList.toggle('hidden', !active);
+  pip.render();
+  $('skipBtn').classList.toggle('hidden', !(active && workout && !ride.workoutDone));
+  $('intensity').textContent = `${Math.round(intensity * 100)}%`;
+
+  if (workout) {
+    const s = currentStep();
+    const total = workout.steps.reduce((a, x) => a + x.sec, 0);
+    const done = ride.workoutDone && active ? total
+      : workout.steps.slice(0, ride.step).reduce((a, x) => a + x.sec, 0) + (active ? ride.stepElapsed : 0);
+    const bar = document.getElementById('wProgress');
+    if (bar) bar.setAttribute('x', String(Math.min(996, (done / total) * 1000)));
+    $('wName').textContent = workout.name;
+    if (s) {
+      const w = stepWatts(s);
+      $('stepLabel').textContent = `Step ${ride.step + 1} of ${workout.steps.length}`;
+      $('stepTarget').textContent = w == null ? 'Free' : `${w} W`;
+      $('stepLeft').textContent = active ? `${fmtTime(s.sec - ride.stepElapsed)} left` : fmtTime(s.sec);
+      const n = workout.steps[ride.step + 1];
+      $('stepNext').textContent = n ? `${fmtTime(n.sec)} ${stepWatts(n) == null ? 'free' : `at ${stepWatts(n)} W`}` : 'Finish';
+    } else {
+      $('stepLabel').textContent = 'Workout done';
+      $('stepTarget').textContent = 'Free';
+      $('stepLeft').innerHTML = '&nbsp;';
+      $('stepNext').textContent = '--';
+    }
+  }
+
+  const pending = active ? null : pendingRide();
+  $('savedBox').classList.toggle('hidden', !pending || !pending.samples.length);
+  if (pending && pending.samples.length) {
+    const sum = summarize(pending.samples);
+    const when = new Date(pending.samples[0].t * 1000).toLocaleString();
+    const label = ride.status === 'finished' ? 'Ride finished' : pending.strava && pending.strava.activityId ? 'Last ride' : 'Unsaved ride';
+    $('rideSummary').textContent = `${label} (${when}): ${fmtTime(sum.seconds)}, average ${sum.avg} W, max ${sum.max} W, ${sum.kj} kJ.`;
+    const onStrava = pending.strava && pending.strava.activityId;
+    renderRpe(pending);
+    $('stravaBtn').classList.toggle('hidden', !!onStrava);
+    if (onStrava && !$('stravaStatus').dataset.busy) {
+      $('stravaStatus').innerHTML = `On Strava: <a href="https://www.strava.com/activities/${Number(pending.strava.activityId)}" target="_blank" rel="noopener" style="color:var(--ok)">open the activity</a>.`;
+      if (pending.strava.map) $('stravaStatus').append(' ' + pending.strava.map);
+    }
+  }
+}
+
+function changeIntensity(delta) {
+  intensity = Math.min(1.5, Math.max(0.5, Math.round((intensity + delta) * 100) / 100));
+  applyStep();
+  renderRide();
+}
+
+// ---- FIT activity file (Garmin's format, read by Strava, Garmin Connect, TrainingPeaks).
+const FIT_EPOCH = 631065600; // 1989-12-31T00:00:00Z in Unix seconds
+const FIT_CRC = [0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401, 0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400];
+function fitCrc(bytes) {
+  let crc = 0;
+  for (const b of bytes) {
+    let tmp = FIT_CRC[crc & 0xF];
+    crc = (crc >> 4) & 0x0FFF; crc = crc ^ tmp ^ FIT_CRC[b & 0xF];
+    tmp = FIT_CRC[crc & 0xF];
+    crc = (crc >> 4) & 0x0FFF; crc = crc ^ tmp ^ FIT_CRC[(b >> 4) & 0xF];
+  }
+  return crc;
+}
+
+function buildFit(r) {
+  const T = { enum: 0x00, uint8: 0x02, uint16: 0x84, sint32: 0x85, uint32: 0x86, uint32z: 0x8C };
+  const SIZE = { 0x00: 1, 0x02: 1, 0x84: 2, 0x85: 4, 0x86: 4, 0x8C: 4 };
+  const INVALID = { 0x00: 0xFF, 0x02: 0xFF, 0x84: 0xFFFF, 0x85: 0x7FFFFFFF, 0x86: 0xFFFFFFFF, 0x8C: 0 };
+  const out = [], defs = {};
+  const define = (local, global, fields) => {
+    out.push(0x40 | local, 0, 0, global & 0xFF, global >> 8, fields.length);
+    for (const [num, type] of fields) out.push(num, SIZE[type], type);
+    defs[local] = fields;
+  };
+  const write = (local, values) => {
+    out.push(local);
+    defs[local].forEach(([, type], i) => {
+      let v = values[i];
+      if (v == null || Number.isNaN(v)) v = INVALID[type];
+      v = Math.round(v);
+      for (let k = 0; k < SIZE[type]; k++) { out.push(v & 0xFF); v = Math.floor(v / 256); }
+    });
+  };
+  const ft = unix => unix - FIT_EPOCH;
+
+  const samples = r.samples;
+  const start = samples[0].t, end = samples[samples.length - 1].t;
+  const timerMs = samples.length * 1000, elapsedMs = (end - start + 1) * 1000;
+  const sum = summarize(samples);
+  const cad = samples.filter(s => s.c != null), hrs = samples.filter(s => s.hr);
+  const avgCad = cad.length ? cad.reduce((a, s) => a + s.c, 0) / cad.length : null;
+  const avgHr = hrs.length ? hrs.reduce((a, s) => a + s.hr, 0) / hrs.length : null;
+  const maxHr = hrs.length ? Math.max(...hrs.map(s => s.hr)) : null;
+
+  // Distance from the trainer's virtual speed, where it sends one.
+  // Distance along the route where there is one, else from the trainer's virtual speed.
+  let dist = 0;
+  const distAt = samples.map(s => (dist = s.d != null ? s.d : dist + (s.s ?? 0) / 3.6));
+  const onRoute = samples.some(s => s.lat != null);
+  const subSport = onRoute ? 58 : 6; // virtual_activity (Strava: Virtual Ride) or indoor_cycling
+  const semi = deg => (deg == null ? null : Math.round(deg * 2147483648 / 180));
+
+  define(0, 0, [[0, T.enum], [1, T.uint16], [2, T.uint16], [3, T.uint32z], [4, T.uint32]]); // file_id
+  write(0, [4, 255, 0, 1, ft(start)]); // activity, manufacturer "development"
+
+  define(1, 21, [[253, T.uint32], [0, T.enum], [1, T.enum]]); // event: timer start/stop
+  define(2, 20, [[253, T.uint32], [7, T.uint16], [4, T.uint8], [6, T.uint16], [3, T.uint8], [5, T.uint32],
+    [0, T.sint32], [1, T.sint32], [2, T.uint16]]); // record
+  let e = 0;
+  samples.forEach((s, i) => {
+    while (e < r.events.length && r.events[e].t <= s.t) {
+      write(1, [ft(r.events[e].t), 0, r.events[e].type === 'start' ? 0 : 4]);
+      e++;
+    }
+    write(2, [ft(s.t), s.p, s.c, s.s != null ? (s.s / 3.6) * 1000 : null, s.hr, distAt[i] * 100,
+      semi(s.lat), semi(s.lon), s.alt != null ? (s.alt + 500) * 5 : null]);
+  });
+  for (; e < r.events.length; e++) write(1, [ft(Math.max(r.events[e].t, end)), 0, r.events[e].type === 'start' ? 0 : 4]);
+
+  define(3, 19, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [19, T.uint16], [20, T.uint16],
+    [0, T.enum], [1, T.enum], [25, T.enum], [39, T.enum]]); // lap
+  // One lap per workout step, so Strava and Gradient see the intervals; a ride
+  // without a workout (or the riding after it ends) is one lap.
+  const laps = [];
+  samples.forEach((s, i) => {
+    const last = laps[laps.length - 1];
+    if (last && last.st === (s.st ?? null)) last.to = i;
+    else laps.push({ st: s.st ?? null, from: i, to: i });
+  });
+  for (const lap of laps) {
+    const ls = samples.slice(lap.from, lap.to + 1), lsum = summarize(ls);
+    const t0 = ls[0].t, t1 = ls[ls.length - 1].t;
+    const d = distAt[lap.to] - (lap.from ? distAt[lap.from - 1] : 0);
+    write(3, [ft(t1), ft(t0), (t1 - t0 + 1) * 1000, ls.length * 1000, d * 100, lsum.avg, lsum.max, 9, 1, 2, subSport]);
+  }
+
+  define(4, 18, [[253, T.uint32], [2, T.uint32], [7, T.uint32], [8, T.uint32], [9, T.uint32], [20, T.uint16], [21, T.uint16],
+    [18, T.uint8], [16, T.uint8], [17, T.uint8], [5, T.enum], [6, T.enum], [0, T.enum], [1, T.enum], [25, T.uint16], [26, T.uint16]]); // session
+  write(4, [ft(end), ft(start), elapsedMs, timerMs, dist * 100, sum.avg, sum.max, avgCad, avgHr, maxHr, 2, subSport, 8, 1, 0, laps.length]);
+
+  const offset = -new Date(end * 1000).getTimezoneOffset() * 60;
+  define(5, 34, [[253, T.uint32], [0, T.uint32], [1, T.uint16], [2, T.enum], [3, T.enum], [4, T.enum], [5, T.uint32]]); // activity
+  write(5, [ft(end), timerMs, 1, 0, 26, 1, ft(end) + offset]);
+
+  const header = [14, 0x20, 0x54, 0x08, out.length & 0xFF, (out.length >> 8) & 0xFF, (out.length >> 16) & 0xFF, (out.length >>> 24) & 0xFF, 0x2E, 0x46, 0x49, 0x54];
+  const hcrc = fitCrc(header);
+  header.push(hcrc & 0xFF, hcrc >> 8);
+  const file = header.concat(out);
+  const crc = fitCrc(file);
+  file.push(crc & 0xFF, crc >> 8);
+  return new Uint8Array(file);
+}
+
+// ---- Strava upload, through Gradient's existing Strava connection.
+function pendingRide() {
+  return ride.status === 'finished' ? ride : store.get('unsavedRide', null);
+}
+
+// ---- Countdown into each step: the last 5 seconds show big, with a short
+// beep at 3, 2 and 1 and a long one as the step changes.
+const countdown = (() => {
+  let ctx = null, lastN = null, enabled = true;
+  try { enabled = localStorage.getItem('beeps') !== 'off'; } catch {}
+  $('beepToggle').checked = enabled;
+  $('beepToggle').addEventListener('change', e => {
+    enabled = e.target.checked;
+    try { localStorage.setItem('beeps', enabled ? 'on' : 'off'); } catch {}
+    if (enabled) unlock();
+  });
+  function unlock() {
+    try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume?.(); } catch { ctx = null; }
+  }
+  function beep(freq, ms) {
+    if (!enabled || !ctx) return;
+    try {
+      const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime;
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.3, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + ms / 1000);
+      o.connect(g).connect(ctx.destination);
+      o.start(t); o.stop(t + ms / 1000);
+    } catch { /* no sound is fine */ }
+  }
+  function update() {
+    const riding = ride.status === 'riding';
+    const s = riding && workout && !ride.workoutDone ? workout.steps[ride.step] : null;
+    const left = s ? s.sec - ride.stepElapsed : Infinity;
+    const n = left > 0 && left <= 5 ? Math.ceil(left) : null;
+    if (n !== lastN) {
+      if (n != null && n <= 3) beep(880, 120);
+      else if (n == null && lastN === 1 && riding) beep(1320, 400); // the step changes now
+      lastN = n;
+    }
+    $('countdown').classList.toggle('hidden', n == null);
+    if (n == null) return;
+    $('cdNum').textContent = n;
+    const next = workout.steps[ride.step + 1];
+    const w = next ? stepWatts(next) : null;
+    $('cdNext').textContent = !next ? 'Then the workout is done' : w != null ? `Next: ${w} W` : 'Next: free riding';
+  }
+  return { unlock, update };
+})();
+
+// ---- How hard it felt, asked under the finished ride and saved on the
+// Gradient workout the ride becomes, where the next day's plan reads it.
+(() => {
+  for (let i = 1; i <= 10; i++) {
+    const b = document.createElement('button');
+    b.className = 'secondary sm'; b.textContent = i; b.dataset.rpe = i;
+    b.addEventListener('click', () => {
+      const r = pendingRide();
+      if (!r) return;
+      r.rpe = i;
+      keepRide(r);
+      renderRpe(r);
+      sendFeedback(r);
+    });
+    $('rpeButtons').append(b);
+  }
+  $('rpeNotes').addEventListener('change', () => {
+    const r = pendingRide();
+    if (!r) return;
+    r.rpeNotes = $('rpeNotes').value.trim();
+    keepRide(r);
+    if (r.rpe) sendFeedback(r);
+  });
+})();
+
+function keepRide(r) { if (r !== ride) store.set('unsavedRide', r); else saveUnsaved(); }
+
+function rpeMsg(text, cls = '') {
+  $('rpeStatus').textContent = text;
+  $('rpeStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : '';
+}
+
+function renderRpe(r) {
+  document.querySelectorAll('#rpeButtons button').forEach(b => b.classList.toggle('on', Number(b.dataset.rpe) === r.rpe));
+  if (document.activeElement !== $('rpeNotes')) $('rpeNotes').value = r.rpeNotes || '';
+  if ($('rpeStatus').dataset.busy) return;
+  const sent = r.rpeSent && r.rpeSent.rpe === r.rpe && r.rpeSent.notes === (r.rpeNotes || '');
+  if (!r.rpe) rpeMsg('');
+  else if (sent) rpeMsg(`RPE ${r.rpe} saved in Gradient.`, 'ok');
+  else if (!(r.strava && r.strava.activityId)) rpeMsg(`RPE ${r.rpe} kept here. It goes to Gradient once the ride is on Strava.`);
+}
+
+async function sendFeedback(r) {
+  if (!r.rpe || !(r.strava && r.strava.activityId)) { renderRpe(r); return; }
+  if (!gradient.token) { rpeMsg('Sign in to Gradient above to save this there.', 'bad'); return; }
+  const notes = r.rpeNotes || '';
+  $('rpeStatus').dataset.busy = '1';
+  rpeMsg('Saving in Gradient…');
+  try {
+    await gradientApi('/api/health/strava/ride-feedback', {
+      method: 'POST',
+      body: JSON.stringify({ activityId: r.strava.activityId, startedAt: r.samples[0].t, rpe: r.rpe, feedbackNotes: notes || null }),
+    });
+    r.rpeSent = { rpe: r.rpe, notes };
+    keepRide(r);
+    delete $('rpeStatus').dataset.busy;
+    renderRpe(r);
+  } catch (err) {
+    delete $('rpeStatus').dataset.busy;
+    if (/not imported/i.test(err.message)) rpeMsg('Gradient has not picked up this ride from Strava yet. Press the number again in a minute.', 'bad');
+    else if (err.status === 404) rpeMsg('Gradient needs its latest update before it can take RPE from here.', 'bad');
+    else rpeMsg(`Not saved in Gradient: ${err.message}`, 'bad');
+  }
+}
+
+function stravaMsg(text, cls = '') {
+  $('stravaStatus').textContent = text;
+  $('stravaStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : '';
+}
+
+function fitBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+async function uploadToStrava(auto = false) {
+  const r = pendingRide();
+  if (!r || !r.samples || !r.samples.length || (r.strava && r.strava.activityId)) return;
+  $('stravaAllow').classList.add('hidden');
+  if (!gradient.token) {
+    stravaMsg(auto ? 'Sign in to Gradient above to send rides to Strava automatically.' : 'Sign in to Gradient above first.', auto ? '' : 'bad');
+    return;
+  }
+  stravaMsg('Uploading to Strava…');
+  $('stravaStatus').dataset.busy = '1';
+  $('stravaBtn').disabled = true;
+  try {
+    const res = await gradientApi('/api/health/strava/upload', {
+      method: 'POST',
+      // A route ride has GPS and elevation; Strava hides the map of anything
+      // flagged as a trainer ride, so only a ride without a route is flagged.
+      body: JSON.stringify({
+        fitBase64: fitBase64(buildFit(r)), name: r.name || 'Indoor ride', externalId: `indoorwarior-${r.samples[0].t}`,
+        trainer: !r.samples.some(x => x.lat != null),
+      }),
+    });
+    r.strava = { activityId: res.activityId ?? null };
+    if (r !== ride) store.set('unsavedRide', r); else saveUnsaved();
+    if (r.samples.some(x => x.lat != null) && (res.activityId || res.uploadId)) {
+      stravaMsg('Sent to Strava. Asking Strava to show the map and elevation…');
+      await showRouteMap(r, res);
+    }
+    delete $('stravaStatus').dataset.busy;
+    if (r.rpe && r.strava.activityId) sendFeedback(r);
+    if (r.strava.activityId) renderRide();
+    else stravaMsg('Sent to Strava. It is still processing and will show up there shortly.', 'ok');
+  } catch (err) {
+    delete $('stravaStatus').dataset.busy;
+    if (err.reconnect) {
+      stravaMsg('Strava needs to give Gradient permission to upload. Allow it once, then press Upload to Strava.', 'bad');
+      $('stravaAllow').href = `${(gradient.url || GRADIENT_DEFAULT).replace(/\/+$/, '')}/api/health/strava/connect?token=${encodeURIComponent(gradient.token || '')}`;
+      $('stravaAllow').classList.remove('hidden');
+    } else if (err.status === 404) {
+      stravaMsg('Gradient needs its latest update before it can upload to Strava. Use Save .fit for now.', 'bad');
+    } else {
+      stravaMsg(`Strava upload failed: ${err.message} Your ride is still here; try again or use Save .fit.`, 'bad');
+    }
+  } finally {
+    $('stravaBtn').disabled = false;
+  }
+}
+
+// Strava marks route rides as trainer rides and hides their map; Gradient
+// clears that and reports what Strava answered, which is shown under the ride.
+async function showRouteMap(r, res) {
+  let body = { activityId: res.activityId || undefined, uploadId: res.uploadId || undefined };
+  for (let i = 0; i < 6; i++) {
+    try {
+      const out = await gradientApi('/api/health/strava/route-map', { method: 'POST', body: JSON.stringify(body) });
+      if (out.pending) continue;
+      r.strava.activityId = out.activityId;
+      r.strava.map = out.trainer === false ? 'Map and elevation are showing on Strava.'
+        : out.error ? `Strava would not show the map: ${out.error}`
+        : 'Strava kept this ride marked as a trainer ride, so it still hides the map.';
+      break;
+    } catch (err) {
+      r.strava.map = err.status === 404 ? 'Gradient needs its latest update before it can show the map on Strava.' : `Could not ask Strava to show the map: ${err.message}`;
+      break;
+    }
+  }
+  if (r !== ride) store.set('unsavedRide', r); else saveUnsaved();
+}
+
+function saveFit() {
+  const r = ride.status === 'finished' ? { name: ride.name, samples: ride.samples, events: ride.events } : store.get('unsavedRide', null);
+  if (!r || !r.samples.length) return;
+  const d = new Date(r.samples[0].t * 1000);
+  const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buildFit(r)], { type: 'application/octet-stream' }));
+  a.download = `IndoorWarior-${stamp}.fit`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  rideMsg(`Saved ${a.download} to your Downloads folder.`, 'ok');
+}
+
+function discardRide() {
+  if (!confirm('Throw this ride away? It cannot be recovered.')) return;
+  store.del('unsavedRide');
+  stravaMsg('');
+  if (ride.status === 'finished') { ride.status = 'idle'; ride.samples = []; ride.events = []; }
+  rideMsg('');
+  renderRide();
+}
+
+$('signInForm').addEventListener('submit', signIn);
+$('loadTodayBtn').addEventListener('click', loadToday);
+$('libBtn').addEventListener('click', openLibrary);
+$('libSearch').addEventListener('input', e => { libView.q = e.target.value; renderLibrary(); });
+$('libChips').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.sort) libView.sort = libView.sort === 'dur' ? 'name' : 'dur';
+  else libView.cat = b.dataset.cat;
+  renderLibrary();
+});
+$('libList').addEventListener('click', e => { const b = e.target.closest('.lib-item'); if (b) pickLibrary(Number(b.dataset.i)); });
+$('signOutBtn').addEventListener('click', () => { gradient.token = null; store.set('gradient', gradient); renderGradient(); });
+$('startBtn').addEventListener('click', () => { if (pip.wanted) pip.open(); startRide(); });
+$('pauseBtn').addEventListener('click', pauseRide);
+$('resumeBtn').addEventListener('click', resumeRide);
+$('skipBtn').addEventListener('click', () => { nextStep(); renderRide(); });
+$('finishBtn').addEventListener('click', () => { if (confirm('Finish this ride?')) finishRide(); });
+$('saveFitBtn').addEventListener('click', saveFit);
+$('stravaBtn').addEventListener('click', () => uploadToStrava(false));
+$('discardBtn').addEventListener('click', discardRide);
+document.querySelectorAll('[data-int]').forEach(b => b.addEventListener('click', () => changeIntensity(Number(b.dataset.int))));
+window.addEventListener('beforeunload', e => {
+  if (ride.status === 'riding' || ride.status === 'paused') { saveUnsaved(); e.preventDefault(); e.returnValue = ''; }
+});
+clock.every(tick);
+// Back in front: catch the screen up, and take the screen lock again, which
+// the browser drops whenever the tab is hidden.
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden) return;
+  renderRide(); renderRoute();
+  if (device?.gatt?.connected && (!wakeLock || wakeLock.released)) {
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+  }
+});
+renderGradient();
+renderRide();
+
+// ---- Route: a GPX file drawn as a map and an elevation profile. During a
+// ride your position moves at a speed worked out from your power, and while
+// ERG is off the trainer gets the gradient under your wheels.
+const ROUTE_STEP = 10; // metres between resampled points
+let route = null;      // { name, total, pts: [{x, y}], res: [{d, lat, lon, ele}], climb: [cumulative ascent] }
+const routeState = { dist: 0, speed: 0, lastGrade: null, lastGradeAt: 0, gradeBusy: false, finished: false };
+const routeCfg = Object.assign({ mass: 84, difficulty: 0.5 }, store.get('routeCfg', {}));
+
+function haversine(a, b) {
+  const R = 6371000, toRad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toRad, dLon = (b.lon - a.lon) * toRad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function parseGpx(text, fileName) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('That file is not valid GPX.');
+  let nodes = [...doc.getElementsByTagNameNS('*', 'trkpt')];
+  if (!nodes.length) nodes = [...doc.getElementsByTagNameNS('*', 'rtept')];
+  const raw = nodes.map(n => {
+    const ele = n.getElementsByTagNameNS('*', 'ele')[0];
+    return { lat: Number(n.getAttribute('lat')), lon: Number(n.getAttribute('lon')), ele: ele ? Number(ele.textContent) : NaN };
+  }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  if (raw.length < 2) throw new Error('No track points found in that GPX file.');
+  const hasEle = raw.some(p => Number.isFinite(p.ele));
+  // Cumulative distance, dropping repeated points.
+  const pts = [{ ...raw[0], d: 0 }];
+  for (let i = 1; i < raw.length; i++) {
+    const step = haversine(pts[pts.length - 1], raw[i]);
+    if (step > 0.5) pts.push({ ...raw[i], d: pts[pts.length - 1].d + step });
+  }
+  if (pts.length < 2) throw new Error('That route has no length.');
+  for (const p of pts) if (!Number.isFinite(p.ele)) p.ele = hasEle ? NaN : 0;
+  // Fill gaps in elevation from neighbours.
+  for (let i = 0; i < pts.length; i++) if (!Number.isFinite(pts[i].ele)) pts[i].ele = i ? pts[i - 1].ele : (pts.find(p => Number.isFinite(p.ele))?.ele ?? 0);
+
+  // Resample every ROUTE_STEP metres, so lookups and smoothing are simple.
+  const total = pts[pts.length - 1].d;
+  const res = [];
+  let j = 0;
+  for (let d = 0; d <= total; d += ROUTE_STEP) {
+    while (j < pts.length - 2 && pts[j + 1].d < d) j++;
+    const a = pts[j], b = pts[j + 1], f = (d - a.d) / (b.d - a.d || 1);
+    res.push({ d, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, ele: a.ele + (b.ele - a.ele) * f });
+  }
+  // GPS elevation is noisy: smooth over about 100 m before taking gradients.
+  const smooth = res.map((_, i) => {
+    let sum = 0, n = 0;
+    for (let k = Math.max(0, i - 5); k <= Math.min(res.length - 1, i + 5); k++) { sum += res[k].ele; n++; }
+    return sum / n;
+  });
+  res.forEach((p, i) => { p.ele = smooth[i]; });
+  const climb = [0];
+  for (let i = 1; i < res.length; i++) climb.push(climb[i - 1] + Math.max(0, res[i].ele - res[i - 1].ele));
+
+  const name = doc.getElementsByTagNameNS('*', 'name')[0]?.textContent?.trim() || fileName.replace(/\.gpx$/i, '');
+  return { name, total: res[res.length - 1].d, res, climb };
+}
+
+function routeAt(d) {
+  const i = Math.min(route.res.length - 1, Math.max(0, Math.floor(d / ROUTE_STEP)));
+  const a = route.res[i], b = route.res[Math.min(i + 1, route.res.length - 1)];
+  const f = Math.min(1, Math.max(0, (d - a.d) / ROUTE_STEP));
+  return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, ele: a.ele + (b.ele - a.ele) * f, i };
+}
+
+// Average gradient (%) between two distances.
+function gradeBetween(d1, d2) {
+  d1 = Math.max(0, Math.min(route.total, d1));
+  d2 = Math.max(0, Math.min(route.total, d2));
+  if (d2 - d1 < 1) return 0;
+  return ((routeAt(d2).ele - routeAt(d1).ele) / (d2 - d1)) * 100;
+}
+
+// Speed from power, with inertia: rider + bike mass, rolling resistance,
+// air drag and gravity on the current gradient.
+function advanceSpeed(watts, gradePct, dt) {
+  const m = routeCfg.mass, g = 9.81, crr = 0.004, cda = 0.32, rho = 1.2, eta = 0.97;
+  const theta = Math.atan(gradePct / 100);
+  let v = routeState.speed;
+  const steps = Math.max(1, Math.ceil(dt / 0.05));
+  for (let k = 0; k < steps; k++) {
+    const h = dt / steps;
+    const drive = (eta * Math.max(0, watts)) / Math.max(v, 1);
+    const resist = m * g * (crr * Math.cos(theta) + Math.sin(theta)) + 0.5 * rho * cda * v * v;
+    v = Math.max(0, v + ((drive - resist) / (m + 1.5)) * h); // +1.5 kg for the wheels' rotating mass
+  }
+  routeState.speed = v;
+  return v;
+}
+
+function currentPower() {
+  if (isFresh(ext.pm.at)) return ext.pm.power;
+  return isFresh(state.live.at) ? (state.live.power ?? 0) : 0;
+}
+
+function routeTick(dt) {
+  if (!route || routeState.finished) return;
+  const grade = gradeBetween(routeState.dist - 25, routeState.dist + 25);
+  const v = advanceSpeed(currentPower(), grade, dt);
+  routeState.dist = Math.min(route.total, routeState.dist + v * dt);
+  if (routeState.dist >= route.total) {
+    routeState.finished = true;
+    routeMsg('Route finished. Keep riding or press Finish.', 'ok');
+    sendGrade(0, true);
+    return;
+  }
+  sendGrade(grade);
+}
+
+// Grade goes to the trainer only while ERG is off (ERG wins when it is on).
+function sendGrade(gradePct, force = false) {
+  if (!ERG.connected || ERG.on || routeState.gradeBusy) return;
+  const g = Math.max(-10, Math.min(20, gradePct * routeCfg.difficulty));
+  const now = Date.now();
+  if (!force && routeState.lastGrade !== null && Math.abs(g - routeState.lastGrade) < 0.2 && now - routeState.lastGradeAt < 5000) return;
+  routeState.gradeBusy = true;
+  ERG.setGrade(g)
+    .then(() => { routeState.lastGrade = g; routeState.lastGradeAt = now; })
+    .catch(e => routeMsg(`Gradient not sent to the trainer: ${e.message}`, 'bad'))
+    .finally(() => { routeState.gradeBusy = false; });
+}
+
+function routeMsg(text, cls = '') { $('routeMsg').textContent = text; $('routeMsg').className = cls; }
+
+function routeSample() {
+  if (!route) return {};
+  const p = routeAt(routeState.dist);
+  return { lat: p.lat, lon: p.lon, alt: p.ele, d: routeState.dist, s: routeState.speed * 3.6 };
+}
+
+// ---- Drawing.
+function setupCanvas(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawMap() {
+  const { ctx, w, h } = setupCanvas($('routeMap'));
+  const res = route.res, lat0 = res[0].lat * Math.PI / 180;
+  const xs = res.map(p => p.lon * Math.cos(lat0)), ys = res.map(p => -p.lat);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = 16, scale = Math.min((w - 2 * pad) / (maxX - minX || 1), (h - 2 * pad) / (maxY - minY || 1));
+  const ox = (w - (maxX - minX) * scale) / 2, oy = (h - (maxY - minY) * scale) / 2;
+  const P = i => [ox + (xs[i] - minX) * scale, oy + (ys[i] - minY) * scale];
+  const here = Math.min(res.length - 1, Math.floor(routeState.dist / ROUTE_STEP));
+  ctx.lineJoin = ctx.lineCap = 'round';
+  const line = (from, to, color, width) => {
+    ctx.beginPath();
+    for (let i = from; i <= to; i++) { const [x, y] = P(i); i === from ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+  };
+  line(0, res.length - 1, '#3a404d', 4);
+  if (here > 0) line(0, here, '#ff7a1a', 4);
+  const [sx, sy] = P(0), [ex, ey] = P(res.length - 1);
+  ctx.fillStyle = '#3ecf8e'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ff5d5d'; ctx.beginPath(); ctx.arc(ex, ey, 4, 0, 7); ctx.fill();
+  const pos = routeAt(routeState.dist);
+  const px = ox + (pos.lon * Math.cos(lat0) - minX) * scale, py = oy + (-pos.lat - minY) * scale;
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(px, py, 7, 0, 7); ctx.fill(); ctx.stroke();
+}
+
+function gradeColor(g) {
+  if (g < 2) return '#4b6b8f';
+  if (g < 4) return '#3ecf8e';
+  if (g < 6) return '#f5b84b';
+  if (g < 9) return '#ff7a1a';
+  return '#ff5d5d';
+}
+
+function drawElevation() {
+  const { ctx, w, h } = setupCanvas($('routeElev'));
+  const res = route.res;
+  const eles = res.map(p => p.ele);
+  const lo = Math.min(...eles), hi = Math.max(...eles), span = Math.max(hi - lo, 30);
+  const top = 8, bottom = h - 4;
+  const X = d => (d / route.total) * w;
+  const Y = e => bottom - ((e - lo) / span) * (bottom - top);
+  // Columns coloured by gradient, about 100 m each.
+  const colW = Math.max(1, w / Math.ceil(route.total / 100));
+  for (let d = 0; d < route.total; d += 100) {
+    const g = gradeBetween(d, d + 100);
+    const e = routeAt(Math.min(route.total, d + 50)).ele;
+    ctx.fillStyle = gradeColor(g);
+    ctx.globalAlpha = d < routeState.dist ? 0.95 : 0.45;
+    ctx.fillRect(X(d), Y(e), colW + 0.5, bottom - Y(e));
+  }
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  res.forEach((p, i) => (i ? ctx.lineTo(X(p.d), Y(p.ele)) : ctx.moveTo(X(p.d), Y(p.ele))));
+  ctx.strokeStyle = '#f2f4f8'; ctx.lineWidth = 1.5; ctx.stroke();
+  const mx = X(routeState.dist);
+  ctx.fillStyle = '#fff'; ctx.fillRect(mx - 1, 0, 2, h);
+}
+
+function fmtKm(m) { return (m / 1000).toFixed(m < 10000 ? 2 : 1); }
+function fmtGrade(g) { return `${g >= 0 ? '+' : ''}${g.toFixed(1)}%`; }
+
+function renderRoute() {
+  if (!route) return;
+  drawMap();
+  drawElevation();
+  const d = routeState.dist;
+  $('rDist').textContent = `${fmtKm(d)} / ${fmtKm(route.total)} km`;
+  $('rGrade').textContent = fmtGrade(gradeBetween(d - 25, d + 25));
+  $('rNext').textContent = d >= route.total - 1 ? '--' : fmtGrade(gradeBetween(d, Math.min(route.total, d + 1000)));
+  const i = Math.min(route.climb.length - 1, Math.floor(d / ROUTE_STEP));
+  $('rClimb').textContent = `${Math.round(route.climb[i])} / ${Math.round(route.climb[route.climb.length - 1])} m`;
+  $('rSpeed').textContent = `${(routeState.speed * 3.6).toFixed(1)} km/h`;
+}
+
+async function loadGpxFile(file) {
+  if (!file) return;
+  if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before loading another route.', 'bad');
+  try {
+    route = parseGpx(await file.text(), file.name);
+    Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
+    $('routeBox').classList.remove('hidden');
+    $('routeName').textContent = route.name;
+    routeMsg(`${fmtKm(route.total)} km with ${Math.round(route.climb[route.climb.length - 1])} m of climbing. Start a ride to roll. The trainer gets the gradient while ERG is off.`, 'ok');
+    renderRoute();
+  } catch (e) {
+    routeMsg(e.message, 'bad');
+  }
+}
+
+function clearRoute() {
+  if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before removing the route.', 'bad');
+  route = null;
+  $('routeBox').classList.add('hidden');
+  $('gpxInput').value = '';
+  routeMsg('');
+}
+
+$('gpxInput').addEventListener('change', e => loadGpxFile(e.target.files[0]));
+$('routePanel').addEventListener('dragover', e => e.preventDefault());
+$('routePanel').addEventListener('drop', e => { e.preventDefault(); loadGpxFile(e.dataTransfer.files[0]); });
+$('routeClear').addEventListener('click', clearRoute);
+$('rMass').value = routeCfg.mass;
+$('rDifficulty').value = Math.round(routeCfg.difficulty * 100);
+$('rMass').addEventListener('change', e => { routeCfg.mass = Math.max(40, Math.min(200, Number(e.target.value) || 84)); e.target.value = routeCfg.mass; store.set('routeCfg', routeCfg); });
+$('rDifficulty').addEventListener('input', e => {
+  routeCfg.difficulty = Number(e.target.value) / 100;
+  $('rDifficultyLabel').textContent = `${e.target.value}%`;
+  store.set('routeCfg', routeCfg);
+  routeState.lastGrade = null; // resend at the new difficulty
+});
+$('rDifficultyLabel').textContent = `${Math.round(routeCfg.difficulty * 100)}%`;
+window.addEventListener('resize', () => renderRoute());
+
+$('connectBtn').addEventListener('click', connect);
+// ---- Di2 explorer. Shimano's Bluetooth services use their own UUID base,
+// which spells "SHIMANO_BLE" in its last bytes. Web Bluetooth only exposes
+// services named up front, so every short id on that base is listed.
+const SHIMANO_BASE = '-5348-494d-414e-4f5f424c4500';
+const SHIMANO_SERVICES = Array.from({ length: 256 }, (_, i) => `000018${i.toString(16).padStart(2, '0')}${SHIMANO_BASE}`);
+// 18fe and 18ff hold Shimano's setup and pairing channels; touching them
+// fails authentication and makes the derailleur drop the connection, so the
+// explorer leaves them alone. Notifications repeat several times a second,
+// so only a changed value is logged.
+const DI2_SKIP = ['shimano:18fe', 'shimano:18ff'];
+const di2 = { device: null, log: [], started: 0, last: {}, wanted: false, retries: 0 };
+const hex = view => Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), b => b.toString(16).padStart(2, '0')).join(' ');
+const shortUuid = u => (u.endsWith(SHIMANO_BASE) ? `shimano:${u.slice(4, 8)}` : u.endsWith('-0000-1000-8000-00805f9b34fb') ? u.slice(4, 8) : u);
+
+function di2Log(line) {
+  const t = ((Date.now() - di2.started) / 1000).toFixed(1).padStart(6);
+  di2.log.push(`${t}s ${line}`);
+  if (di2.log.length > 2000) di2.log.shift();
+  const el = $('di2Log');
+  el.textContent = di2.log.slice(-200).join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+// Gear state on 18ef/2ac1, message type 0x00, as seen from an RD-RX827:
+//   00 00 03 ff ff 0c 0c 80 ...   rear position 12 of 12
+//   00 00 03 ff ff 0b 0c 80 ...   after one shift: 11 of 12
+// Byte 5 is the rear position, byte 6 the number of rear gears. Bytes 3-4
+// are 0xff on a 1x bike and are read as front position and count otherwise,
+// which is a guess until a 2x bike confirms it.
+function di2Gear(view) {
+  if (view.byteLength < 7 || view.getUint8(0) !== 0x00) return;
+  const rear = view.getUint8(5), rearCount = view.getUint8(6);
+  if (!rear || rear === 0xff || !rearCount || rearCount === 0xff || rear > rearCount) return;
+  const front = view.getUint8(3), frontCount = view.getUint8(4);
+  const hasFront = front !== 0xff && frontCount !== 0xff && frontCount > 1;
+  $('gearRear').textContent = rear;
+  $('gearOf').textContent = `of ${rearCount}`;
+  $('gearFront').textContent = hasFront ? `Front ${front} of ${frontCount}` : '';
+  $('gearTile').textContent = hasFront ? `${front}·${rear}/${rearCount}` : `${rear}/${rearCount}`;
+  $('gearStat').classList.remove('hidden');
+  di2.gear = { rear, rearCount, front: hasFront ? front : null, at: Date.now() };
+}
+
+function di2Notify(id, view) {
+  if (!di2.device) return;
+  if (id === 'shimano:18ef/shimano:2ac1') di2Gear(view);
+  const value = hex(view);
+  // Messages on one channel are told apart by their first byte.
+  const key = `${id}#${value.slice(0, 2)}`;
+  if (di2.last[key] === value) return;
+  di2.last[key] = value;
+  di2Log(`notify ${id}: ${value}`);
+}
+
+async function di2Attach() {
+  const dev = di2.device;
+  $('di2State').textContent = `Connecting to ${dev.name || 'device'}…`;
+  const server = await dev.gatt.connect();
+  di2.retries = 0;
+  $('di2Box').classList.remove('hidden');
+  $('di2Btn').textContent = 'Disconnect';
+  di2Log(`connected to "${dev.name || '?'}"`);
+  const services = (await server.getPrimaryServices()).filter(s => !DI2_SKIP.includes(shortUuid(s.uuid)));
+  $('di2Services').textContent = `Services: ${services.map(s => shortUuid(s.uuid)).join(', ') || 'none visible'}`;
+  let subscribed = 0;
+  for (const svc of services) {
+    let chars = [];
+    try { chars = await svc.getCharacteristics(); } catch (e) { di2Log(`${shortUuid(svc.uuid)}: ${e.message}`); continue; }
+    for (const c of chars) {
+      const id = `${shortUuid(svc.uuid)}/${shortUuid(c.uuid)}`;
+      const props = Object.entries({ read: c.properties.read, write: c.properties.write, notify: c.properties.notify, indicate: c.properties.indicate })
+        .filter(([, v]) => v).map(([k]) => k).join(',');
+      di2Log(`char ${id} [${props}]`);
+      try {
+        if (c.properties.read) di2Log(`read ${id}: ${hex(await c.readValue())}`);
+        if (c.properties.notify || c.properties.indicate) {
+          c.addEventListener('characteristicvaluechanged', e => di2Notify(id, e.target.value));
+          await c.startNotifications();
+          subscribed++;
+        }
+      } catch (e) { di2Log(`${id}: ${e.message}`); }
+    }
+  }
+  $('di2State').textContent = subscribed
+    ? `Connected to ${dev.name || 'Di2'}.`
+    : 'Connected, but it exposes nothing to listen to. Copy the log anyway; it shows what is there.';
+}
+
+function di2Disconnected() {
+  di2Log('disconnected');
+  di2.last = {};
+  if (di2.wanted && di2.retries < 3) {
+    di2.retries++;
+    $('di2State').textContent = `Lost the Di2, reconnecting (try ${di2.retries} of 3)… Shift once to wake it.`;
+    setTimeout(() => di2Attach().catch(e => { di2Log(`reconnect failed: ${e.message}`); di2Disconnected(); }), 1500);
+    return;
+  }
+  di2.device = null;
+  di2.gear = null;
+  $('gearStat').classList.add('hidden');
+  $('gearRear').textContent = '--';
+  $('gearOf').textContent = '';
+  $('gearTile').textContent = '--';
+  $('di2Btn').textContent = 'Connect Di2';
+  $('di2State').textContent = 'Disconnected.';
+}
+
+async function connectDi2() {
+  if (di2.device) { di2.wanted = false; di2.device.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) return ($('di2State').textContent = 'This browser has no Web Bluetooth. Use Chrome or Edge.');
+  try {
+    $('di2State').textContent = 'Pick your Di2 in the pop-up (often named after the rear derailleur, e.g. RD-R8150).';
+    const dev = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [...SHIMANO_SERVICES, 0x180a, 0x180f, 0x1816, 0x1818],
+    });
+    di2.device = dev;
+    di2.log = [];
+    di2.last = {};
+    di2.started = Date.now();
+    di2.wanted = true;
+    di2.retries = 0;
+    dev.addEventListener('gattserverdisconnected', di2Disconnected);
+    await di2Attach();
+  } catch (e) {
+    if (e.name !== 'NotFoundError') $('di2State').textContent = `Could not connect: ${e.message}`;
+    else $('di2State').textContent = '';
+  }
+}
+
+$('di2Btn').addEventListener('click', connectDi2);
+$('di2Mark').addEventListener('click', () => di2Log('---- shifted ----'));
+$('di2Copy').addEventListener('click', async () => {
+  const text = di2.log.join('\n');
+  try { await navigator.clipboard.writeText(text); $('di2Copy').textContent = 'Copied'; }
+  catch { prompt('Copy the Di2 log:', text); }
+});
+
+$('hrBtn').addEventListener('click', () => toggleSensor('hr'));
+$('pmBtn').addEventListener('click', () => toggleSensor('pm'));
+$('disconnectBtn').addEventListener('click', () => { trainerManual = true; device?.gatt?.disconnect(); });
+$('copyBtn').addEventListener('click', async () => {
+  const text = reportText();
+  try { await navigator.clipboard.writeText(text); $('copyBtn').textContent = 'Copied'; }
+  catch { prompt('Copy the report:', text); }
+});
+
+setInterval(() => {
+  if (!state.lastPacket) return;
+  const age = (Date.now() - state.lastPacket) / 1000;
+  $('fresh').textContent = age < 2 ? 'Live' : `No data for ${Math.floor(age)} s`;
+  $('fresh').className = age < 2 ? '' : 'stale';
+}, 1000);
+
+if (!navigator.bluetooth) {
+  setStatus('This browser has no Web Bluetooth. Open this page in Chrome or Edge on Windows.', true);
+}
+
+// Simulator: connect the trainer, power meter, strap and Di2 in one go.
+async function simConnectAll() {
+  if (!device) await connect();
+  for (const kind of ['pm', 'hr']) if (!ext[kind].device) await toggleSensor(kind);
+  if (!di2.device) await connectDi2();
+}
+if (SIM) $('simAll').addEventListener('click', simConnectAll);
+
+// ---- App: installable from Chrome or Edge when served over https (GitHub
+// Pages), and still a plain page when the HTML file is opened directly.
+if (/^https?:$/.test(location.protocol)) {
+  const m = document.createElement('link'); m.rel = 'manifest'; m.href = 'manifest.webmanifest'; document.head.append(m);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; $('installBtn').classList.remove('hidden'); });
+window.addEventListener('appinstalled', () => { installPrompt = null; $('installBtn').classList.add('hidden'); });
+$('installBtn').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null; $('installBtn').classList.add('hidden');
+});
+
+// ---- Settings and workouts to a file and back, to move between the app and the HTML file.
+function dataMsg(text, cls = '') { $('dataMsg').textContent = text; $('dataMsg').className = cls; }
+$('dataSave').addEventListener('click', () => {
+  const data = {};
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); data[k] = localStorage.getItem(k); } } catch {}
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ app: 'IndoorWarior', saved: new Date().toISOString(), data }, null, 1)], { type: 'application/json' }));
+  a.download = 'IndoorWarior-settings.json';
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  dataMsg(`Saved ${Object.keys(data).length} settings to your Downloads folder.`, 'ok');
+});
+$('dataLoad').addEventListener('click', () => $('dataFile').click());
+$('dataFile').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    if (j.app !== 'IndoorWarior' || !j.data || typeof j.data !== 'object') throw new Error('This is not an IndoorWarior settings file.');
+    if ((ride.status === 'riding' || ride.status === 'paused')) throw new Error('Finish this ride first.');
+    let n = 0;
+    for (const [k, v] of Object.entries(j.data)) if (typeof v === 'string') { localStorage.setItem(k, v); n++; }
+    dataMsg(`Loaded ${n} settings. Reloading…`, 'ok');
+    setTimeout(() => location.reload(), 800);
+  } catch (err) { dataMsg(`Could not load it: ${err.message}`, 'bad'); }
+});
+</script>
+</body>
+</html>
