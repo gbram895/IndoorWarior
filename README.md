@@ -77,6 +77,15 @@ heart rate and the ERG target, with the workout's next 6 minutes drawn ahead
 of the "now" line as coloured blocks with their watts. On a free ride it shows
 the last 10 minutes.
 
+In the last 5 seconds of each workout step a big countdown shows the next
+target, with a short beep at 3, 2 and 1 and a long one as the step changes
+(turn the beeps off under the workout).
+
+Under a finished ride, **How hard did it feel?** takes an RPE from 1 to 10
+and optional notes. Once the ride is on Strava they are saved on its Gradient
+workout (`POST /api/health/strava/ride-feedback`), where the next day's plan
+reads the RPE. Gradient syncs Strava first if it has not picked the ride up.
+
 Keep the page in front while riding: Chrome slows timers in background tabs,
 which would delay step changes.
 

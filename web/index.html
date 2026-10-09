@@ -79,7 +79,7 @@
   .timer { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .signin { display: grid; gap: 8px; margin-top: 12px; max-width: 420px; }
   .signin p { margin: 0; }
-  input[type=email], input[type=password], input[type=url] {
+  input[type=email], input[type=password], input[type=url], #rpeNotes {
     font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid #2f3542; background: #11141a; color: var(--text); width: 100%;
   }
   details summary { color: var(--muted); font-size: 14px; cursor: pointer; margin-bottom: 6px; }
@@ -109,6 +109,13 @@
   .lib-item svg { width: 120px; height: 24px; grid-row: 1 / span 2; grid-column: 2; align-self: center; }
   #wChart { width: 100%; height: 90px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 12px; }
   .value.small { font-size: 18px; }
+  .countdown { position: fixed; inset: auto 0 18vh 0; margin: 0 auto; width: max-content; padding: 10px 28px;
+    background: rgba(20, 23, 30, 0.92); border: 2px solid var(--accent); border-radius: 16px; text-align: center; z-index: 50; pointer-events: none; }
+  .countdown .n { font-size: 96px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--accent); }
+  .countdown .next { font-size: 20px; margin-top: 4px; }
+  .rpe { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .rpe button { min-width: 40px; }
+  .rpe button.on { background: var(--accent); color: #111; }
   #rideMsg { color: var(--muted); font-size: 14px; margin-top: 10px; }
   #rideMsg.bad { color: var(--bad); } #rideMsg.ok { color: var(--ok); }
   #savedBox { margin-top: 12px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
@@ -228,6 +235,9 @@
       </div>
     </div>
 
+    <div id="countdown" class="countdown hidden" aria-live="assertive"><div class="n" id="cdNum">5</div><div class="next" id="cdNext"></div></div>
+    <label class="muted" id="beepRow" style="display:block;margin-top:6px"><input type="checkbox" id="beepToggle"> Beep in the last seconds before each step changes</label>
+
     <div id="liveBox" class="hidden">
       <canvas id="liveChart" aria-label="Live ride chart"></canvas>
       <div class="legend"><span><i style="background:#f2f4f8"></i>Power</span><span><i style="background:#ff5d5d"></i>Heart rate</span><span><i style="background:#8b93a7"></i>Target</span><span id="liveSpan">Last 4 min · next 6 min</span></div>
@@ -243,6 +253,12 @@
 
     <div id="savedBox" class="hidden">
       <div id="rideSummary"></div>
+      <div id="rpeBox" style="margin-top:8px">
+        <div>How hard did it feel? <span class="muted">(1 very easy, 10 all-out)</span></div>
+        <div class="rpe" id="rpeButtons"></div>
+        <input id="rpeNotes" placeholder="Notes (optional)" maxlength="2000" style="margin-top:6px;width:100%">
+        <div id="rpeStatus" class="muted" style="margin-top:4px"></div>
+      </div>
       <div id="stravaStatus" class="muted" style="margin-top:6px"></div>
       <div class="row" style="margin-top:8px">
         <button id="stravaBtn">Upload to Strava</button>
@@ -1714,7 +1730,9 @@ async function startRide() {
   Object.assign(ride, {
     status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
     samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
+    rpe: null, rpeNotes: '', rpeSent: null,
   });
+  countdown.unlock(); // sound needs a click to be allowed
   rideMsg('');
   if (route) Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
   applyStep();
@@ -1784,7 +1802,8 @@ function recordSample() {
 
 // A copy of the ride survives a closed tab or a crash until it is saved or discarded.
 function saveUnsaved() {
-  if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null });
+  if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null,
+    rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null });
 }
 
 function tick() {
@@ -1819,6 +1838,8 @@ function summarize(samples) {
 function renderRide() {
   const active = ride.status === 'riding' || ride.status === 'paused';
   drawLive();
+  countdown.update();
+  $('beepRow').classList.toggle('hidden', !workout);
   $('rideTimer').textContent = fmtTime(rideSeconds());
   $('startBtn').classList.toggle('hidden', active);
   $('startBtn').textContent = workout ? 'Start ride' : 'Start free ride';
@@ -1859,6 +1880,7 @@ function renderRide() {
     const label = ride.status === 'finished' ? 'Ride finished' : pending.strava && pending.strava.activityId ? 'Last ride' : 'Unsaved ride';
     $('rideSummary').textContent = `${label} (${when}): ${fmtTime(sum.seconds)}, average ${sum.avg} W, max ${sum.max} W, ${sum.kj} kJ.`;
     const onStrava = pending.strava && pending.strava.activityId;
+    renderRpe(pending);
     $('stravaBtn').classList.toggle('hidden', !!onStrava);
     if (onStrava && !$('stravaStatus').dataset.busy) {
       $('stravaStatus').innerHTML = `On Strava: <a href="https://www.strava.com/activities/${Number(pending.strava.activityId)}" target="_blank" rel="noopener" style="color:var(--ok)">open the activity</a>.`;
@@ -1981,6 +2003,116 @@ function pendingRide() {
   return ride.status === 'finished' ? ride : store.get('unsavedRide', null);
 }
 
+// ---- Countdown into each step: the last 5 seconds show big, with a short
+// beep at 3, 2 and 1 and a long one as the step changes.
+const countdown = (() => {
+  let ctx = null, lastN = null, enabled = true;
+  try { enabled = localStorage.getItem('beeps') !== 'off'; } catch {}
+  $('beepToggle').checked = enabled;
+  $('beepToggle').addEventListener('change', e => {
+    enabled = e.target.checked;
+    try { localStorage.setItem('beeps', enabled ? 'on' : 'off'); } catch {}
+    if (enabled) unlock();
+  });
+  function unlock() {
+    try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume?.(); } catch { ctx = null; }
+  }
+  function beep(freq, ms) {
+    if (!enabled || !ctx) return;
+    try {
+      const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime;
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.3, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + ms / 1000);
+      o.connect(g).connect(ctx.destination);
+      o.start(t); o.stop(t + ms / 1000);
+    } catch { /* no sound is fine */ }
+  }
+  function update() {
+    const riding = ride.status === 'riding';
+    const s = riding && workout && !ride.workoutDone ? workout.steps[ride.step] : null;
+    const left = s ? s.sec - ride.stepElapsed : Infinity;
+    const n = left > 0 && left <= 5 ? Math.ceil(left) : null;
+    if (n !== lastN) {
+      if (n != null && n <= 3) beep(880, 120);
+      else if (n == null && lastN === 1 && riding) beep(1320, 400); // the step changes now
+      lastN = n;
+    }
+    $('countdown').classList.toggle('hidden', n == null);
+    if (n == null) return;
+    $('cdNum').textContent = n;
+    const next = workout.steps[ride.step + 1];
+    const w = next ? stepWatts(next) : null;
+    $('cdNext').textContent = !next ? 'Then the workout is done' : w != null ? `Next: ${w} W` : 'Next: free riding';
+  }
+  return { unlock, update };
+})();
+
+// ---- How hard it felt, asked under the finished ride and saved on the
+// Gradient workout the ride becomes, where the next day's plan reads it.
+(() => {
+  for (let i = 1; i <= 10; i++) {
+    const b = document.createElement('button');
+    b.className = 'secondary sm'; b.textContent = i; b.dataset.rpe = i;
+    b.addEventListener('click', () => {
+      const r = pendingRide();
+      if (!r) return;
+      r.rpe = i;
+      keepRide(r);
+      renderRpe(r);
+      sendFeedback(r);
+    });
+    $('rpeButtons').append(b);
+  }
+  $('rpeNotes').addEventListener('change', () => {
+    const r = pendingRide();
+    if (!r) return;
+    r.rpeNotes = $('rpeNotes').value.trim();
+    keepRide(r);
+    if (r.rpe) sendFeedback(r);
+  });
+})();
+
+function keepRide(r) { if (r !== ride) store.set('unsavedRide', r); else saveUnsaved(); }
+
+function rpeMsg(text, cls = '') {
+  $('rpeStatus').textContent = text;
+  $('rpeStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : '';
+}
+
+function renderRpe(r) {
+  document.querySelectorAll('#rpeButtons button').forEach(b => b.classList.toggle('on', Number(b.dataset.rpe) === r.rpe));
+  if (document.activeElement !== $('rpeNotes')) $('rpeNotes').value = r.rpeNotes || '';
+  if ($('rpeStatus').dataset.busy) return;
+  const sent = r.rpeSent && r.rpeSent.rpe === r.rpe && r.rpeSent.notes === (r.rpeNotes || '');
+  if (!r.rpe) rpeMsg('');
+  else if (sent) rpeMsg(`RPE ${r.rpe} saved in Gradient.`, 'ok');
+  else if (!(r.strava && r.strava.activityId)) rpeMsg(`RPE ${r.rpe} kept here. It goes to Gradient once the ride is on Strava.`);
+}
+
+async function sendFeedback(r) {
+  if (!r.rpe || !(r.strava && r.strava.activityId)) { renderRpe(r); return; }
+  if (!gradient.token) { rpeMsg('Sign in to Gradient above to save this there.', 'bad'); return; }
+  const notes = r.rpeNotes || '';
+  $('rpeStatus').dataset.busy = '1';
+  rpeMsg('Saving in Gradient…');
+  try {
+    await gradientApi('/api/health/strava/ride-feedback', {
+      method: 'POST',
+      body: JSON.stringify({ activityId: r.strava.activityId, startedAt: r.samples[0].t, rpe: r.rpe, feedbackNotes: notes || null }),
+    });
+    r.rpeSent = { rpe: r.rpe, notes };
+    keepRide(r);
+    delete $('rpeStatus').dataset.busy;
+    renderRpe(r);
+  } catch (err) {
+    delete $('rpeStatus').dataset.busy;
+    if (/not imported/i.test(err.message)) rpeMsg('Gradient has not picked up this ride from Strava yet. Press the number again in a minute.', 'bad');
+    else if (err.status === 404) rpeMsg('Gradient needs its latest update before it can take RPE from here.', 'bad');
+    else rpeMsg(`Not saved in Gradient: ${err.message}`, 'bad');
+  }
+}
+
 function stravaMsg(text, cls = '') {
   $('stravaStatus').textContent = text;
   $('stravaStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : '';
@@ -2020,6 +2152,7 @@ async function uploadToStrava(auto = false) {
       await showRouteMap(r, res);
     }
     delete $('stravaStatus').dataset.busy;
+    if (r.rpe && r.strava.activityId) sendFeedback(r);
     if (r.strava.activityId) renderRide();
     else stravaMsg('Sent to Strava. It is still processing and will show up there shortly.', 'ok');
   } catch (err) {
