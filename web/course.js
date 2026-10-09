@@ -1,6 +1,6 @@
 // IndoorWarior Island: the built-in course, ridden like a GPX route but with
-// its own scenery (a start arch, team tents, a village, flags on the summit).
-// A 12.6 km loop: flat start through the village, rolling forest, a 2.4 km
+// its own scenery (a start/finish gantry, flags on the summit).
+// A 12.6 km loop: flat start through farmland, rolling woods, a 2.4 km
 // climb with switchbacks at about 6% (a 10% kick near the top), a summit,
 // a long descent and a flat run home.
 //
@@ -60,9 +60,8 @@
       points,
       // Scenery along the lap, by distance in metres (scaled to the real length).
       scenery: total && {
-        arch: [25],
-        tents: [[-60, 'left'], [-140, 'right']],     // negative: before the line, at the end of the lap
-        villages: [[260, 1250], [total * 0.93, total - 200]],
+        arch: [[25, 'INDOORWARIOR']],
+        woods: [-13600, -9600],                      // shifts the woods to line the climb, fields at the start
         flags: [[total * 0.43, total * 0.5]],
         clearings: [[total * 0.455, total * 0.5]],    // open summit, no trees
       },

@@ -3074,27 +3074,34 @@ function routeFromPoints(raw, name) {
   // Fill gaps in elevation from neighbours.
   for (let i = 0; i < pts.length; i++) if (!Number.isFinite(pts[i].ele)) pts[i].ele = i ? pts[i - 1].ele : (pts.find(p => Number.isFinite(p.ele))?.ele ?? 0);
 
-  // Resample every ROUTE_STEP metres, so lookups and smoothing are simple.
+  // A loop (it ends where it starts) is ridden round and round rather than stopping at the line.
+  const loop = pts[pts.length - 1].d > 1000 && haversine(raw[0], raw[raw.length - 1]) < 60;
+  if (loop && haversine(pts[0], pts[pts.length - 1]) > 0.5) pts.push({ ...pts[0], d: pts[pts.length - 1].d + haversine(pts[pts.length - 1], pts[0]) });
+  // Resample every ROUTE_STEP metres, so lookups and smoothing are simple. A
+  // loop is sampled at a step a hair off ROUTE_STEP so its last point lands
+  // exactly back on the first and the road closes at the line.
   const total = pts[pts.length - 1].d;
   const res = [];
+  const count = loop ? Math.round(total / ROUTE_STEP) : Math.floor(total / ROUTE_STEP), step = loop ? total / count : ROUTE_STEP;
   let j = 0;
-  for (let d = 0; d <= total; d += ROUTE_STEP) {
+  for (let k = 0; k <= count; k++) {
+    const d = k * step;
     while (j < pts.length - 2 && pts[j + 1].d < d) j++;
-    const a = pts[j], b = pts[j + 1], f = (d - a.d) / (b.d - a.d || 1);
-    res.push({ d, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, ele: a.ele + (b.ele - a.ele) * f });
+    const a = pts[j], b = pts[j + 1], f = Math.min(1, (d - a.d) / (b.d - a.d || 1));
+    res.push({ d: k * ROUTE_STEP, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, ele: a.ele + (b.ele - a.ele) * f });
   }
   // GPS elevation is noisy: smooth over about 100 m before taking gradients.
   const smooth = res.map((_, i) => {
     let sum = 0, n = 0;
-    for (let k = Math.max(0, i - 5); k <= Math.min(res.length - 1, i + 5); k++) { sum += res[k].ele; n++; }
+    const m = res.length - 1; // a loop smooths round the line (its last point is its first)
+    if (loop) for (let k = i - 5; k <= i + 5; k++) { sum += res[((k % m) + m) % m].ele; n++; }
+    else for (let k = Math.max(0, i - 5); k <= Math.min(m, i + 5); k++) { sum += res[k].ele; n++; }
     return sum / n;
   });
   res.forEach((p, i) => { p.ele = smooth[i]; });
   const climb = [0];
   for (let i = 1; i < res.length; i++) climb.push(climb[i - 1] + Math.max(0, res[i].ele - res[i - 1].ele));
 
-  // A loop (it ends where it starts) is ridden round and round rather than stopping at the line.
-  const loop = res.length > 100 && haversine(raw[0], raw[raw.length - 1]) < 60;
   return { name, total: res[res.length - 1].d, res, climb, loop };
 }
 
@@ -3352,8 +3359,6 @@ const view3d = (() => {
     loading = loading || (async () => {
       if (!window.THREE) await loadScript('vendor/three.min.js');
       if (!window.World3D) await loadScript('world3d.js');
-      // The Kenney models are a nice-to-have: without them the world uses its own trees.
-      if (!window.IW_MODELS) await loadScript('vendor/kenney-models.js').catch(() => {});
       return World3D.mount($('route3d'), state);
     })();
     try { world = await loading; } catch (e) { loading = null; throw e; }

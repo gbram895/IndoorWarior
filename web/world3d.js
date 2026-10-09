@@ -2,7 +2,7 @@
 // a classic script so it also works when index.html is opened as a file).
 //
 // The road follows the route's real shape and elevation. The land beside it is
-// made up: rolling hills that rise away from the road, trees and a sign every
+// made up: rolling hills, fields and hedges, woods, the verge and a sign every
 // kilometre, all from a fixed seed so the same route always looks the same.
 // Everything is built once per route, in 600 m pieces so only the ones near the
 // rider get drawn; each frame only moves the rider and the camera, so it runs on
@@ -38,9 +38,12 @@
     const lat0 = res[0].lat, lon0 = res[0].lon, k = Math.cos((lat0 * Math.PI) / 180);
     const raw = res.map(p => [(p.lon - lon0) * 111320 * k, -(p.lat - lat0) * 110540]);
     // GPS wobble makes the road zigzag; average a few points either side.
+    // The window stays centred, so the ends don't get pulled inwards (that
+    // left a 30 m gap at the line of a loop); a loop averages round the line.
     const xz = raw.map((_, i) => {
+      const w = route.loop ? 3 : Math.min(3, i, n - 1 - i);
       let x = 0, z = 0, c = 0;
-      for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++) { x += raw[j][0]; z += raw[j][1]; c++; }
+      for (let j = i - w; j <= i + w; j++) { const q = raw[route.loop ? (((j % (n - 1)) + n - 1) % (n - 1)) : j]; x += q[0]; z += q[1]; c++; } // a loop's last point is its first
       return [x / c, z / c];
     });
     // Heights are drawn 1.6x steeper than they are. From a chase camera a true
@@ -49,7 +52,8 @@
     const y = res.map(p => (p.ele - res[0].ele) * LIFT);
     // Right-hand side of the direction of travel, flat.
     const side = xz.map((_, i) => {
-      const a = xz[Math.max(0, i - 1)], b = xz[Math.min(n - 1, i + 1)];
+      // A loop's ends share one direction, so the road closes without a crack at the line.
+      const a = xz[route.loop && i === 0 ? n - 2 : Math.max(0, i - 1)], b = xz[route.loop && i === n - 1 ? 1 : Math.min(n - 1, i + 1)];
       const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
       return [-dz / l, dx / l];
     });
@@ -137,12 +141,9 @@
     return { y: 0, d: Infinity, road: 0 };
   }
 
-  // Greens that vary across the land, a little drier on high ground.
-  function landColour(c, x, z, y, road, d) {
-    const t = noise(x / 90, z / 90), dry = smooth(10, 40, y - road);
-    if (d < 7) return c.setRGB(0.44, 0.5, 0.31); // verge
-    return c.setRGB(0.3 + 0.12 * t + 0.16 * dry, 0.46 + 0.1 * t - 0.04 * dry, 0.22 + 0.05 * t);
-  }
+  // The land's colour at a vertex, until its painted texture is in.
+  const rgb = [0, 0, 0];
+  function landColour(c, x, z, y, road, d) { ground(x, z, rgb, d); return c.setRGB(rgb[0], rgb[1], rgb[2]); }
 
   // The land at a side offset from a road point.
   function groundY(g, i, o) {
@@ -192,7 +193,7 @@
         const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
         const p = landAt(g, x, z, cand);
         pos.push(x, p.y, z);
-        uv.push(x / 5, z / 5);
+        uv.push((o + NEAR) / (2 * NEAR), 1 - (i - s) / ((e - s) || 1)); // into its painted texture (see paintLand)
         landColour(c, x, z, p.y, p.road, Math.abs(o));
         col.push(c.r, c.g, c.b);
       }
@@ -201,7 +202,9 @@
         for (let j = 0; j < w - 1; j++) idx.push(a + j, a + j + 1, b + j, a + j + 1, b + j + 1, b + j);
       }
     }
-    return landMesh(pos, col, uv, idx, mat);
+    const mesh = landMesh(pos, col, uv, idx, mat);
+    mesh.userData.paint = { strip: [s, e] };
+    return mesh;
   }
 
   function landMesh(pos, col, uv, idx, mat) {
@@ -242,207 +245,383 @@
       for (let r = 0; r <= CELLS; r++) for (let q = 0; q <= CELLS; q++) {
         const x = x0 + q * step, z = z0 + r * step, p = landAt(g, x, z, cand);
         const y = p.y - 3 * (1 - smooth(NEAR - 10, NEAR + 8, p.d));
-        pos.push(x, y, z); uv.push(x / 5, z / 5);
+        pos.push(x, y, z); uv.push((x - x0) / TILE, 1 - (z - z0) / TILE);
         landColour(c, x, z, p.y, p.road, p.d); col.push(c.r, c.g, c.b);
         if (r && q) { const i0 = (r - 1) * (CELLS + 1) + q - 1, i1 = i0 + CELLS + 1; idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1); }
       }
-      return landMesh(pos, col, uv, idx, mat);
+      const mesh = landMesh(pos, col, uv, idx, mat);
+      mesh.userData.paint = { tile: [x0, z0] };
+      return mesh;
     } }));
   }
 
-  // Trees either side of points s..e-1, thicker away from the road, never on it at a bend.
-  // `avoid(x, z, i)` is true where a tree must not stand (houses, an open summit).
-  function trees(g, s, e, seed, kit, models, avoid) {
-    const rand = rng(seed), spots = [];
-    for (let i = s; i < e; i++) {
-      for (const s of [-1, 1]) {
-        if (rand() > 0.55) continue;
-        const o = s * (10 + rand() ** 1.6 * 230);
-        const p = groundY(g, i, o);
-        let clear = !avoid(p.x, p.z, i);
-        for (let j = Math.max(0, i - 40); j <= Math.min(g.n - 1, i + 40) && clear; j++) {
-          if (Math.hypot(g.xz[j][0] - p.x, g.xz[j][1] - p.z) < ROAD_HALF + 5) clear = false;
-        }
-        if (clear) spots.push([p.x, p.y, p.z, 0.7 + rand() * 0.7, rand() * Math.PI, Math.floor(rand() * 1e6)]);
-      }
+  // ---- What covers the land: woods, and farmland cut into fields. One
+  // function of position, like the height, so the paint on the ground, the
+  // trees and the hedges all agree.
+  const FA = 0.42, FCOS = Math.cos(FA), FSIN = Math.sin(FA), FCOL = 120; // fields run at a slant to the map
+  // How wooded a spot is: above WOOD it is forest.
+  // A course can shift the pattern so its woods fall where it wants them.
+  let woodsAt = [0, 0];
+  const woods = (x, z) => { x += woodsAt[0]; z += woodsAt[1]; return noise(x / 380 + 7.3, z / 380) * 0.72 + noise(x / 110, z / 110 + 3.1) * 0.28; };
+  const WOOD = 0.56;
+  // The field a spot is in: columns FCOL wide, cut into rows whose length
+  // varies per column. Returns which field, how far to its nearest edge, and
+  // whether that edge has a hedge.
+  function field(x, z) {
+    const u = x * FCOS + z * FSIN, v = -x * FSIN + z * FCOS;
+    const c = Math.floor(u / FCOL), rowH = 55 + hash(c, 1.7) * 90, sh = hash(c, 2.9) * 300;
+    const r = Math.floor((v + sh) / rowH);
+    const fu = u - c * FCOL, fv = v + sh - r * rowH;
+    const eu = Math.min(fu, FCOL - fu), ev = Math.min(fv, rowH - fv);
+    // A hedge on about half the edges: the long edge left of the field, the short one below it.
+    const hedgeU = hash(fu < FCOL / 2 ? c : c + 1, 5.3) < 0.55, hedgeV = hash(c, r + (fv < rowH / 2 ? 0 : 1) + 0.37) < 0.5;
+    return { c, r, crop: hash(c * 3.1, r * 1.3 + 9.1), alongU: hash(c, r + 4.4) < 0.5, u, v, edge: Math.min(eu, ev), hedge: eu < ev ? hedgeU : hedgeV };
+  }
+  // Crops, by share: pasture, meadow, ripe wheat, young crop in rows, ploughed, maize.
+  const CROPS = [[0.36, [0.3, 0.43, 0.2], 0], [0.54, [0.4, 0.48, 0.25], 0], [0.68, [0.64, 0.56, 0.33], 1], [0.86, [0.35, 0.49, 0.2], 1], [0.92, [0.4, 0.34, 0.26], 1], [1, [0.25, 0.37, 0.16], 1]];
+  // The colour of the ground at a spot (r, g, b in 0..1, into `out`). `d` is the
+  // distance to the road when known, for the verge.
+  function ground(x, z, out, d = 99) {
+    const grain = noise(x / 6, z / 6) * 0.08 + noise(x / 1.3, z / 1.3) * 0.06 - 0.07;
+    let r, gg, b;
+    const w = woods(x, z);
+    if (w > WOOD) {
+      // The wood seen from above: dark crowns and gaps.
+      const t = noise(x / 4.5, z / 4.5), s = noise(x / 18 + 3, z / 18);
+      r = 0.12 + 0.07 * t + 0.03 * s; gg = 0.22 + 0.1 * t + 0.04 * s; b = 0.1 + 0.04 * t;
+      const edge = smooth(WOOD, WOOD + 0.02, w); // a soft rim where wood meets field
+      if (edge < 1) { const f = []; ground0(x, z, f); r = f[0] + (r - f[0]) * edge; gg = f[1] + (gg - f[1]) * edge; b = f[2] + (b - f[2]) * edge; }
+    } else {
+      const f = []; ground0(x, z, f); [r, gg, b] = f;
     }
+    if (d < 5.5) { const t = noise(x / 3, z / 3); r = 0.42 + 0.08 * t; gg = 0.5 + 0.06 * t; b = 0.28; } // rough verge grass
+    out[0] = r + grain; out[1] = gg + grain; out[2] = b + grain * 0.7;
+    return out;
+  }
+  function ground0(x, z, out) {
+    const f = field(x, z);
+    let k = 0; while (f.crop > CROPS[k][0]) k++;
+    const [, [r, g, b], rows] = CROPS[k], tone = hash(f.c + 0.5, f.r) * 0.08 - 0.04;
+    let l = 1 + tone;
+    if (rows) l *= 0.9 + 0.1 * Math.sin(((f.alongU ? f.v : f.u) * Math.PI * 2) / 3.2); // crop rows or furrows
+    else l *= 0.94 + 0.12 * noise(x / 9, z / 9); // grass in patches
+    out[0] = r * l; out[1] = g * l; out[2] = b * l;
+    if (f.edge < 1.6) { // a grass margin, darker under a hedge
+      const m = f.hedge ? [0.16, 0.27, 0.12] : [0.38, 0.5, 0.25];
+      out[0] = m[0]; out[1] = m[1]; out[2] = m[2];
+    }
+  }
+
+  // ---- Trees, built in code: a spruce (stacked cones) and a broadleaf (a few
+  // lumpy balls on a trunk). Each kind is one geometry carrying its own
+  // colours, drawn as instances with their own size, turn and tint.
+  function part(geo, colour, crown) {
+    const g = geo.index ? geo.toNonIndexed() : geo, p = g.attributes.position, n = p.count, col = [];
+    const c = new T.Color(colour), hsl = {};
+    c.getHSL(hsl);
+    for (let i = 0; i < n; i++) {
+      const y = p.getY(i), l = crown ? hsl.l * (0.75 + 0.5 * Math.min(1, Math.max(0, (y - crown[1]) / crown[2] + 0.5))) : hsl.l;
+      const k = new T.Color().setHSL(hsl.h, hsl.s, l);
+      col.push(k.r, k.g, k.b);
+    }
+    g.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+    return g;
+  }
+  // Push vertices out by a little noise so a ball reads as foliage, and point
+  // the normals away from the crown's middle so it shades soft, like a tree.
+  function foliage(geo, cx, cy, cz, amount, seed) {
+    const p = geo.attributes.position, nrm = [];
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i), dx = x - cx, dy = y - cy, dz = z - cz, l = Math.hypot(dx, dy, dz) || 1;
+      const k = 1 + amount * (noise(x * 1.7 + seed, z * 1.7 + y) - 0.5);
+      p.setXYZ(i, cx + dx * k, cy + dy * k, cz + dz * k);
+      nrm.push(dx / l, dy / l, dz / l);
+    }
+    geo.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3));
+    return geo;
+  }
+  function merge(parts) {
+    const pos = [], nrm = [], col = [];
+    for (const g of parts) {
+      if (!g.attributes.normal) g.computeVertexNormals();
+      pos.push(...g.attributes.position.array); nrm.push(...g.attributes.normal.array); col.push(...g.attributes.color.array);
+      g.dispose();
+    }
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+    return geo;
+  }
+  let treeKit = null;
+  function treeKinds() {
+    if (treeKit) return treeKit;
+    const trunk = (r0, r1, h) => { const t = new T.CylinderGeometry(r0, r1, h, 6, 1, true); t.translate(0, h / 2, 0); return part(t, 0x4a3a2a); };
+    // Spruce, about 11 m: four cones narrowing upwards, darker underneath each tier.
+    const spruce = [trunk(0.1, 0.22, 3)];
+    for (let k = 0; k < 4; k++) {
+      const r = 2.3 - k * 0.48, h = 3.4 - k * 0.3, y = 1.6 + k * 2.05;
+      const c = new T.ConeGeometry(r, h, 9, 1, true); c.translate(0, y + h / 2, 0);
+      spruce.push(part(c, 0x1d3b22, [0, y + h * 0.5, h]));
+    }
+    // Broadleaf, about 9 m: a trunk and five overlapping lumpy balls; finer
+    // balls for the trees close to the road.
+    const leafy = detail => {
+      const parts = [trunk(0.16, 0.28, 4.4)];
+      for (const [x, y, z, r] of [[0, 5.8, 0, 2.6], [1.4, 5.1, 0.6, 1.9], [-1.3, 5.3, -0.5, 2], [0.3, 7.2, -0.3, 1.9], [-0.4, 5, 1.4, 1.7]]) {
+        const s = new T.IcosahedronGeometry(r, detail); s.translate(x, y, z);
+        parts.push(part(foliage(s, 0, 5.8, 0, 0.35, x * 3 + z), 0x355e24, [0, 5.8, 4.5]));
+      }
+      return merge(parts);
+    };
+    // A hedge: a 5 m length of three bushy blobs.
+    const hedge = [-1.7, 0, 1.7].map((x, k) => {
+      const b = new T.IcosahedronGeometry(1, 0); b.scale(1.5, 0.95, 0.8); b.translate(x, 0.85, 0);
+      return part(foliage(b, x, 0.85, 0, 0.4, k * 2.3), 0x2b4a1e, [0, 0.9, 1.8]);
+    });
+    // A white marker post with a black band, as along a Belgian country road.
+    const post = new T.BoxGeometry(0.12, 1, 0.12); post.translate(0, 0.5, 0);
+    const band = new T.BoxGeometry(0.13, 0.18, 0.13); band.translate(0, 0.78, 0);
+    // A tuft of rough grass or a low bush for the verge.
+    const tuft = new T.IcosahedronGeometry(0.55, 1); tuft.scale(1.2, 0.75, 1); tuft.translate(0, 0.2, 0);
+    const mat = new T.MeshLambertMaterial({ vertexColors: true });
+    treeKit = { tuft: merge([part(foliage(tuft, 0, 0.1, 0, 0.3, 4.1), 0x40592a, [0, 0.25, 0.7])]), spruce: merge(spruce), leafy: leafy(0), leafyNear: leafy(1), hedge: merge(hedge), post: merge([part(post, 0xeeeeee), part(band, 0x202020)]), mat };
+    return treeKit;
+  }
+  // Instances of one kind: spots are [x, y, z, scale, turn, tint, height scale].
+  function instances(geo, mat, spots, shadow) {
     if (!spots.length) return [];
-    if (models) return kenneyTrees(spots, models);
-    // three r149 culls instances by the bare tree shape at the origin, so each
-    // piece gets a bounding sphere around its own trees.
+    // three r149 culls instances by the bare shape at the origin, so each
+    // piece gets a bounding sphere around its own spots.
     const box = new T.Box3(), pt = new T.Vector3();
     for (const [x, y, z] of spots) box.expandByPoint(pt.set(x, y, z));
-    const sphere = box.getBoundingSphere(new T.Sphere()); sphere.radius += 12;
-    const geo = base => { const c = base.clone(); c.boundingSphere = sphere.clone(); return c; };
-    const trunk = new T.InstancedMesh(geo(kit.trunk), kit.bark, spots.length);
-    const crown = new T.InstancedMesh(geo(kit.crown), kit.leaf, spots.length);
-    const m = new T.Matrix4(), q = new T.Quaternion(), eu = new T.Euler(), sc = new T.Vector3(), v = new T.Vector3();
-    const tint = new T.Color();
-    spots.forEach(([x, y, z, s, r], k) => {
-      q.setFromEuler(eu.set(0, r, 0)); sc.set(s, s, s);
-      m.compose(v.set(x, y + 1.1 * s, z), q, sc); trunk.setMatrixAt(k, m);
-      m.compose(v.set(x, y + (2.2 + 2.6) * s, z), q, sc); crown.setMatrixAt(k, m);
-      crown.setColorAt(k, tint.setHSL(0.31 + (r % 0.06), 0.35, 0.2 + (s - 0.7) * 0.12));
+    const g = new T.BufferGeometry();
+    for (const k of ['position', 'normal', 'color']) g.setAttribute(k, geo.attributes[k]);
+    g.boundingSphere = box.getBoundingSphere(new T.Sphere()); g.boundingSphere.radius += 14;
+    const mesh = new T.InstancedMesh(g, mat, spots.length);
+    const m = new T.Matrix4(), q = new T.Quaternion(), e = new T.Euler(), sc = new T.Vector3(), v = new T.Vector3(), c = new T.Color();
+    spots.forEach(([x, y, z, s, turn, tint, hs = 1], k) => {
+      q.setFromEuler(e.set(0, turn, 0)); sc.set(s, s * hs, s);
+      mesh.setMatrixAt(k, m.compose(v.set(x, y, z), q, sc));
+      mesh.setColorAt(k, c.setRGB(1 + tint, 1 + tint * 0.8, 1 + tint * 0.4));
     });
-    trunk.castShadow = crown.castShadow = true;
-    return [trunk, crown];
+    mesh.castShadow = shadow;
+    mesh.userData.sharedParts = true; // the geometry's attributes belong to the kit
+    return [mesh];
   }
 
-  // ---- Kenney models (vendor/kenney-models.js, CC0): decoded once, shared by
-  // every route. Each is one mesh painted from a small colour-map texture.
-  function decode(str, Type) {
-    const bin = atob(str), bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new Type(bytes.buffer);
-  }
-  let kenney = null;
-  function kenneyModels() {
-    if (kenney !== null) return kenney;
-    kenney = false;
-    const src = window.IW_MODELS;
-    if (!src) return kenney;
-    const mats = {};
-    for (const [kit, url] of Object.entries(src.textures)) {
-      const tex = new T.TextureLoader().load(url);
-      tex.flipY = false; // left linear: sRGB made the houses dark navy
-      mats[kit] = new T.MeshLambertMaterial({ map: tex });
+  // Trees, hedges and marker posts beside points s..e-1. Woods are dense near
+  // the road and thinner further out; farmland gets the odd tree, hedges on
+  // some field edges and a tree now and then in a hedge.
+  // `avoid(x, z, i)` is true where nothing may stand (an open summit).
+  function trees(g, s, e, seed, avoid) {
+    const kit = treeKinds(), rand = rng(seed), spruce = [[], []], leafy = [[], []], hedges = [], posts = [], tufts = [];
+    const clearOfRoad = (x, z, i, gap) => {
+      for (let j = Math.max(0, i - 40); j <= Math.min(g.n - 1, i + 40); j++) {
+        const dx = g.xz[j][0] - x, dz = g.xz[j][1] - z;
+        if (dx * dx + dz * dz < gap * gap) return false;
+      }
+      return true;
+    };
+    // Only trees near the road cast shadows (the sun's shadow covers a 70 m
+    // square round the rider); drawing the rest into the shadow map is waste.
+    const tree = (x, z, i, scale, kind, o) => {
+      const y = groundAt(g, x, z, 300).y - 0.3;
+      (kind ? spruce : leafy)[o < 45 ? 0 : 1].push([x, y, z, scale, rand() * 6.3, (rand() - 0.5) * 0.35, 0.85 + rand() * 0.3]);
+    };
+    for (let i = s; i < e; i++) {
+      for (const sg of [-1, 1]) {
+        for (let o = 7 + rand() * 4; o < 330; o += 6 + o * 0.07 + rand() * 5) {
+          const a = (rand() - 0.5) * STEP, ii = Math.min(g.n - 2, i);
+          const fx = g.xz[ii + 1][0] - g.xz[ii][0], fz = g.xz[ii + 1][1] - g.xz[ii][1], fl = Math.hypot(fx, fz) || 1;
+          const x = g.xz[i][0] + g.side[i][0] * o * sg + (fx / fl) * a, z = g.xz[i][1] + g.side[i][1] * o * sg + (fz / fl) * a;
+          const w = woods(x, z);
+          if (w < WOOD - 0.01 && !(rand() < 0.004)) continue; // a lone tree in the fields now and then
+          if (avoid(x, z, i) || !clearOfRoad(x, z, i, ROAD_HALF + 4)) continue;
+          const pine = noise(x / 240 + 11, z / 240) > 0.48;
+          tree(x, z, i, (0.75 + rand() * 0.5) * (w < WOOD ? 1.1 : 1), w > WOOD && pine, o);
+        }
+      }
     }
-    const models = {};
-    for (const [name, m] of Object.entries(src.models)) {
-      const geo = new T.BufferGeometry();
-      geo.setAttribute('position', new T.BufferAttribute(decode(m.pos, Float32Array), 3));
-      geo.setAttribute('normal', new T.BufferAttribute(decode(m.nor, Float32Array), 3));
-      geo.setAttribute('uv', new T.BufferAttribute(decode(m.uv, Float32Array), 2));
-      geo.setIndex(new T.BufferAttribute(decode(m.idx, Uint16Array), 1));
-      geo.computeBoundingBox();
-      models[name] = { geo, mat: mats[m.kit], size: geo.boundingBox.getSize(new T.Vector3()) };
+    // Hedges: walk the field edges near this stretch of road.
+    const xs = [], zs = [];
+    for (let i = s; i <= e; i++) { xs.push(g.xz[i][0]); zs.push(g.xz[i][1]); }
+    const R = 150, x0 = Math.min(...xs) - R, x1 = Math.max(...xs) + R, z0 = Math.min(...zs) - R, z1 = Math.max(...zs) + R;
+    const nearest = (x, z) => {
+      let best = Infinity, bi = -1;
+      for (const j of nearRoad(g, x, z, R + 100)) { const dx = g.xz[j][0] - x, dz = g.xz[j][1] - z, d = dx * dx + dz * dz; if (d < best) { best = d; bi = j; } }
+      return [Math.sqrt(best), bi];
+    };
+    const hedgeAt = (x, z, turn) => {
+      if (woods(x, z) > WOOD - 0.02) return;
+      const [d, j] = nearest(x, z);
+      if (j < s || j >= e || d > R || d < ROAD_HALF + 5 || avoid(x, z, j)) return;
+      const f = field(x, z); if (!f.hedge) return;
+      hedges.push([x, groundAt(g, x, z, R).y - 0.15, z, 1, turn, (rand() - 0.5) * 0.25, 0.8 + rand() * 0.5]);
+      if (rand() < 0.07 && d > ROAD_HALF + 8) tree(x, z, j, 0.8 + rand() * 0.4, false, d);
+    };
+    // The corners of the area in field coordinates.
+    const us = [], vs = [];
+    for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) { us.push(x * FCOS + z * FSIN); vs.push(-x * FSIN + z * FCOS); }
+    const toXZ = (u, v) => [u * FCOS - v * FSIN, u * FSIN + v * FCOS];
+    const u0 = Math.min(...us), u1 = Math.max(...us), v0 = Math.min(...vs), v1 = Math.max(...vs);
+    for (let c = Math.floor(u0 / FCOL); c <= Math.ceil(u1 / FCOL); c++) {
+      // Along the column's edge (lengthwise).
+      for (let v = v0; v < v1; v += 5) { const [x, z] = toXZ(c * FCOL + 0.01, v + 2.5); if (x > x0 && x < x1 && z > z0 && z < z1) hedgeAt(x, z, -FA + Math.PI / 2); }
+      // Across, at the ends of each field in the column.
+      const rowH = 55 + hash(c, 1.7) * 90, sh = hash(c, 2.9) * 300;
+      for (let r = Math.floor((v0 + sh) / rowH); r <= Math.ceil((v1 + sh) / rowH); r++) {
+        for (let u = c * FCOL + 2.5; u < (c + 1) * FCOL; u += 5) { const [x, z] = toXZ(u, r * rowH - sh + 0.01); if (x > x0 && x < x1 && z > z0 && z < z1) hedgeAt(x, z, -FA); }
+      }
     }
-    models.trees = Object.keys(models).filter(k => k.startsWith('tree-')).map(k => models[k]);
-    models.houses = ['house-a', 'house-b', 'house-c', 'house-d', 'garage'].map(k => models[k]);
-    return (kenney = models);
-  }
-  // A mesh of a shared model, marked so changing route never disposes it.
-  function place(model, x, y, z, rotY, scale) {
-    const m = new T.Mesh(model.geo, model.mat);
-    m.position.set(x, y, z); m.rotation.y = rotY; m.scale.setScalar(scale);
-    m.castShadow = m.receiveShadow = true; m.userData.shared = true;
-    return m;
-  }
-
-  // Kenney trees, one instanced mesh per kind of tree in this piece, 5-11 m tall.
-  function kenneyTrees(spots, models) {
-    const byKind = new Map();
-    for (const sp of spots) { const k = sp[5] % models.trees.length; byKind.get(k)?.push(sp) || byKind.set(k, [sp]); }
-    const out = [], mtx = new T.Matrix4(), q = new T.Quaternion(), eu = new T.Euler(), sc = new T.Vector3(), v = new T.Vector3();
-    for (const [k, list] of byKind) {
-      const model = models.trees[k];
-      const box = new T.Box3(), pt = new T.Vector3();
-      for (const [x, y, z] of list) box.expandByPoint(pt.set(x, y, z));
-      const geo = new T.BufferGeometry();
-      for (const [name, attr] of Object.entries(model.geo.attributes)) geo.setAttribute(name, attr);
-      geo.setIndex(model.geo.index);
-      geo.boundingSphere = box.getBoundingSphere(new T.Sphere()); geo.boundingSphere.radius += 14;
-      const mesh = new T.InstancedMesh(geo, model.mat, list.length);
-      list.forEach(([x, y, z, s, r], n) => {
-        const h = (5 + 4 * (s - 0.7) / 0.7) / model.size.y;
-        q.setFromEuler(eu.set(0, r * 2, 0)); sc.set(h, h * (0.9 + (r % 0.2)), h);
-        mtx.compose(v.set(x, y - 0.1, z), q, sc); mesh.setMatrixAt(n, mtx);
-      });
-      mesh.castShadow = true; mesh.userData.sharedParts = true;
-      out.push(mesh);
+    // Rough grass and the odd bush along the verge, more where it is wooded.
+    for (let i = s; i < e; i++) {
+      for (const sg of [-1, 1]) for (let k = 0; k < 4; k++) {
+        const o = sg * (ROAD_HALF + 0.9 + rand() ** 1.5 * 9), a = rand() * STEP;
+        const x = g.xz[i][0] + g.side[i][0] * o + (g.xz[Math.min(g.n - 1, i + 1)][0] - g.xz[i][0]) * (a / STEP), z = g.xz[i][1] + g.side[i][1] * o + (g.xz[Math.min(g.n - 1, i + 1)][1] - g.xz[i][1]) * (a / STEP);
+        if (!clearOfRoad(x, z, i, ROAD_HALF + 0.6)) continue;
+        const big = rand() < (woods(x, z) > WOOD ? 0.15 : 0.03);
+        tufts.push([x, groundAt(g, x, z, 40).y - 0.05, z, big ? 1 + rand() * 0.6 : 0.4 + rand() * 0.5, rand() * 6.3, (rand() - 0.5) * 0.4, big ? 1.3 : 0.6 + rand() * 0.5]);
+      }
+    }
+    // Marker posts every 50 m on both sides.
+    for (let i = s - (s % 5); i < e; i += 5) {
+      if (i < s) continue;
+      for (const sg of [-1, 1]) { const p = groundY(g, i, sg * (ROAD_HALF + 0.9)); posts.push([p.x, p.y, p.z, 1, 0, 0, 1]); }
+    }
+    // Grouped in 250 m squares, so the squares out of sight or past the haze
+    // are skipped as a whole (see `scatter` in mount).
+    const out = [];
+    for (const [geo, list, shadow] of [[kit.spruce, spruce[0], true], [kit.spruce, spruce[1], false], [kit.leafyNear, leafy[0], true], [kit.leafy, leafy[1], false], [kit.hedge, hedges, false], [kit.post, posts, false], [kit.tuft, tufts, false]]) {
+      const cells = new Map();
+      for (const sp of list) { const k = Math.floor(sp[0] / 250) * 65536 + Math.floor(sp[2] / 250); cells.get(k)?.push(sp) || cells.set(k, [sp]); }
+      for (const c of cells.values()) out.push(...instances(geo, kit.mat, c, shadow));
     }
     return out;
   }
 
-  // Houses along a stretch of road (d0..d1 m), both sides, fronts to the road.
-  function village(g, d0, d1, rand, models, homes) {
-    const group = new T.Group();
-    for (const sideSign of [-1, 1]) {
-      for (let d = d0 + rand() * 20; d < d1; d += 24 + rand() * 16) {
-        if (rand() < 0.2) continue; // a gap now and then
-        const i = Math.min(g.n - 2, Math.max(0, Math.round(d / STEP)));
-        const model = models.houses[Math.floor(rand() * models.houses.length)];
-        const size = 9 + rand() * 3, o = sideSign * (ROAD_HALF + 6 + size / 2 + rand() * 4);
-        const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
-        // Sit on the lowest corner so no corner floats.
-        let y = Infinity;
-        for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) y = Math.min(y, groundAt(g, x + a * size / 2, z + b * size / 2).y);
-        // The door is on the model's +x side: turn that side to the road.
-        const ux = -g.side[i][0] * sideSign, uz = -g.side[i][1] * sideSign;
-        const face = Math.atan2(-uz, ux);
-        group.add(place(model, x, y - 0.2, z, face, size));
-        homes.push([x, z, size * 0.75 + 4]);
-      }
-    }
-    return group;
-  }
-
   // Where the scenery goes. A built-in course says so itself; any other route
-  // gets an arch at the start and the finish and a village every few
-  // kilometres where the road runs straight and fairly flat for a while.
-  function sceneryOf(route, g, seed) {
+  // gets a gantry at the start and the finish.
+  function sceneryOf(route) {
     const total = route.total, c = route.scenery;
     if (c) {
       const pos = d => (d < 0 ? total + d : d);
-      return {
-        arch: c.arch.map(pos), tents: (c.tents || []).map(([d, side]) => [pos(d), side]),
-        villages: c.villages || [], flags: c.flags || [], clearings: c.clearings || [],
-      };
+      return { arch: c.arch.map(([d, text]) => [pos(d), text]), flags: c.flags || [], clearings: c.clearings || [] };
     }
-    const rand = rng(seed + 3), villages = [];
-    for (let d = 1200 + rand() * 1500; d < total - 800; d += 2500 + rand() * 2500) {
-      const len = 300 + rand() * 250;
-      const i0 = Math.round(d / STEP), i1 = Math.min(g.n - 1, Math.round((d + len) / STEP));
-      let ok = i1 > i0;
-      for (let i = i0; i <= i1 && ok; i++) {
-        if (Math.abs(g.bend[i]) > 1 / 120) ok = false;
-        if (i > i0 && Math.abs(g.y[i] - g.y[i - 1]) / STEP / LIFT > 0.05) ok = false;
-      }
-      if (ok) villages.push([d, d + len]);
-    }
-    const arch = total > 400 ? [25, total - 25] : [25];
-    return { arch, tents: [[60, 'left']], villages, flags: [], clearings: [] };
+    return { arch: total > 400 ? [[25, 'START'], [total - 25, 'FINISH']] : [[25, 'START']], flags: [], clearings: [] };
   }
 
-  // A few flat clouds high up, drifting slowly. Like the mountains they stay
-  // round the camera.
-  function clouds(models) {
+  // Clouds: a few clusters of flattened balls high up, drifting slowly. Like
+  // the mountains they stay round the camera.
+  function clouds() {
     const group = new T.Group(), rand = rng(99);
-    const mat = new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0xc8d0da, fog: false });
-    for (let k = 0; k < 22; k++) {
-      const a = rand() * Math.PI * 2, r = 220 + rand() * 380;
-      const m = new T.Mesh(models.cloud.geo, mat);
-      m.position.set(Math.cos(a) * r, 150 + rand() * 90, Math.sin(a) * r);
-      m.scale.set(70 + rand() * 70, 14 + rand() * 10, 45 + rand() * 40);
-      m.rotation.y = rand() * Math.PI;
+    const mat = new T.MeshLambertMaterial({ vertexColors: true, emissive: 0x9aa6b4, fog: false });
+    const kinds = [0, 1, 2].map(() => {
+      const parts = [];
+      for (let k = 0, n = 5 + Math.floor(rand() * 4); k < n; k++) {
+        const s = new T.IcosahedronGeometry(1, 2), r = 0.5 + rand() * 0.5;
+        s.scale(r * 1.4, r * 0.7, r); s.translate((k / n - 0.5) * 3.2 + rand() * 0.4, rand() * 0.3, (rand() - 0.5) * 0.9);
+        parts.push(part(foliage(s, 0, 0, 0, 0.15, k), 0xffffff, [0, 0.1, 1.4]));
+      }
+      return merge(parts);
+    });
+    for (let k = 0; k < 20; k++) {
+      const a = rand() * Math.PI * 2, r = 250 + rand() * 350;
+      const m = new T.Mesh(kinds[k % 3], mat);
+      m.position.set(Math.cos(a) * r, 140 + rand() * 90, Math.sin(a) * r);
+      m.scale.setScalar(16 + rand() * 18); m.rotation.y = rand() * Math.PI;
       group.add(m);
     }
     return group;
   }
 
-  // Start/finish arches, team tents and flags.
-  function props(g, sc, models, total) {
+  // Start and finish gantries over the road, and flags lining the summit.
+  function props(g, sc) {
     const group = new T.Group();
     const headingAt = i => { const a = g.xz[Math.max(0, i - 1)], b = g.xz[Math.min(g.n - 1, i + 1)]; return Math.atan2(b[0] - a[0], b[1] - a[1]); };
     const idx = d => Math.min(g.n - 1, Math.max(0, Math.round(d / STEP)));
-    for (const d of sc.arch) {
-      const i = idx(d), s = 0.72; // 14 m wide model over a 6 m road
-      group.add(place(models.arch, g.xz[i][0], g.y[i], g.xz[i][1], headingAt(i), s));
+    const dark = new T.MeshLambertMaterial({ color: 0x23262d });
+    const banner = (text, w, h, bg) => {
+      const cv = document.createElement('canvas'); cv.width = 512; cv.height = Math.round((512 * h) / w);
+      const cx = cv.getContext('2d');
+      cx.fillStyle = bg; cx.fillRect(0, 0, cv.width, cv.height);
+      cx.fillStyle = '#fff'; cx.font = `800 ${Math.round(cv.height * 0.55)}px "Segoe UI", sans-serif`; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+      cx.fillText(text, cv.width / 2, cv.height / 2 + 2);
+      return new T.MeshLambertMaterial({ map: new T.CanvasTexture(cv) });
+    };
+    for (const [d, text] of sc.arch) {
+      const i = idx(d), gantry = new T.Group(), span = ROAD_HALF * 2 + 2.4;
+      for (const sg of [-1, 1]) {
+        const post = new T.Mesh(new T.BoxGeometry(0.35, 5.2, 0.35), dark);
+        post.position.set((sg * span) / 2, 2.6, 0); post.castShadow = true; gantry.add(post);
+      }
+      const face = banner(text, span, 1.3, '#ff6a14');
+      const board = new T.Mesh(new T.BoxGeometry(span + 0.4, 1.3, 0.25), [dark, dark, dark, dark, face, face]);
+      board.position.set(0, 4.6, 0); board.castShadow = true; gantry.add(board);
+      gantry.position.set(g.xz[i][0], g.y[i], g.xz[i][1]);
+      gantry.rotation.y = Math.atan2(g.side[i][0], g.side[i][1]) - Math.PI / 2;
+      group.add(gantry);
     }
-    for (const [d, side] of sc.tents) {
-      const i = idx(d), sg = side === 'left' ? -1 : 1, o = sg * (ROAD_HALF + 7);
-      const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
-      group.add(place(models.tents, x, groundAt(g, x, z).y + 0.05, z, headingAt(i), 1));
-    }
+    const cloth = [0xff6a14, 0x2a6fdb].map(c => new T.MeshLambertMaterial({ color: c, side: T.DoubleSide }));
     for (const [d0, d1] of sc.flags) {
       let k = 0;
       for (let d = d0; d < d1; d += 18, k++) {
-        const i = idx(d), sg = k % 2 ? 1 : -1, o = sg * (ROAD_HALF + 1.2);
-        const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
-        group.add(place(models.flag, x, groundAt(g, x, z).y, z, headingAt(i) + (sg > 0 ? Math.PI / 2 : -Math.PI / 2), 2.6));
+        const i = idx(d), sg = k % 2 ? 1 : -1, p = groundY(g, i, sg * (ROAD_HALF + 1.4));
+        const pole = new T.Mesh(new T.CylinderGeometry(0.04, 0.05, 4, 5), dark); pole.position.set(p.x, p.y + 2, p.z);
+        const flag = new T.Mesh(new T.PlaneGeometry(0.7, 2.2), cloth[k % 4 < 2 ? 0 : 1]);
+        flag.position.set(p.x, p.y + 2.8, p.z); flag.rotation.y = headingAt(i); flag.translateX(0.36);
+        flag.castShadow = pole.castShadow = true;
+        group.add(pole, flag);
       }
     }
     return group;
+  }
+
+  // ---- The ground's paint. Each piece of land gets a texture painted from
+  // ground() at a resolution that depends on how close it is: fields with
+  // their crop rows and margins, woods, the verge. Painted a few rows per
+  // frame (a generator), so a new piece never stalls the ride.
+  function* paintLand(g, mesh, mpp) {
+    const p = mesh.userData.paint, out = [0, 0, 0];
+    let W, H, at;
+    if (p.tile) {
+      const [x0, z0] = p.tile;
+      W = H = Math.ceil(TILE / mpp);
+      at = (px, py) => ground(x0 + ((px + 0.5) * TILE) / W, z0 + ((py + 0.5) * TILE) / H, out);
+    } else {
+      const [s, e] = p.strip, len = (e - s) * STEP;
+      W = Math.ceil((2 * NEAR) / mpp); H = Math.max(2, Math.ceil(len / mpp));
+      at = (px, py) => {
+        const o = ((px + 0.5) / W) * 2 * NEAR - NEAR, f = s + (((py + 0.5) / H) * len) / STEP;
+        const i = Math.min(g.n - 2, Math.floor(f)), t = f - i, a = g.xz[i], b = g.xz[i + 1], sa = g.side[i], sb = g.side[i + 1];
+        const sx = sa[0] + (sb[0] - sa[0]) * t, sz = sa[1] + (sb[1] - sa[1]) * t;
+        return ground(a[0] + (b[0] - a[0]) * t + sx * o, a[1] + (b[1] - a[1]) * t + sz * o, out, Math.abs(o));
+      };
+    }
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const cx = cv.getContext('2d'), img = cx.createImageData(W, H), d = img.data;
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        at(px, py);
+        const k = ((H - 1 - py) * W + px) * 4; // canvas row 0 is the texture's top (v = 1)
+        d[k] = Math.max(0, Math.min(255, out[0] * 255)); d[k + 1] = Math.max(0, Math.min(255, out[1] * 255)); d[k + 2] = Math.max(0, Math.min(255, out[2] * 255)); d[k + 3] = 255;
+      }
+      yield;
+    }
+    cx.putImageData(img, 0, 0);
+    return cv;
+  }
+  // Land materials share a fine grass grain laid on by world position, so the
+  // ground stays crisp right at the wheels whatever its painted resolution.
+  function grained(mat, detail) {
+    mat.onBeforeCompile = sh => {
+      sh.uniforms.detailMap = { value: detail };
+      sh.vertexShader = 'varying vec2 vDetail;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vDetail = position.xz;');
+      sh.fragmentShader = 'uniform sampler2D detailMap;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <map_fragment>',
+        '#include <map_fragment>\n  float grain = texture2D(detailMap, vDetail / 3.0).r * 0.6 + texture2D(detailMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;');
+    };
+    mat.customProgramCacheKey = () => 'grained';
+    return mat;
   }
 
   function kmSigns(g, total) {
@@ -681,12 +860,12 @@
     // Haze that thickens with distance but never quite hides the land, so the
     // far edge of the land and the mountains behind it share one tone.
     scene.fog = new T.FogExp2(HAZE, 0.0023);
-    scene.add(new T.HemisphereLight(0xdfeeff, 0x4a6b3a, 0.7));
+    scene.add(new T.HemisphereLight(0xd3e3f5, 0x5d5440, 0.62));
     // The sun casts shadows in a 70 m square that travels with the rider:
     // enough for him, the bike and the nearest trees, cheap to draw.
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = T.PCFSoftShadowMap;
-    const sun = new T.DirectionalLight(0xfff1dc, 0.95), SUN_DIR = new T.Vector3(-0.45, 0.75, 0.35).normalize();
+    const sun = new T.DirectionalLight(0xffe9cc, 1.1), SUN_DIR = new T.Vector3(-0.5, 0.6, 0.4).normalize();
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     Object.assign(sun.shadow.camera, { left: -35, right: 35, top: 35, bottom: -35, near: 1, far: 400 });
@@ -698,6 +877,11 @@
     bike.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
     const hills0 = mountains(); scene.add(hills0);
 
+    let scatter = [], scatterTick = 0; // tree and hedge groups, hidden when far away
+    // Land pieces and their painted textures: the job being painted, and the
+    // grass grain every land material shares.
+    let pieces = [], paintTick = 0, job = null;
+    const grain = surface('grass', renderer), maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
@@ -705,11 +889,11 @@
       if (world) {
         scene.remove(world);
         world.traverse(o => {
-          if (o.userData.shared) return;                  // Kenney models are kept for the next route
-          if (o.userData.sharedParts) { o.dispose(); return; }
+          if (o.userData.sharedParts) { o.dispose(); return; } // trees: the kit is kept for the next route
           o.geometry?.dispose();
           (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m?.map?.dispose(); m?.dispose(); });
         });
+        tileMat?.dispose(); // the land's plain material, also under the painted pieces
       }
       built = route; tiles = [];
       world = new T.Group();
@@ -720,27 +904,15 @@
       // or past the fog are skipped instead of drawn every frame.
       const asphalt = new T.MeshLambertMaterial({ color: 0x4a4e55, map: surface('road', renderer) });
       const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
-      const land = new T.MeshLambertMaterial({ vertexColors: true, map: surface('grass', renderer) });
-      const kit = {
-        trunk: new T.CylinderGeometry(0.18, 0.25, 2.2, 5), crown: new T.ConeGeometry(1.7, 5.5, 7),
-        bark: new T.MeshLambertMaterial({ color: 0x5b4632 }), leaf: new T.MeshLambertMaterial({ color: 0x2f5a2e }),
-      };
+      const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
       const seed = Math.round(route.total) + route.res.length;
-      const models = kenneyModels(), sc = sceneryOf(route, g, seed), homes = [];
+      scatter = []; pieces = []; job = null;
+      const sc = sceneryOf(route);
+      woodsAt = route.scenery?.woods || [0, 0];
       world.userData.sc = sc;
-      if (models && !sky2) scene.add((sky2 = clouds(models)));
-      if (models) {
-        const rand = rng(seed + 7);
-        for (const [d0, d1] of sc.villages) world.add(village(g, d0, d1, rand, models, homes));
-        world.add(props(g, sc, models, route.total));
-      }
-      const within = (ranges, d) => ranges.some(([a, b]) => d >= a && d <= b);
-      const avoid = (x, z, i) => {
-        const d = i * STEP;
-        if (within(sc.clearings, d)) return true;
-        if (within(sc.villages, d) && Math.hypot(x - g.xz[i][0], z - g.xz[i][1]) < 45) return true;
-        return homes.some(([hx, hz, r]) => Math.abs(hx - x) < r && Math.abs(hz - z) < r);
-      };
+      if (!sky2) scene.add((sky2 = clouds()));
+      world.add(props(g, sc));
+      const avoid = (x, z, i) => sc.clearings.some(([a, b]) => i * STEP >= a && i * STEP <= b);
       for (let s = 0; s < g.n - 1; s += CHUNK) {
         const e = Math.min(g.n - 1, s + CHUNK);
         const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; world.add(m); };
@@ -748,10 +920,11 @@
         strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint);
         strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint);
         strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0); // dashed centre line
-        world.add(nearLand(g, s, e, land));
-        world.add(...trees(g, s, e, seed + s, kit, models, avoid));
+        const strip0 = nearLand(g, s, e, land);
+        world.add(strip0); pieces.push(strip0);
+        const t = trees(g, s, e, seed + s, avoid);
+        world.add(...t); scatter.push(...t);
       }
-      kit.trunk.dispose(); kit.crown.dispose();
       // The far land is built a few tiles per frame, nearest first, so a long
       // route shows at once instead of freezing the page for a second or two.
       tiles = landTiles(g); tileMat = land; sortedAt = null;
@@ -759,6 +932,40 @@
       scene.add(world);
       disp = getState().dist;
       camPos.set(0, 0, 0); camLook.set(0, 0, 0);
+    }
+
+    // Paint the land near the rider, finer the closer it is; far pieces keep
+    // their plain colours (the haze hides the difference) and give their
+    // textures back. One piece is painted at a time, nearest first, in slices.
+    function paintGround(dt) {
+      if ((paintTick -= dt) <= 0) {
+        paintTick = 0.4;
+        const here = at(disp, new T.Vector3());
+        let best = null;
+        for (const m of pieces) {
+          const u = m.userData;
+          if (!u.c) { m.geometry.computeBoundingSphere(); u.c = m.geometry.boundingSphere.center; u.mpp = 0; }
+          const d = Math.max(0, Math.hypot(u.c.x - here.x, u.c.z - here.z) - (u.paint.strip ? 250 : 100));
+          const want = d < 250 ? 1 : d < 700 ? 2.5 : 0;
+          if (!want) { if (u.mpp) unpaint(m); continue; }
+          if ((!u.mpp || want < u.mpp) && (!best || d < best.d) && job?.m !== m) best = { m, d, want };
+        }
+        if (best && (!job || best.d < job.d - 100)) job = { ...best, gen: paintLand(world.userData.g, best.m, best.want) };
+      }
+      for (const t0 = performance.now(); job && performance.now() - t0 < 4;) {
+        const r = job.gen.next();
+        if (!r.done) continue;
+        const m = job.m, tex = new T.CanvasTexture(r.value);
+        tex.anisotropy = maxAniso;
+        unpaint(m);
+        m.material = grained(new T.MeshLambertMaterial({ map: tex }), grain);
+        m.userData.mpp = job.want;
+        job = null; paintTick = 0; // straight on to the next
+      }
+    }
+    function unpaint(m) {
+      if (m.material !== tileMat) { m.material.map?.dispose(); m.material.dispose(); m.material = tileMat; }
+      m.userData.mpp = 0;
     }
 
     // A point on the road at a distance, with its height. Before the start or
@@ -795,8 +1002,9 @@
           for (const t of tiles) t.d = Math.hypot(t.x - here.x, t.z - here.z);
           tiles.sort((p, q) => p.d - q.d);
         }
-        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) world.add(tiles.shift().build(tileMat));
+        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) { const m = tiles.shift().build(tileMat); world.add(m); pieces.push(m); }
       }
+      paintGround(dt);
       // Glide between the ride's 4 ticks a second, then ease onto the real distance.
       disp += s.speed * dt;
       disp += (s.dist - disp) * Math.min(1, dt * 2.5);
@@ -826,6 +1034,10 @@
       camPos.lerp(wantPos, k); camLook.lerp(wantLook, k);
       camera.position.copy(camPos); camera.lookAt(camLook);
       const g = world.userData.g;
+      if ((scatterTick -= dt) <= 0) {
+        scatterTick = 0.3;
+        for (const m of scatter) { const c = m.geometry.boundingSphere.center; m.visible = Math.hypot(c.x - camPos.x, c.z - camPos.z) < FAR - 50 + m.geometry.boundingSphere.radius * 0.6; }
+      }
       dome.position.copy(camPos);
       sun.target.position.copy(pos); sun.position.copy(pos).addScaledVector(SUN_DIR, 200);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);
@@ -840,7 +1052,7 @@
       get view() { return view; },
       set view(v) { if (VIEWS[v] && v !== view) { view = v; camPos.set(0, 0, 0); } },
       get info() { return renderer.info.render; },
-      get scenery() { return built && world.userData.sc; }, // where the arches and villages went
+      get scenery() { return built && world.userData.sc; }, // where the gantries and flags went
     };
   }
 
