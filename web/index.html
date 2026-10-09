@@ -86,6 +86,13 @@
   button.link { background: none; color: var(--muted); padding: 10px 4px; text-decoration: underline; font-weight: 400; }
   button.sm { padding: 6px 10px; min-width: 0; }
   .wname { font-weight: 600; font-size: 18px; margin: 12px 0 8px; }
+  .sim-badge { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; background: var(--warn); color: #111; border-radius: 6px; padding: 2px 8px; vertical-align: middle; margin-left: 8px; }
+  #simPanel { border: 1px solid var(--warn); }
+  .sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; }
+  .sim-grid label { font-size: 14px; color: var(--muted); }
+  .sim-grid b { color: var(--text); font-weight: 600; float: right; }
+  .sim-grid input { width: 100%; }
+  @media (max-width: 560px) { .sim-grid { grid-template-columns: 1fr; } }
   #liveChart { width: 100%; height: 190px; display: block; background: #12151b; border-radius: 8px; margin-bottom: 8px; }
   .legend { display: flex; gap: 14px; font-size: 13px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
   .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
@@ -109,7 +116,38 @@
 </head>
 <body>
 <main>
-  <h1>IndoorWarior</h1>
+  <div class="erg-head" style="margin-bottom:16px">
+    <h1 style="margin:0">IndoorWarior <span id="simBadge" class="sim-badge hidden">Simulator</span></h1>
+    <button id="simToggle" class="link">Test without hardware</button>
+  </div>
+<section class="panel hidden" id="simPanel">
+  <div class="erg-head">
+    <h2 style="margin:0">Simulator</h2>
+    <button id="simOff" class="secondary sm">Leave simulator</button>
+  </div>
+  <p class="muted" style="margin:8px 0 12px">Nothing real is connected. Every Connect button picks a virtual device: a trainer that copies yours (ERG, gradient, 50–600 W), a power meter, a heart rate strap and a 12-speed Di2. Your Gradient sign-in is real; a finished test ride is not sent to Strava unless you press Upload.</p>
+  <div class="sim-grid">
+    <label>Cadence <b id="simCadV"></b><input type="range" id="simCad" min="0" max="120" step="1"></label>
+    <label>Your power with ERG off <b id="simPowV"></b><input type="range" id="simPow" min="0" max="500" step="5"></label>
+    <label>Trainer reads vs power meter <b id="simBiasV"></b><input type="range" id="simBias" min="-10" max="10" step="1"></label>
+    <label>Heart rate fitness <b id="simFitV"></b><input type="range" id="simFit" min="-20" max="20" step="1"></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <span class="muted">Di2</span>
+    <button class="secondary sm" id="simDown">Gear −1</button>
+    <button class="secondary sm" id="simUp">Gear +1</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <span class="muted">Drop out</span>
+    <button class="secondary sm" data-drop="trainer">Trainer</button>
+    <button class="secondary sm" data-drop="pm">Power meter</button>
+    <button class="secondary sm" data-drop="hr">Strap</button>
+    <button class="secondary sm" data-drop="di2">Di2</button>
+    <button class="secondary sm" id="simSteal">Another app takes the trainer</button>
+  </div>
+  <div class="muted" id="simInfo" style="margin-top:10px;font-variant-numeric:tabular-nums"></div>
+</section>
+
 
   <section class="panel" id="connectPanel">
     <div class="row">
@@ -297,6 +335,271 @@
   </section>
 </main>
 
+<script>
+// ---- Simulator. With it on, navigator.bluetooth hands out virtual devices
+// that speak the same Bluetooth services as the real ones (FTMS trainer,
+// Cycling Power meter, heart rate strap, Shimano Di2), so every part of the
+// page runs unchanged without hardware nearby. Switch it on with the "Test
+// without hardware" button, or by opening the page with #sim on the end.
+const SIM = (() => {
+  let on = false;
+  try { on = localStorage.getItem('simulator') === 'on'; } catch {}
+  if (/(^|[?#&])sim\b/.test(location.search + location.hash)) on = true;
+  const toggle = document.getElementById('simToggle');
+  const leave = () => {
+    try { localStorage.setItem('simulator', 'off'); } catch {}
+    location.href = location.href.split('#')[0].split('?')[0];
+  };
+  toggle.addEventListener('click', () => {
+    try { localStorage.setItem('simulator', 'on'); } catch {}
+    location.reload();
+  });
+  if (!on) return null;
+  toggle.classList.add('hidden');
+  document.getElementById('simPanel').classList.remove('hidden');
+  document.getElementById('simBadge').classList.remove('hidden');
+  document.getElementById('simOff').addEventListener('click', leave);
+
+  const u16 = n => `0000${n.toString(16).padStart(4, '0')}-0000-1000-8000-00805f9b34fb`;
+  const shimano = n => `0000${n.toString(16)}-5348-494d-414e-4f5f424c4500`;
+  const norm = u => (typeof u === 'number' ? u16(u) : String(u).toLowerCase());
+  const dv = bytes => new DataView(new Uint8Array(bytes).buffer);
+  const text = s => new DataView(new TextEncoder().encode(s).buffer);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const le16 = v => [v & 0xff, (v >> 8) & 0xff];
+
+  const cfg = { cadence: 90, power: 180, bias: 5, fit: 0 };
+  try { Object.assign(cfg, JSON.parse(localStorage.getItem('simCfg') || '{}')); } catch {}
+  const saveCfg = () => { try { localStorage.setItem('simCfg', JSON.stringify(cfg)); } catch {} };
+
+  // What the virtual rider and trainer are doing.
+  const world = {
+    mode: 'free', target: 150, grade: 0, controlled: false,
+    power: 0, trainerReads: 0, hr: 68, speed: 0, gear: 6,
+    revs: 0, crankTime: 0, t: 0,
+  };
+
+  // ---- Minimal Web Bluetooth objects.
+  function characteristic(uuid, props, read) {
+    const c = new EventTarget();
+    c.uuid = uuid;
+    c.properties = { read: !!props.read, write: !!props.write, notify: !!props.notify, indicate: !!props.indicate, writeWithoutResponse: false };
+    c.notifying = false;
+    const alive = () => { if (!c.service.device.gatt.connected) throw new DOMException('GATT Server is disconnected. Cannot perform GATT operations.', 'NetworkError'); };
+    c.readValue = async () => { alive(); await sleep(20); return typeof read === 'function' ? read() : read || dv([]); };
+    c.startNotifications = async () => { alive(); c.notifying = true; return c; };
+    c.stopNotifications = async () => { c.notifying = false; return c; };
+    c.writeValue = c.writeValueWithResponse = async () => { alive(); };
+    c.emit = view => {
+      if (!c.notifying || !c.service.device.gatt.connected) return;
+      Object.defineProperty(c, 'value', { value: view, configurable: true });
+      c.dispatchEvent(new Event('characteristicvaluechanged'));
+    };
+    return c;
+  }
+
+  function device(id, name, services) {
+    const dev = new EventTarget();
+    dev.id = id;
+    dev.name = name;
+    const alive = () => { if (!dev.gatt.connected) throw new DOMException('GATT Server is disconnected. Cannot retrieve services.', 'NetworkError'); };
+    const svcs = services.map(s => {
+      const svc = {
+        uuid: s.uuid, device: dev, isPrimary: true,
+        getCharacteristics: async () => { alive(); return s.chars; },
+        getCharacteristic: async u => {
+          alive();
+          const c = s.chars.find(x => x.uuid === norm(u));
+          if (!c) throw new DOMException('No Characteristics matching UUID found in Service.', 'NotFoundError');
+          return c;
+        },
+      };
+      s.chars.forEach(c => { c.service = svc; });
+      return svc;
+    });
+    const server = {
+      device: dev,
+      get connected() { return dev.gatt.connected; },
+      getPrimaryServices: async () => { alive(); return svcs; },
+      getPrimaryService: async u => {
+        alive();
+        const s = svcs.find(x => x.uuid === norm(u));
+        if (!s) throw new DOMException('No Services matching UUID found in Device.', 'NotFoundError');
+        return s;
+      },
+    };
+    dev.gatt = {
+      device: dev, connected: false,
+      connect: async () => {
+        await sleep(200);
+        services.forEach(s => s.chars.forEach(c => { c.notifying = false; }));
+        dev.gatt.connected = true;
+        return server;
+      },
+      disconnect: () => {
+        if (!dev.gatt.connected) return;
+        dev.gatt.connected = false;
+        dev.dispatchEvent(new Event('gattserverdisconnected'));
+      },
+    };
+    return dev;
+  }
+
+  // ---- Trainer: a copy of Bram's (FTMS power, resistance, simulation and
+  // spin-down targets, 50-600 W in 1 W steps, reports power and speed only).
+  const bikeData = characteristic(u16(0x2ad2), { notify: true });
+  const status = characteristic(u16(0x2ada), { notify: true });
+  const controlPoint = characteristic(u16(0x2ad9), { write: true, indicate: true });
+  controlPoint.writeValue = controlPoint.writeValueWithResponse = async bytes => {
+    if (!trainer.gatt.connected) throw new DOMException('GATT Server is disconnected.', 'NetworkError');
+    const a = Array.from(new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength));
+    const op = a[0];
+    let result = 1;
+    const s16 = (lo, hi) => { const v = lo | (hi << 8); return v & 0x8000 ? v - 0x10000 : v; };
+    if (op === 0x00) world.controlled = true;
+    else if (op === 0x01) { world.controlled = false; world.mode = 'free'; }
+    else if (op === 0x07) { /* start */ }
+    else if (!world.controlled) result = 5;
+    else if (op === 0x05) {
+      const w = s16(a[1], a[2]);
+      if (w < 50 || w > 600) result = 3; else { world.target = w; world.mode = 'erg'; }
+    } else if (op === 0x11) { world.grade = s16(a[3], a[4]) / 100; world.mode = 'grade'; }
+    else result = 2;
+    setTimeout(() => controlPoint.emit(dv([0x80, op, result])), 40);
+  };
+  const trainer = device('sim-trainer', 'SIM Trainer', [
+    { uuid: u16(0x1826), chars: [
+      characteristic(u16(0x2acc), { read: true }, dv([0x01, 0x40, 0, 0, 0x0c, 0xa0, 0, 0])),
+      bikeData,
+      characteristic(u16(0x2ad8), { read: true }, dv([50, 0, 0x58, 0x02, 1, 0])),
+      controlPoint, status,
+    ] },
+    { uuid: u16(0x1818), chars: [characteristic(u16(0x2a63), { notify: true })] },
+    { uuid: u16(0x180a), chars: [
+      characteristic(u16(0x2a29), { read: true }, text('SIMULATOR')),
+      characteristic(u16(0x2a24), { read: true }, text('338332 (virtual)')),
+      characteristic(u16(0x2a26), { read: true }, text('sim')),
+    ] },
+  ]);
+
+  const pmData = characteristic(u16(0x2a63), { notify: true });
+  const pm = device('sim-pm', 'SIM Power meter', [
+    { uuid: u16(0x1818), chars: [pmData] },
+    { uuid: u16(0x180f), chars: [characteristic(u16(0x2a19), { read: true }, dv([88]))] },
+  ]);
+
+  const hrData = characteristic(u16(0x2a37), { notify: true });
+  const hr = device('sim-hr', 'SIM HR strap', [{ uuid: u16(0x180d), chars: [hrData] }]);
+
+  // ---- Di2, as an RD-RX827 broadcasts it: rear position in byte 5 and the
+  // number of rear gears in byte 6 of message type 0x00 on 18ef/2ac1.
+  const di2State = characteristic(shimano(0x2ac1), { notify: true });
+  const di2Shift = characteristic(shimano(0x2ac2), { indicate: true });
+  const di2 = device('sim-di2', 'SIM RDRX827', [
+    { uuid: shimano(0x18ef), chars: [
+      characteristic(shimano(0x2ac0), { read: true, indicate: true }, dv([0x50, 0, 0, 0, 0, 0, 1])),
+      di2State, di2Shift,
+      characteristic(shimano(0x2ac3), { read: true, indicate: true }, dv([7, 0x11, 3, 0, 0xff, 7, 0x12, 3, 0, 0xff, 0, 0, 0xff, 0, 0xff, 0, 0, 0xff, 0, 0xff])),
+      characteristic(shimano(0x2ac4), { write: true, indicate: true }),
+    ] },
+    { uuid: u16(0x180f), chars: [characteristic(u16(0x2a19), { read: true, notify: true }, dv([80]))] },
+    { uuid: u16(0x180a), chars: [characteristic(u16(0x2a29), { read: true }, text('SHIMANO'))] },
+  ]);
+
+  const devices = { trainer, pm, hr, di2 };
+  Object.defineProperty(navigator, 'bluetooth', {
+    configurable: true,
+    value: {
+      getAvailability: async () => true,
+      requestDevice: async opts => {
+        await sleep(300);
+        const wanted = (opts.filters || []).flatMap(f => f.services || []);
+        if (opts.acceptAllDevices) return di2;
+        if (wanted.includes(0x1826)) return trainer;
+        if (wanted.includes(0x180d)) return hr;
+        if (wanted.includes(0x1818)) return pm;
+        throw new DOMException('User cancelled the requestDevice() chooser.', 'NotFoundError');
+      },
+    },
+  });
+
+  // ---- Physics, four times a second.
+  // Road speed for the trainer's speed field: rider + bike 84 kg, Crr 0.004,
+  // CdA 0.32, 97% drivetrain, on the gradient the trainer was last given.
+  function roadSpeed(watts, grade) {
+    const m = 84, g = 9.81, th = Math.atan(grade / 100);
+    const f = v => v * m * g * (0.004 * Math.cos(th) + Math.sin(th)) + 0.5 * 1.2 * 0.32 * v * v * v;
+    const p = watts * 0.97;
+    let lo = 0, hi = 40;
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (f(mid) < p) lo = mid; else hi = mid; }
+    return lo;
+  }
+
+  const DT = 0.25;
+  setInterval(() => {
+    world.t += DT;
+    const cadence = cfg.cadence > 0 ? cfg.cadence + (Math.random() - 0.5) * 3 : 0;
+    const k = 1 + cfg.bias / 100;
+    // ERG holds the trainer's OWN reading at the target; the real watts at
+    // the pedals are what the power meter sees.
+    let want = 0;
+    if (cadence > 0) want = world.mode === 'erg' && trainer.gatt.connected ? world.target / k : cfg.power;
+    world.power += (want - world.power) * (1 - Math.exp(-DT / 1.5));
+    const pedals = Math.max(0, world.power * (1 + (Math.random() - 0.5) * 0.04));
+    world.trainerReads = pedals * k;
+    const grade = world.mode === 'grade' ? world.grade : 0;
+    world.speed += (roadSpeed(pedals, grade) * 3.6 - world.speed) * (1 - Math.exp(-DT / 4));
+    const hrWant = cadence > 0 ? 55 + 0.42 * world.power - cfg.fit : 70;
+    world.hr += (hrWant - world.hr) * (1 - Math.exp(-DT / 25));
+    const before = Math.floor(world.revs);
+    world.revs += (cadence / 60) * DT;
+    // Crank event time: the moment the last whole revolution was completed.
+    if (Math.floor(world.revs) !== before) world.crankTime = Math.round((world.t - (world.revs % 1) / (cadence / 60)) * 1024) & 0xffff;
+
+    const tick = Math.round(world.t / DT);
+    if (tick % 2 === 0) {
+      bikeData.emit(dv([0x40, 0x00, ...le16(Math.round(world.speed * 100)), ...le16(Math.round(world.trainerReads))]));
+      pmData.emit(dv([0x20, 0x00, ...le16(Math.round(pedals)), ...le16(Math.floor(world.revs)), ...le16(world.crankTime)]));
+    }
+    if (tick % 4 === 0) hrData.emit(dv([0x00, Math.round(world.hr)]));
+    // Di2 cycles its three state messages, as the real one does.
+    const msgs = [[4, 0xff, 0xff], [6, 0x12, 0x11, 0, 0, 0x0f], [0, 0, 3, 0xff, 0xff, world.gear, 0x0c, 0x80, 0x80, 0x80, 0xf4, 0xee, 0x12, 0xff, 0xff, 0x15, 0]];
+    di2State.emit(dv(msgs[tick % 3]));
+  }, DT * 1000);
+
+  // ---- Controls.
+  const $s = id => document.getElementById(id);
+  const sliders = [['simCad', 'cadence', v => `${v} rpm`], ['simPow', 'power', v => `${v} W`],
+    ['simBias', 'bias', v => `${v > 0 ? '+' : ''}${v}%`], ['simFit', 'fit', v => (v ? `${v > 0 ? '−' : '+'}${Math.abs(v)} bpm` : 'normal')]];
+  for (const [id, key, label] of sliders) {
+    const el = $s(id);
+    el.value = cfg[key];
+    $s(`${id}V`).textContent = label(cfg[key]);
+    el.addEventListener('input', () => { cfg[key] = Number(el.value); $s(`${id}V`).textContent = label(cfg[key]); saveCfg(); });
+  }
+  const shift = d => {
+    const g = Math.max(1, Math.min(12, world.gear + d));
+    if (g === world.gear) return;
+    world.gear = g;
+    di2Shift.emit(dv([0x10, 0x03]));
+  };
+  $s('simDown').addEventListener('click', () => shift(-1));
+  $s('simUp').addEventListener('click', () => shift(1));
+  document.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => devices[b.dataset.drop].gatt.disconnect()));
+  $s('simSteal').addEventListener('click', () => {
+    world.controlled = false;
+    world.mode = 'free';
+    status.emit(dv([0xff]));
+  });
+  setInterval(() => {
+    const mode = world.mode === 'erg' ? `ERG ${world.target} W` : world.mode === 'grade' ? `gradient ${world.grade.toFixed(1)}%` : 'free';
+    $s('simInfo').textContent = `Rider ${Math.round(world.power)} W · trainer reads ${Math.round(world.trainerReads)} W · ` +
+      `${Math.round(world.hr)} bpm · ${world.speed.toFixed(1)} km/h · trainer ${mode} · gear ${world.gear} of 12`;
+  }, 1000);
+
+  return { world, cfg, devices };
+})();
+</script>
 <script>
 // ---- Byte parsers for the standard Bluetooth SIG cycling characteristics.
 // All fields little-endian. Each takes a DataView and returns null if short.
@@ -1321,7 +1624,9 @@ function finishRide() {
   else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
   saveUnsaved();
   renderRide();
-  uploadToStrava(true);
+  // A simulator ride never goes to Strava by itself.
+  if (SIM) stravaMsg('Simulator ride, so it was not sent to Strava. Discard it, or press Upload to Strava to send it anyway.');
+  else uploadToStrava(true);
 }
 
 function recordSample() {

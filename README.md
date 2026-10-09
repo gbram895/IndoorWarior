@@ -120,6 +120,26 @@ E-TUBE first; Di2 accepts one app at a time.
 4. Pedal to wake the trainer, press **Connect trainer**, and pick it in the
    browser's pop-up.
 
+## Simulator
+
+**Test without hardware** (top right, or open the page with `#sim` on the
+end) swaps Web Bluetooth for virtual devices that speak the same services as
+the real ones, so the whole page runs unchanged:
+
+- a trainer copying Bram's (FTMS power, resistance, simulation and spin-down
+  targets, 50-600 W, power and speed only) that answers ERG, gradient and
+  reset commands on the control point,
+- a power meter with crank cadence, a heart rate strap whose heart rate
+  follows power with a lag, and a 12-speed Di2 broadcasting gear the way an
+  RD-RX827 does.
+
+The Simulator panel sets cadence, the rider's power while ERG is off, how far
+the trainer reads above or below the power meter (to exercise power match),
+and heart rate fitness. It can shift the Di2, drop any device to test
+reconnects, and have "another app" take the trainer. Gradient sign-in stays
+real; a finished simulator ride is not uploaded to Strava unless Upload is
+pressed. **Leave simulator** switches back.
+
 ## Testing without a trainer
 
 The parsers sit in the `BLE` object at the top of the page script. They
