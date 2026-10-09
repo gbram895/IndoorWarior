@@ -312,6 +312,7 @@
     <div id="liveBox" class="hidden">
       <canvas id="liveChart" aria-label="Live ride chart"></canvas>
       <div class="legend"><span><i style="background:#f2f4f8"></i>Power</span><span><i style="background:#ff5d5d"></i>Heart rate</span><span><i style="background:#8b93a7"></i>Target</span><span id="liveSpan">Last 4 min · next 6 min</span></div>
+      <div id="hrGaps" class="muted hidden" style="font-size:13px;margin-top:4px"></div>
     </div>
     <div class="row" style="margin-top:12px">
       <button id="startBtn">Start ride</button>
@@ -818,8 +819,15 @@ const BLE = (() => {
     if (flags === null) return null;
     return flags & 0x01 ? r.u16() : r.u8();
   }
+  // Bits 1-2 of the same flags: bit 2 = the strap reports skin contact, bit 1 = it has it.
+  // null when the strap does not say.
+  function heartContact(view) {
+    if (!view || view.byteLength < 1) return null;
+    const flags = view.getUint8(0);
+    return flags & 0x04 ? !!(flags & 0x02) : null;
+  }
 
-  return { cyclingPower, indoorBike, ftmsFeatures, powerRange, crankCadence, heartRate };
+  return { cyclingPower, indoorBike, ftmsFeatures, powerRange, crankCadence, heartRate, heartContact };
 })();
 
 // ---- GATT identifiers.
@@ -948,7 +956,7 @@ const decoder = new TextDecoder();
 const FRESH_MS = 3000;
 const isFresh = at => !!at && Date.now() - at < FRESH_MS;
 const ext = {
-  hr: { device: null, manual: false, value: null, at: 0 },
+  hr: { device: null, manual: false, value: null, at: 0, noContactAt: 0 },
   pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null },
 };
 
@@ -978,7 +986,8 @@ function onSensorValue(kind, view) {
   const now = Date.now();
   if (kind === 'hr') {
     const v = BLE.heartRate(view);
-    if (!v) return;
+    // 0 bpm or "no skin contact": the strap is there but cannot read the heart.
+    if (!v || BLE.heartContact(view) === false) { ext.hr.noContactAt = now; return; }
     ext.hr.value = v;
     ext.hr.at = now;
     $('hr').textContent = `${v} bpm`;
@@ -2376,8 +2385,9 @@ async function startRide() {
   Object.assign(ride, {
     status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
     samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
-    rpe: null, rpeNotes: '', rpeSent: null,
+    rpe: null, rpeNotes: '', rpeSent: null, hrGaps: { contact: 0, silent: 0, silentHidden: 0 },
   });
+  renderHrGaps();
   countdown.unlock(); // sound needs a click to be allowed
   rideMsg('');
   if (route) Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
@@ -2443,7 +2453,25 @@ function recordSample() {
     tg: ERG.on ? ERG.target : null, // ERG target, for the live chart
     st: workout && !ride.workoutDone ? ride.step : null, // workout step, saved as a lap
   });
+  // Why heart rate is missing, so a gap in the chart can be explained.
+  const s = ride.samples[ride.samples.length - 1];
+  if (ext.hr.device && s.hr == null) {
+    const g = ride.hrGaps;
+    if (isFresh(ext.hr.noContactAt)) g.contact++;
+    else { g.silent++; if (document.hidden) g.silentHidden++; }
+    renderHrGaps();
+  }
   if (ride.samples.length % 30 === 0) saveUnsaved();
+}
+
+function renderHrGaps() {
+  const g = ride.hrGaps, el = $('hrGaps');
+  if (!g || !(g.contact || g.silent)) { el.classList.add('hidden'); return; }
+  const parts = [];
+  if (g.contact) parts.push(`${g.contact} s the strap had no skin contact (wet its pads, or tighten it)`);
+  if (g.silent) parts.push(`${g.silent} s the strap sent nothing` + (g.silentHidden ? `, ${g.silentHidden} s of it with this tab in the background` : ', all with this tab in front'));
+  el.textContent = `Heart rate missing this ride: ${parts.join('; ')}.`;
+  el.classList.remove('hidden');
 }
 
 // A copy of the ride survives a closed tab or a crash until it is saved or discarded.
