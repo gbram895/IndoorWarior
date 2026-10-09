@@ -56,7 +56,8 @@
   .hud3d b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .hud3d i { font-style: normal; font-size: 11px; color: var(--muted); }
   .route3d:fullscreen .hud3d b { font-size: 34px; }
-  .r3dbtn { position: absolute; right: 10px; top: 10px; background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; }
+  .r3dbtns { position: absolute; right: 10px; top: 10px; display: flex; gap: 6px; }
+  .r3dbtn { background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; }
   .seg { display: inline-flex; background: #12151b; border-radius: 8px; padding: 2px; margin: 8px 0; }
   .seg button { background: none; color: var(--muted); padding: 5px 12px; font-size: 13px; }
   .seg button.on { background: #2a2f3a; color: var(--text); }
@@ -371,7 +372,7 @@
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
       <div id="route3d" class="route3d hidden">
         <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
-        <button class="r3dbtn" id="r3dFull">Full screen</button>
+        <div class="r3dbtns"><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
       </div>
       <canvas id="routeMap" class="route-map"></canvas>
       <canvas id="routeElev" class="route-elev"></canvas>
@@ -3309,6 +3310,7 @@ const view3d = (() => {
       return World3D.mount($('route3d'), state);
     })();
     try { world = await loading; } catch (e) { loading = null; throw e; }
+    world.view = cam;
     return world;
   }
   async function show(next) {
@@ -3331,6 +3333,17 @@ const view3d = (() => {
     $('h3Dist').textContent = fmtKm(d);
   }
   $('routeViewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.view); });
+  // Camera: behind (default), close behind, or from the roadside. Remembered.
+  const CAMS = [['chase', 'behind'], ['close', 'close'], ['side', 'side']];
+  let cam = 'chase';
+  try { cam = CAMS.some(c => c[0] === localStorage.getItem('camera3d')) ? localStorage.getItem('camera3d') : 'chase'; } catch {}
+  const setCam = c => {
+    cam = c; if (world) world.view = c;
+    $('r3dCam').textContent = `Camera: ${CAMS.find(x => x[0] === c)[1]}`;
+    try { localStorage.setItem('camera3d', c); } catch {}
+  };
+  setCam(cam);
+  $('r3dCam').addEventListener('click', () => setCam(CAMS[(CAMS.findIndex(x => x[0] === cam) + 1) % CAMS.length][0]));
   $('r3dFull').addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen(); else $('route3d').requestFullscreen?.().catch(() => {});
   });
