@@ -138,7 +138,9 @@ the trainer reads above or below the power meter (to exercise power match),
 and heart rate fitness. It can shift the Di2, drop any device to test
 reconnects, and have "another app" take the trainer. Gradient sign-in stays
 real; a finished simulator ride is not uploaded to Strava unless Upload is
-pressed. **Leave simulator** switches back.
+pressed. **Connect everything** connects all four virtual devices at once, and
+a ride started in the simulator with nothing connected does that by itself.
+**Leave simulator** switches back.
 
 ## Testing without a trainer
 

@@ -123,7 +123,7 @@
 <section class="panel hidden" id="simPanel">
   <div class="erg-head">
     <h2 style="margin:0">Simulator</h2>
-    <button id="simOff" class="secondary sm">Leave simulator</button>
+    <div class="row"><button id="simAll" class="sm">Connect everything</button><button id="simOff" class="secondary sm">Leave simulator</button></div>
   </div>
   <p class="muted" style="margin:8px 0 12px">Nothing real is connected. Every Connect button picks a virtual device: a trainer that copies yours (ERG, gradient, 50–600 W), a power meter, a heart rate strap and a 12-speed Di2. Your Gradient sign-in is real; a finished test ride is not sent to Strava unless you press Upload.</p>
   <div class="sim-grid">
@@ -1578,7 +1578,10 @@ function applyStep() {
   renderErg();
 }
 
-function startRide() {
+async function startRide() {
+  // In the simulator, a ride started with nothing connected connects every
+  // virtual device first, so power and speed come in.
+  if (SIM && !ERG.connected && !ext.pm.device && !ext.hr.device) await simConnectAll();
   if (!ERG.connected && !ext.pm.device && !ext.hr.device && !confirm('Nothing is connected, so nothing will be recorded. Start anyway?')) return;
   const now = Date.now() / 1000;
   Object.assign(ride, {
@@ -2349,6 +2352,14 @@ setInterval(() => {
 if (!navigator.bluetooth) {
   setStatus('This browser has no Web Bluetooth. Open this page in Chrome or Edge on Windows.', true);
 }
+
+// Simulator: connect the trainer, power meter, strap and Di2 in one go.
+async function simConnectAll() {
+  if (!device) await connect();
+  for (const kind of ['pm', 'hr']) if (!ext[kind].device) await toggleSensor(kind);
+  if (!di2.device) await connectDi2();
+}
+if (SIM) $('simAll').addEventListener('click', simConnectAll);
 </script>
 </body>
 </html>
