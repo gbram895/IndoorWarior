@@ -341,51 +341,162 @@
     return geo;
   }
   function merge(parts) {
-    const pos = [], nrm = [], col = [];
+    const pos = [], nrm = [], col = [], uv = [], withUV = parts.every(g => g.attributes.uv);
     for (const g of parts) {
       if (!g.attributes.normal) g.computeVertexNormals();
       pos.push(...g.attributes.position.array); nrm.push(...g.attributes.normal.array); col.push(...g.attributes.color.array);
+      if (withUV) uv.push(...g.attributes.uv.array);
       g.dispose();
     }
     const geo = new T.BufferGeometry();
     geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
     geo.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3));
     geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+    if (withUV) geo.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
     return geo;
   }
+  // Two-sided, but lit by the normals as given on both faces: leaf cards and
+  // grass blades carry normals pointing out of the crown (or up), and the
+  // back of a card must not turn dark because it faces away.
+  function bothSides(mat) {
+    const prev = mat.onBeforeCompile;
+    mat.side = T.DoubleSide;
+    mat.onBeforeCompile = (sh, r) => {
+      prev?.call(mat, sh, r);
+      sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', T.ShaderChunk.normal_fragment_begin.replace('normal = normal * faceDirection;', ''));
+    };
+    return mat;
+  }
+
+  // Leaves and needles painted on a canvas with see-through gaps, for the cards
+  // that make a crown's ragged outline: a spray of small leaves on twigs, or a
+  // whole spruce crown's ragged outline (taller). Pale and greyish, the
+  // greens come from the vertex colours and the instance tint.
+  function leafTexture(kind) {
+    const N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
+    const cx = cv.getContext('2d'), rand = rng(kind === 'leaf' ? 31 : 37);
+    if (kind === 'leaf') {
+      cx.strokeStyle = 'rgb(90,80,60)'; cx.lineWidth = 2;
+      for (let k = 0; k < 7; k++) { const a = rand() * 6.3; cx.beginPath(); cx.moveTo(128, 128); cx.lineTo(128 + Math.cos(a) * 100, 128 + Math.sin(a) * 100); cx.stroke(); }
+      for (let k = 0; k < 150; k++) {
+        const a = rand() * 6.3, r = Math.sqrt(rand()) * 108, x = 128 + Math.cos(a) * r, y = 128 + Math.sin(a) * r, len = 13 + rand() * 12, l = 150 + rand() * 105;
+        cx.save(); cx.translate(x, y); cx.rotate(rand() * 6.3);
+        cx.fillStyle = `rgb(${l * 0.86 | 0},${l | 0},${l * 0.7 | 0})`;
+        cx.beginPath(); cx.moveTo(0, -len / 2); cx.quadraticCurveTo(len * 0.32, 0, 0, len / 2); cx.quadraticCurveTo(-len * 0.32, 0, 0, -len / 2); cx.fill();
+        cx.restore();
+      }
+    } else {
+      // A spruce seen from the side: drooping branches either side of the
+      // stem, longer further down, in loose tiers, each fringed with needles.
+      cv.height = 512;
+      for (let y = 6; y < 500; y += 5 + rand() * 4) {
+        const tier = 0.72 + 0.28 * ((y / 70) % 1), reach = (12 + (y / 512) * 112) * tier * (0.85 + rand() * 0.3);
+        for (const sd of [-1, 1]) {
+          const len = reach * (0.8 + rand() * 0.4), droop = len * (0.25 + rand() * 0.2), l = 110 + rand() * 80;
+          cx.strokeStyle = `rgb(${l * 0.82 | 0},${l | 0},${l * 0.85 | 0})`; cx.lineWidth = 1.4;
+          for (let t = 0; t < 1; t += 0.06) {
+            const x = 128 + sd * len * t, yy = y + droop * t * t;
+            cx.beginPath(); cx.moveTo(x, yy); cx.lineTo(x + sd * (3 + rand() * 4), yy + 4 + rand() * 7); cx.stroke();
+            cx.beginPath(); cx.moveTo(x, yy); cx.lineTo(x + sd * (3 + rand() * 4), yy - 2 - rand() * 4); cx.stroke();
+          }
+        }
+      }
+    }
+    const tex = new T.CanvasTexture(cv);
+    tex.anisotropy = 4; // three keeps it to what the GPU allows
+    return tex;
+  }
+  // Cards scattered over a ball (centre, radius), each turned at random, with
+  // normals pointing away from the crown's middle (mid) and colours darker low
+  // in the crown and deep inside it.
+  function leafCards(count, c, r, size, mid, seed) {
+    const rand = rng(seed), out = [], m = new T.Matrix4(), q = new T.Quaternion(), e = new T.Euler(), v = new T.Vector3(), one = new T.Vector3(1, 1, 1);
+    for (let k = 0; k < count; k++) {
+      const geo = new T.PlaneGeometry(size * (0.8 + rand() * 0.4), size * (0.8 + rand() * 0.4)).toNonIndexed();
+      let dx, dy, dz;
+      do { dx = rand() * 2 - 1; dy = rand() * 2 - 1; dz = rand() * 2 - 1; } while (dx * dx + dy * dy + dz * dz > 1);
+      const depth = 0.7 + rand() * 0.35, l = Math.hypot(dx, dy, dz) || 1;
+      v.set(c[0] + (dx / l) * r * depth, c[1] + (dy / l) * r * depth, c[2] + (dz / l) * r * depth);
+      q.setFromEuler(e.set(rand() * 6.3, rand() * 6.3, rand() * 6.3));
+      geo.applyMatrix4(m.compose(v, q, one));
+      const p = geo.attributes.position, nrm = [], col = [];
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i) - mid[0], y = p.getY(i) - mid[1], z = p.getZ(i) - mid[2], n = Math.hypot(x, y, z) || 1;
+        nrm.push(x / n, y / n, z / n);
+        const shade = (0.35 + 0.65 * depth) * (0.7 + 0.45 * Math.min(1, Math.max(0, y / mid[3] + 0.5)));
+        col.push(shade, shade, shade);
+      }
+      geo.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3));
+      geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+      out.push(geo);
+    }
+    return merge(out);
+  }
   let treeKit = null;
+  // Each kind is a list of [geometry, material]: the solid body, and the
+  // see-through leaf or needle cards round it.
   function treeKinds() {
     if (treeKit) return treeKit;
+    const mat = new T.MeshLambertMaterial({ vertexColors: true });
+    const cardMat = (kind, colour) => {
+      const m = bothSides(new T.MeshLambertMaterial({ vertexColors: true, color: colour, map: leafTexture(kind), alphaTest: 0.5, alphaToCoverage: true }));
+      // Shadows with the same holes as the leaves.
+      m.userData.depth = new T.MeshDepthMaterial({ depthPacking: T.RGBADepthPacking, map: m.map, alphaTest: 0.5 });
+      return m;
+    };
+    const leafMat = cardMat('leaf', 0x6f9a48), needleMat = cardMat('needle', 0x3d6340), hedgeMat = cardMat('leaf', 0x5c7f3c);
     const trunk = (r0, r1, h) => { const t = new T.CylinderGeometry(r0, r1, h, 6, 1, true); t.translate(0, h / 2, 0); return part(t, 0x4a3a2a); };
-    // Spruce, about 11 m: four cones narrowing upwards, darker underneath each tier.
-    const spruce = [trunk(0.1, 0.22, 3)];
+    // Spruce, about 11 m: four cones narrowing upwards, darker underneath each
+    // tier, inside crossed cards that give it a ragged outline of branches.
+    const spruce = [trunk(0.1, 0.22, 3)], twigs = [];
     for (let k = 0; k < 4; k++) {
       const r = 2.3 - k * 0.48, h = 3.4 - k * 0.3, y = 1.6 + k * 2.05;
-      const c = new T.ConeGeometry(r, h, 9, 1, true); c.translate(0, y + h / 2, 0);
+      const c = new T.ConeGeometry(r * 0.72, h, 9, 1, true); c.translate(0, y + h / 2, 0);
       spruce.push(part(c, 0x1d3b22, [0, y + h * 0.5, h]));
     }
-    // Broadleaf, about 9 m: a trunk and five overlapping lumpy balls; finer
-    // balls for the trees close to the road.
-    const leafy = detail => {
-      const parts = [trunk(0.16, 0.28, 4.4)];
-      for (const [x, y, z, r] of [[0, 5.8, 0, 2.6], [1.4, 5.1, 0.6, 1.9], [-1.3, 5.3, -0.5, 2], [0.3, 7.2, -0.3, 1.9], [-0.4, 5, 1.4, 1.7]]) {
-        const s = new T.IcosahedronGeometry(r, detail); s.translate(x, y, z);
-        parts.push(part(foliage(s, 0, 5.8, 0, 0.35, x * 3 + z), 0x355e24, [0, 5.8, 4.5]));
+    // Five upright cards crossing at the stem, each the whole crown's outline.
+    for (let k = 0; k < 5; k++) {
+      const c = new T.PlaneGeometry(5, 10, 2, 1).toNonIndexed();
+      c.rotateY((k * Math.PI) / 5); c.translate(0, 6.3, 0);
+      const p = c.attributes.position, nrm = [], col = [];
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i), z = p.getZ(i), l = Math.hypot(x, 0.6, z);
+        nrm.push(x / l, 0.6 / l, z / l);
+        const sh = 0.65 + 0.45 * Math.min(1, Math.max(0, (y - 1.3) / 10));
+        col.push(sh, sh, sh);
       }
-      return merge(parts);
+      c.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3));
+      c.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+      twigs.push(c);
+    }
+    // Broadleaf, about 9 m: a trunk, five dark lumpy balls for body and many
+    // leaf cards over them; fewer cards and plainer balls far from the road.
+    const leafy = detail => {
+      const body = [trunk(0.16, 0.28, 4.4)], cards = [];
+      for (const [x, y, z, r] of [[0, 5.8, 0, 2.6], [1.4, 5.1, 0.6, 1.9], [-1.3, 5.3, -0.5, 2], [0.3, 7.2, -0.3, 1.9], [-0.4, 5, 1.4, 1.7]]) {
+        const s = new T.IcosahedronGeometry(r * 0.68, detail); s.translate(x, y, z);
+        body.push(part(foliage(s, 0, 5.8, 0, 0.35, x * 3 + z), 0x2c4f1d, [0, 5.8, 4.5]));
+        cards.push(leafCards(detail ? 18 : 5, [x, y, z], r, r * (detail ? 0.9 : 1.4), [0, 5.8, 0, 4.5], Math.round(x * 10 + z * 7 + 50)));
+      }
+      return [[merge(body), mat], [merge(cards), leafMat]];
     };
-    // A hedge: a 5 m length of three bushy blobs.
-    const hedge = [-1.7, 0, 1.7].map((x, k) => {
-      const b = new T.IcosahedronGeometry(1, 0); b.scale(1.5, 0.95, 0.8); b.translate(x, 0.85, 0);
-      return part(foliage(b, x, 0.85, 0, 0.4, k * 2.3), 0x2b4a1e, [0, 0.9, 1.8]);
+    // A hedge: a 5 m length of three bushy blobs, leafy at the surface.
+    const hedge = [], hedgeCards = [];
+    [-1.7, 0, 1.7].forEach((x, k) => {
+      const b = new T.IcosahedronGeometry(1, 0); b.scale(1.4, 0.85, 0.7); b.translate(x, 0.85, 0);
+      hedge.push(part(foliage(b, x, 0.85, 0, 0.4, k * 2.3), 0x2b4a1e, [0, 0.9, 1.8]));
+      hedgeCards.push(leafCards(7, [x, 0.95, 0], 1.15, 1.1, [0, 0.6, 0, 1.8], k * 5 + 3));
     });
     // A white marker post with a black band, as along a Belgian country road.
     const post = new T.BoxGeometry(0.12, 1, 0.12); post.translate(0, 0.5, 0);
     const band = new T.BoxGeometry(0.13, 0.18, 0.13); band.translate(0, 0.78, 0);
-    // A tuft of rough grass or a low bush for the verge.
-    const tuft = new T.IcosahedronGeometry(0.55, 1); tuft.scale(1.2, 0.75, 1); tuft.translate(0, 0.2, 0);
-    const mat = new T.MeshLambertMaterial({ vertexColors: true });
-    treeKit = { tuft: merge([part(foliage(tuft, 0, 0.1, 0, 0.3, 4.1), 0x40592a, [0, 0.25, 0.7])]), spruce: merge(spruce), leafy: leafy(0), leafyNear: leafy(1), hedge: merge(hedge), post: merge([part(post, 0xeeeeee), part(band, 0x202020)]), mat };
+    // A low bush for the verge.
+    const tuft = new T.IcosahedronGeometry(0.4, 1); tuft.scale(1.2, 0.75, 1); tuft.translate(0, 0.2, 0);
+    treeKit = {
+      tuft: [[merge([part(foliage(tuft, 0, 0.1, 0, 0.3, 4.1), 0x2f4a20, [0, 0.25, 0.7])]), mat], [leafCards(12, [0, 0.4, 0], 0.62, 0.65, [0, 0.1, 0, 0.7], 9), hedgeMat]],
+      spruce: [[merge(spruce), mat], [merge(twigs), needleMat]], leafy: leafy(0), leafyNear: leafy(1),
+      hedge: [[merge(hedge), mat], [merge(hedgeCards), hedgeMat]], post: [[merge([part(post, 0xeeeeee), part(band, 0x202020)]), mat]],
+    };
     return treeKit;
   }
   // Instances of one kind: spots are [x, y, z, scale, turn, tint, height scale].
@@ -396,7 +507,7 @@
     const box = new T.Box3(), pt = new T.Vector3();
     for (const [x, y, z] of spots) box.expandByPoint(pt.set(x, y, z));
     const g = new T.BufferGeometry();
-    for (const k of ['position', 'normal', 'color']) g.setAttribute(k, geo.attributes[k]);
+    for (const k of ['position', 'normal', 'color', 'uv']) if (geo.attributes[k]) g.setAttribute(k, geo.attributes[k]);
     g.boundingSphere = box.getBoundingSphere(new T.Sphere()); g.boundingSphere.radius += 14;
     const mesh = new T.InstancedMesh(g, mat, spots.length);
     const m = new T.Matrix4(), q = new T.Quaternion(), e = new T.Euler(), sc = new T.Vector3(), v = new T.Vector3(), c = new T.Color();
@@ -406,6 +517,7 @@
       mesh.setColorAt(k, c.setRGB(1 + tint, 1 + tint * 0.8, 1 + tint * 0.4));
     });
     mesh.castShadow = shadow;
+    if (mat.userData.depth) mesh.customDepthMaterial = mat.userData.depth;
     mesh.userData.sharedParts = true; // the geometry's attributes belong to the kit
     return [mesh];
   }
@@ -474,13 +586,15 @@
         for (let u = c * FCOL + 2.5; u < (c + 1) * FCOL; u += 5) { const [x, z] = toXZ(u, r * rowH - sh + 0.01); if (x > x0 && x < x1 && z > z0 && z < z1) hedgeAt(x, z, -FA); }
       }
     }
-    // Rough grass and the odd bush along the verge, more where it is wooded.
+    // The odd bush along the verge, more where it is wooded (the grass itself
+    // is blades, near the rider: see grassTuft).
     for (let i = s; i < e; i++) {
       for (const sg of [-1, 1]) for (let k = 0; k < 4; k++) {
         const o = sg * (ROAD_HALF + 0.9 + rand() ** 1.5 * 9), a = rand() * STEP;
         const x = g.xz[i][0] + g.side[i][0] * o + (g.xz[Math.min(g.n - 1, i + 1)][0] - g.xz[i][0]) * (a / STEP), z = g.xz[i][1] + g.side[i][1] * o + (g.xz[Math.min(g.n - 1, i + 1)][1] - g.xz[i][1]) * (a / STEP);
         if (!clearOfRoad(x, z, i, ROAD_HALF + 0.6)) continue;
         const big = rand() < (woods(x, z) > WOOD ? 0.15 : 0.03);
+        if (!big) continue;
         tufts.push([x, groundAt(g, x, z, 40).y - 0.05, z, big ? 1 + rand() * 0.6 : 0.4 + rand() * 0.5, rand() * 6.3, (rand() - 0.5) * 0.4, big ? 1.3 : 0.6 + rand() * 0.5]);
       }
     }
@@ -495,7 +609,60 @@
     for (const [geo, list, shadow] of [[kit.spruce, spruce[0], true], [kit.spruce, spruce[1], false], [kit.leafyNear, leafy[0], true], [kit.leafy, leafy[1], false], [kit.hedge, hedges, false], [kit.post, posts, false], [kit.tuft, tufts, false]]) {
       const cells = new Map();
       for (const sp of list) { const k = Math.floor(sp[0] / 250) * 65536 + Math.floor(sp[2] / 250); cells.get(k)?.push(sp) || cells.set(k, [sp]); }
-      for (const c of cells.values()) out.push(...instances(geo, kit.mat, c, shadow));
+      for (const c of cells.values()) for (const [part, mat] of geo) out.push(...instances(part, mat, c, shadow));
+    }
+    return out;
+  }
+
+  // Grass blades by the road. A tuft is sixteen thin curved blades, dark at
+  // the root; tufts are scattered on the verge and into the fields for the
+  // few stretches round the rider (see `grass` in mount) and take the land's
+  // colour where they stand. They sway in the wind.
+  function grassTuft() {
+    const pos = [], col = [], nrm = [], idx = [], rand = rng(5);
+    for (let b = 0; b < 16; b++) {
+      const a = rand() * Math.PI * 2, r = Math.sqrt(rand()) * 0.3, h = 0.14 + rand() * 0.24, w = 0.009 + rand() * 0.008;
+      const bx = Math.cos(a) * r, bz = Math.sin(a) * r, turn = rand() * Math.PI, lean = 0.25 + rand() * 0.45, la = a + (rand() - 0.5);
+      const cx = Math.cos(turn) * w, cz = Math.sin(turn) * w, v0 = pos.length / 3;
+      // Base pair, middle pair, tip; the blade bends outwards as it rises.
+      for (const [t, ww] of [[0, 1], [0.55, 0.75], [1, 0]]) {
+        const out = lean * h * t * t, x = bx + Math.cos(la) * out, z = bz + Math.sin(la) * out, y = h * (t - 0.25 * lean * t * t);
+        for (const sd of ww ? [-1, 1] : [0]) { pos.push(x + cx * ww * sd, y, z + cz * ww * sd); const l = 0.68 + 0.45 * t; col.push(l, l, l); nrm.push(0, 1, 0); }
+      }
+      idx.push(v0, v0 + 1, v0 + 2, v0 + 1, v0 + 3, v0 + 2, v0 + 2, v0 + 3, v0 + 4);
+    }
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3)); // lit like the ground under it
+    geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    const mat = new T.MeshLambertMaterial({ vertexColors: true });
+    const wind = { value: 0 };
+    mat.onBeforeCompile = sh => {
+      sh.uniforms.wind = wind;
+      sh.vertexShader = 'uniform float wind;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+  vec4 at = instanceMatrix[3];
+  float sway = sin(wind * 1.7 + at.x * 0.31 + at.z * 0.23) * 0.6 + sin(wind * 3.1 + at.x * 1.3 - at.z * 0.7) * 0.25;
+  transformed.xz += vec2(0.3, 0.18) * sway * transformed.y * transformed.y * 3.0;`);
+    };
+    mat.customProgramCacheKey = () => 'grass';
+    bothSides(mat); // lit as the ground is, from either side
+    return { geo, mat, wind };
+  }
+  // The tufts for the stretch of road from point i: [x, y, z, size, turn, r, g, b].
+  function grassStretch(g, i) {
+    const rand = rng(i * 7919 + 13), out = [], j = Math.min(g.n - 2, i);
+    const fx = g.xz[j + 1][0] - g.xz[j][0], fz = g.xz[j + 1][1] - g.xz[j][1], fl = Math.hypot(fx, fz) || 1;
+    for (let k = 0; k < 340; k++) {
+      const sg = rand() < 0.5 ? -1 : 1, o = ROAD_HALF + 0.3 + rand() ** 1.4 * 14, a = rand() * STEP;
+      const x = g.xz[j][0] + g.side[j][0] * o * sg + (fx / fl) * a, z = g.xz[j][1] + g.side[j][1] * o * sg + (fz / fl) * a;
+      let near = Infinity; // on a bend the far side of the next stretch may be the road
+      for (let q = Math.max(0, j - 4); q <= Math.min(g.n - 1, j + 5); q++) near = Math.min(near, Math.hypot(g.xz[q][0] - x, g.xz[q][1] - z));
+      if (near < ROAD_HALF + 0.25) continue;
+      ground(x, z, rgb, o);
+      if (rgb[0] - rgb[1] > 0.04) continue; // ploughed land
+      const tint = 0.85 + rand() * 0.4, s = 0.7 + rand() * 0.7;
+      out.push(x, groundAt(g, x, z, 40).y - 0.02, z, s, rand() * 6.3, rgb[0] * tint, rgb[1] * tint * 1.05, rgb[2] * tint);
     }
     return out;
   }
@@ -611,17 +778,42 @@
     cx.putImageData(img, 0, 0);
     return cv;
   }
-  // Land materials share a fine grass grain laid on by world position, so the
+  // Land materials share a fine grain laid on by world position, so the
   // ground stays crisp right at the wheels whatever its painted resolution.
+  // With the photographs (detail.photo) that grain is real grass, and real
+  // soil wherever the painted colour is brown (ploughed land, stubble, wood
+  // floor), each at two sizes so the repeat does not show. The photographs
+  // are evened out to mid grey, so the paint keeps its colour.
   function grained(mat, detail) {
     mat.onBeforeCompile = sh => {
-      sh.uniforms.detailMap = { value: detail };
+      sh.uniforms.grassMap = { value: detail.grass };
+      sh.uniforms.soilMap = { value: detail.soil };
       sh.vertexShader = 'varying vec2 vDetail;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vDetail = position.xz;');
-      sh.fragmentShader = 'uniform sampler2D detailMap;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <map_fragment>',
-        '#include <map_fragment>\n  float grain = texture2D(detailMap, vDetail / 3.0).r * 0.6 + texture2D(detailMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;');
+      sh.fragmentShader = 'uniform sampler2D grassMap;\nuniform sampler2D soilMap;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <map_fragment>', detail.photo
+        ? `#include <map_fragment>
+  vec3 grassD = texture2D(grassMap, vDetail / 1.7).rgb * 0.65 + texture2D(grassMap, vDetail / 9.0 + 0.37).rgb * 0.35;
+  vec3 soilD = texture2D(soilMap, vDetail / 2.5).rgb * 0.6 + texture2D(soilMap, vDetail / 12.0 + 0.21).rgb * 0.4;
+  diffuseColor.rgb *= 2.0 * mix(grassD, soilD, smoothstep(0.0, 0.07, diffuseColor.r - diffuseColor.g));`
+        : '#include <map_fragment>\n  float grain = texture2D(grassMap, vDetail / 3.0).r * 0.6 + texture2D(grassMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;');
     };
-    mat.customProgramCacheKey = () => 'grained';
+    mat.customProgramCacheKey = () => detail.photo ? 'grained-photo' : 'grained';
     return mat;
+  }
+
+  // A photograph from vendor/photos.js as a tiling texture, or null when that
+  // file did not load. It shows mid grey until the picture has decoded.
+  function photo(name, renderer) {
+    const src = window.IW_PHOTOS?.[name];
+    if (!src) return null;
+    const grey = document.createElement('canvas'); grey.width = grey.height = 1;
+    const cx = grey.getContext('2d'); cx.fillStyle = '#808080'; cx.fillRect(0, 0, 1, 1);
+    const tex = new T.Texture(grey), img = new Image();
+    tex.needsUpdate = true;
+    img.onload = () => { tex.dispose(); tex.image = img; tex.needsUpdate = true; }; // dispose: the GPU copy changes size
+    img.src = src;
+    tex.wrapS = tex.wrapT = T.RepeatWrapping;
+    tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return tex;
   }
 
   function kmSigns(g, total) {
@@ -688,23 +880,47 @@
     return m;
   }
 
+  // The photographed sky (see vendor/photos.js) on a dome round the camera,
+  // from the top of the sky down to just under the horizon; the background
+  // below it is the haze. The trees along the photo's horizon were taken out,
+  // since they would stand still while the land moved.
+  function photoSky(renderer) {
+    const P = window.IW_PHOTOS, tex = photo('sky', renderer);
+    if (!tex) return null;
+    tex.wrapT = T.ClampToEdgeWrapping;
+    const geo = new T.SphereGeometry(680, 48, 24, 0, Math.PI * 2, 0, (P.skyRows * Math.PI) / 180);
+    const m = new T.Mesh(geo, new T.MeshBasicMaterial({ map: tex, side: T.BackSide, fog: false, depthWrite: false, depthTest: false }));
+    m.scale.x = -1; // seen from inside, unmirrored
+    m.renderOrder = -3; m.frustumCulled = false;
+    // Where the sun is in the picture, so the shadows fall the way it shines.
+    const phi = P.sun[0] * Math.PI * 2, th = ((90 - P.sun[1]) * Math.PI) / 180;
+    m.userData.sun = new T.Vector3(Math.cos(phi) * Math.sin(th), Math.cos(th), Math.sin(phi) * Math.sin(th));
+    return m;
+  }
+
   // Mountains all round, past the fog, standing on a level line. They give the
   // eye a horizon that does not tilt with the road. Drawn first and behind
   // everything; they follow the camera sideways, and sink only a little as
   // the rider climbs, like real far-off hills.
-  function mountains() {
+  // With the photographed sky (haze given) they are lower and fade from a
+  // hazy blue-green at the ridge into the haze at their foot, as real far
+  // hills do; without it, flat pale shapes.
+  function mountains(haze) {
     const group = new T.Group();
     for (const [r, top, colour, seed] of [[640, 0.75, 0xb3c4d2, 3.1], [600, 0.5, 0xa5b8bb, 7.7]]) {
-      const N = 160, pos = [], idx = [];
+      const N = 160, pos = [], idx = [], col = [], ridge = new T.Color(r === 600 ? 0x6f7f7c : 0x84919c), c = new T.Color(), lift = haze ? 0.55 : 1;
       for (let k = 0; k <= N; k++) {
-        const a = (k / N) * Math.PI * 2, h = 25 + top * (noise(Math.cos(a) * 3 + seed, Math.sin(a) * 3) * 140 + noise(Math.cos(a) * 9, Math.sin(a) * 9 + seed) * 40);
+        const a = (k / N) * Math.PI * 2, h = 25 + lift * top * (noise(Math.cos(a) * 3 + seed, Math.sin(a) * 3) * 140 + noise(Math.cos(a) * 9, Math.sin(a) * 9 + seed) * 40);
         pos.push(Math.cos(a) * r, -150, Math.sin(a) * r, Math.cos(a) * r, h, Math.sin(a) * r);
+        if (haze) { c.copy(haze); col.push(c.r, c.g, c.b); c.lerp(ridge, Math.min(1, h / 90)); col.push(c.r, c.g, c.b); }
         if (k) { const b = (k - 1) * 2; idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
       }
       const geo = new T.BufferGeometry();
       geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      if (haze) geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
       geo.setIndex(idx);
-      const m = new T.Mesh(geo, new T.MeshBasicMaterial({ color: colour, fog: false, side: T.DoubleSide, depthWrite: false, depthTest: false }));
+      const m = new T.Mesh(geo, new T.MeshBasicMaterial(haze ? { vertexColors: true } : { color: colour }));
+      Object.assign(m.material, { fog: false, side: T.DoubleSide, depthWrite: false, depthTest: false });
       m.renderOrder = -2 + (r === 600 ? 1 : 0); m.frustumCulled = false;
       group.add(m);
     }
@@ -856,32 +1072,42 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     container.prepend(renderer.domElement);
     const scene = new T.Scene();
-    scene.background = new T.Color(SKY);
+    const photoDome = photoSky(renderer), haze = photoDome ? new T.Color().fromArray(window.IW_PHOTOS.haze) : new T.Color(HAZE);
+    scene.background = photoDome ? haze : new T.Color(SKY);
     // Haze that thickens with distance but never quite hides the land, so the
     // far edge of the land and the mountains behind it share one tone.
-    scene.fog = new T.FogExp2(HAZE, 0.0023);
-    scene.add(new T.HemisphereLight(0xd3e3f5, 0x5d5440, 0.62));
+    scene.fog = new T.FogExp2(haze, 0.0023);
+    scene.add(new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x5d5440, 0.62));
     // The sun casts shadows in a 70 m square that travels with the rider:
     // enough for him, the bike and the nearest trees, cheap to draw.
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = T.PCFSoftShadowMap;
-    const sun = new T.DirectionalLight(0xffe9cc, 1.1), SUN_DIR = new T.Vector3(-0.5, 0.6, 0.4).normalize();
+    const sun = new T.DirectionalLight(0xffefd9, 1.1), SUN_DIR = photoDome ? photoDome.userData.sun : new T.Vector3(-0.5, 0.6, 0.4).normalize();
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     Object.assign(sun.shadow.camera, { left: -35, right: 35, top: 35, bottom: -35, near: 1, far: 400 });
     sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03;
     scene.add(sun, sun.target);
-    const dome = sky(); scene.add(dome);
+    const dome = photoDome || sky(); scene.add(dome);
     const camera = new T.PerspectiveCamera(62, 1, 0.2, FAR);
     const bike = rider(); scene.add(bike.root);
     bike.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
-    const hills0 = mountains(); scene.add(hills0);
+    const hills0 = mountains(photoDome && haze); scene.add(hills0);
 
+    // Grass round the rider: tufts for the stretches from GRASS_BACK behind to
+    // GRASS_AHEAD ahead, each stretch made once when it comes into range.
+    const GRASS_BACK = 2, GRASS_AHEAD = 6, tuft = grassTuft();
+    const grass = new T.InstancedMesh(tuft.geo, tuft.mat, (GRASS_BACK + GRASS_AHEAD + 1) * 340);
+    grass.instanceColor = new T.InstancedBufferAttribute(new Float32Array(grass.count * 3), 3);
+    grass.frustumCulled = false; grass.receiveShadow = true; grass.count = 0;
+    scene.add(grass);
+    let grassAt = null, grassMade = new Map();
     let scatter = [], scatterTick = 0; // tree and hedge groups, hidden when far away
     // Land pieces and their painted textures: the job being painted, and the
     // grass grain every land material shares.
     let pieces = [], paintTick = 0, job = null;
-    const grain = surface('grass', renderer), maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const grassPhoto = photo('grass', renderer), grain = grassPhoto ? { photo: true, grass: grassPhoto, soil: photo('dirt', renderer) } : { grass: surface('grass', renderer) };
+    const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
@@ -895,14 +1121,16 @@
         });
         tileMat?.dispose(); // the land's plain material, also under the painted pieces
       }
-      built = route; tiles = [];
+      built = route; tiles = []; grassAt = null; grassMade = new Map(); grass.count = 0;
       world = new T.Group();
       if (!route) return;
       const g = geometryOf(route);
       world.userData.g = g;
       // Built in pieces of CHUNK points (600 m) so the ones behind the rider
       // or past the fog are skipped instead of drawn every frame.
-      const asphalt = new T.MeshLambertMaterial({ color: 0x4a4e55, map: surface('road', renderer) });
+      const tarmac = photo('asphalt', renderer);
+      tarmac?.repeat.set(2, 2); // a 2 m tile
+      const asphalt = new T.MeshLambertMaterial({ color: 0x4a4e55, map: tarmac || surface('road', renderer) });
       const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
       const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
       const seed = Math.round(route.total) + route.res.length;
@@ -910,7 +1138,7 @@
       const sc = sceneryOf(route);
       woodsAt = route.scenery?.woods || [0, 0];
       world.userData.sc = sc;
-      if (!sky2) scene.add((sky2 = clouds()));
+      if (!sky2 && !photoDome) scene.add((sky2 = clouds())); // the photographed sky has its own
       world.add(props(g, sc));
       const avoid = (x, z, i) => sc.clearings.some(([a, b]) => i * STEP >= a && i * STEP <= b);
       for (let s = 0; s < g.n - 1; s += CHUNK) {
@@ -962,6 +1190,23 @@
         m.userData.mpp = job.want;
         job = null; paintTick = 0; // straight on to the next
       }
+    }
+    function plantGrass(g, i0) {
+      const L = g.n - 1, m = new T.Matrix4(), q = new T.Quaternion(), e = new T.Euler(), v = new T.Vector3(), sc = new T.Vector3(), keep = new Map();
+      let n = 0;
+      for (let k = -GRASS_BACK; k <= GRASS_AHEAD; k++) {
+        let i = i0 + k;
+        if (g.loop) i = ((i % L) + L) % L; else if (i < 0 || i >= L) continue;
+        const t = grassMade.get(i) || grassStretch(g, i);
+        keep.set(i, t);
+        for (let a = 0; a < t.length; a += 8, n++) {
+          q.setFromEuler(e.set(0, t[a + 4], 0)); sc.setScalar(t[a + 3]);
+          grass.setMatrixAt(n, m.compose(v.set(t[a], t[a + 1], t[a + 2]), q, sc));
+          grass.instanceColor.setXYZ(n, t[a + 5], t[a + 6], t[a + 7]);
+        }
+      }
+      grassMade = keep; grass.count = n;
+      grass.instanceMatrix.needsUpdate = true; grass.instanceColor.needsUpdate = true;
     }
     function unpaint(m) {
       if (m.material !== tileMat) { m.material.map?.dispose(); m.material.dispose(); m.material = tileMat; }
@@ -1038,6 +1283,9 @@
         scatterTick = 0.3;
         for (const m of scatter) { const c = m.geometry.boundingSphere.center; m.visible = Math.hypot(c.x - camPos.x, c.z - camPos.z) < FAR - 50 + m.geometry.boundingSphere.radius * 0.6; }
       }
+      tuft.wind.value += dt;
+      const gi = Math.floor(disp / STEP);
+      if (gi !== grassAt) { grassAt = gi; plantGrass(g, gi); }
       dome.position.copy(camPos);
       sun.target.position.copy(pos); sun.position.copy(pos).addScaledVector(SUN_DIR, 200);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);

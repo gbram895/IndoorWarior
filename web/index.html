@@ -3358,6 +3358,7 @@ const view3d = (() => {
     if (world) return world;
     loading = loading || (async () => {
       if (!window.THREE) await loadScript('vendor/three.min.js');
+      if (!window.IW_PHOTOS) await loadScript('vendor/photos.js').catch(() => {}); // without it the land is painted plain
       if (!window.World3D) await loadScript('world3d.js');
       return World3D.mount($('route3d'), state);
     })();
