@@ -145,7 +145,10 @@ With a route loaded, the Route panel shows it in 3D by default (switch with
 **3D / Map**; the choice is remembered). The road follows the GPX's real
 shape and climbs; the land beside it (hills, trees, a sign every kilometre) is
 made up from a fixed seed, so a route always looks the same. A rider pedals at
-your cadence and the camera follows behind. **Full screen** fills the screen
+your cadence and the camera follows behind. Heights are drawn 1.6x steeper
+than they are, because a real 8% looks flat from a chase camera; gradient,
+speed and the trainer use the real figures. On a real gradient above 6% the
+rider gets out of the saddle and the bike rocks with the pedals. **Full screen** fills the screen
 with the view, power, speed, gradient and distance on top.
 
 It uses three.js r149 (`web/vendor/three.min.js`, MIT, loaded only when the 3D

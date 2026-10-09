@@ -14,6 +14,7 @@
   const FOG_NEAR = 160, FOG_FAR = 650;
   const SKY = 0xbcd3e6;
   const KEEP = 1.3;               // m right of the centre line
+  const LIFT = 1.6;               // drawn steepness vs real (see geometryOf)
   const CHUNK = 60;               // route points per piece of world (even)
 
   // ---- Deterministic randomness and smooth noise for the hills.
@@ -41,7 +42,10 @@
       for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++) { x += raw[j][0]; z += raw[j][1]; c++; }
       return [x / c, z / c];
     });
-    const y = res.map(p => p.ele);
+    // Heights are drawn 1.6x steeper than they are. From a chase camera a true
+    // 8% looks almost flat; this makes it read like the climb it feels like.
+    // Only the picture: gradient, speed and the trainer use the real figures.
+    const y = res.map(p => (p.ele - res[0].ele) * LIFT);
     // Right-hand side of the direction of travel, flat.
     const side = xz.map((_, i) => {
       const a = xz[Math.max(0, i - 1)], b = xz[Math.min(n - 1, i + 1)];
@@ -190,7 +194,7 @@
       leg.position.set(x, 0.92, 0.18);
       root.add(leg); legs.push(leg);
     }
-    return { root, wheels, legs };
+    return { root, wheels, legs, torso, head, helmet };
   }
 
   function mount(container, getState) {
@@ -207,7 +211,7 @@
     const camera = new T.PerspectiveCamera(62, 1, 0.2, FOG_FAR + 50);
     const bike = rider(); scene.add(bike.root);
 
-    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false;
+    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
     function setRoute(route) {
@@ -274,13 +278,25 @@
       const heading = Math.atan2(-fwd.x, -fwd.z), pitch = Math.atan2(fwd.y, Math.hypot(fwd.x, fwd.z));
       const fl = Math.hypot(fwd.x, fwd.z) || 1, right = new T.Vector3(-fwd.z / fl * KEEP, 0, fwd.x / fl * KEEP);
       bike.root.position.copy(pos).add(right);
-      bike.root.rotation.set(0, heading, 0); bike.root.rotateX(pitch); // the model faces -z
-      for (const w of bike.wheels) w.rotation.x -= (s.speed / 0.34) * dt;
       pedal += ((s.cadence || (s.speed > 0.5 ? 80 : 0)) / 60) * Math.PI * 2 * dt;
+      // Out of the saddle on a steep bit: up off the seat, bike rocking with the
+      // pedals. Eased in and out so a short ramp doesn't make him jump up.
+      const grade = (at(disp + 15, new T.Vector3()).y - at(disp - 15, new T.Vector3()).y) / 30 / LIFT; // real gradient
+      climb += ((grade > 0.06 ? Math.min(1, (grade - 0.06) / 0.03) : 0) - climb) * Math.min(1, dt * 2);
+      bike.root.rotation.set(0, heading, 0); bike.root.rotateX(pitch); // the model faces -z
+      bike.root.rotateZ(Math.sin(pedal) * 0.09 * climb);
+      bike.torso.position.set(0, 1.12 + 0.2 * climb, -0.05 - 0.12 * climb); bike.torso.rotation.x = -0.55 - 0.25 * climb;
+      bike.head.position.set(0, 1.32 + 0.16 * climb, -0.42 - 0.08 * climb);
+      bike.helmet.position.copy(bike.head.position); bike.helmet.position.y += 0.02;
+      for (const l of bike.legs) l.position.y = 0.92 + 0.16 * climb;
+      for (const w of bike.wheels) w.rotation.x -= (s.speed / 0.34) * dt;
       bike.legs[0].rotation.x = Math.sin(pedal) * 0.6; bike.legs[1].rotation.x = Math.sin(pedal + Math.PI) * 0.6;
-      // Chase camera: behind and above, looking down the road.
+      // Chase camera: behind and above, looking down the road. It only tilts a
+      // third of the way with the road, so a climb rises up the screen ahead of
+      // the rider (and a descent drops away) instead of the horizon tilting with it.
       const back = at(disp - 7, new T.Vector3()), look = at(disp + 14, new T.Vector3());
-      const wantPos = back.add(right).add(new T.Vector3(0, 2.6, 0)), wantLook = look.add(right).add(new T.Vector3(0, 1.1, 0));
+      const lookY = back.y + 1.1 + (look.y - back.y) / 3;
+      const wantPos = back.add(right).add(new T.Vector3(0, 2.6, 0)), wantLook = look.add(right).setY(lookY);
       const k = camPos.lengthSq() ? Math.min(1, dt * 4) : 1;
       camPos.lerp(wantPos, k); camLook.lerp(wantLook, k);
       camera.position.copy(camPos); camera.lookAt(camLook);
