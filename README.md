@@ -177,6 +177,21 @@ trainer messages with the tab in front and behind. The screen lock is dropped
 while the tab is hidden and taken again when you come back, so check that
 Windows is not set to sleep within the length of a ride.
 
+## The app
+
+`web/` is published to GitHub Pages by `.github/workflows/pages.yml`
+whenever `main` changes. Open https://gbram895.github.io/IndoorWarior/ in
+Chrome or Edge and use it as a page, or press **Install app** (or the
+install icon in the address bar) to get it as a program with its own window
+and Start menu entry. It loads without internet once opened, and a new
+version shows up the next time it is opened. Double-clicking
+`web/index.html` still works, for trying a change before it goes live.
+
+Settings, workouts and the Gradient sign-in are kept per browser address, so
+the app and the HTML file each have their own. **Your settings and
+workouts** at the bottom of the page saves them to a file and loads them on
+the other side.
+
 ## Running it
 
 1. Make sure the laptop's Bluetooth is on (Windows 10 or 11).

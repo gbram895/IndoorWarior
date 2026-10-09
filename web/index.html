@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IndoorWarior</title>
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="icons/icon-192.png">
 <style>
   :root {
     --bg: #0f1115; --panel: #181b22; --text: #f2f4f8; --muted: #8b93a7;
@@ -432,6 +434,17 @@
     <div class="row" style="margin-top:12px">
       <button id="copyBtn" class="secondary">Copy trainer report</button>
     </div>
+  </section>
+  <section class="panel" id="dataPanel">
+    <h2>Your settings and workouts</h2>
+    <p class="muted" style="margin:0 0 10px">They live in this browser, separately for the app and for the HTML file. To move them across, save them here and load the file on the other one. The file includes your Gradient sign-in, so keep it to yourself.</p>
+    <div class="row">
+      <button class="secondary" id="dataSave">Save to a file</button>
+      <button class="secondary" id="dataLoad">Load from a file</button>
+      <input type="file" id="dataFile" accept=".json,application/json" class="hidden">
+      <button class="secondary hidden" id="installBtn">Install app</button>
+    </div>
+    <div id="dataMsg"></div>
   </section>
 </main>
 
@@ -3420,6 +3433,49 @@ async function simConnectAll() {
   if (!di2.device) await connectDi2();
 }
 if (SIM) $('simAll').addEventListener('click', simConnectAll);
+
+// ---- App: installable from Chrome or Edge when served over https (GitHub
+// Pages), and still a plain page when the HTML file is opened directly.
+if (/^https?:$/.test(location.protocol)) {
+  const m = document.createElement('link'); m.rel = 'manifest'; m.href = 'manifest.webmanifest'; document.head.append(m);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; $('installBtn').classList.remove('hidden'); });
+window.addEventListener('appinstalled', () => { installPrompt = null; $('installBtn').classList.add('hidden'); });
+$('installBtn').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null; $('installBtn').classList.add('hidden');
+});
+
+// ---- Settings and workouts to a file and back, to move between the app and the HTML file.
+function dataMsg(text, cls = '') { $('dataMsg').textContent = text; $('dataMsg').className = cls; }
+$('dataSave').addEventListener('click', () => {
+  const data = {};
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); data[k] = localStorage.getItem(k); } } catch {}
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ app: 'IndoorWarior', saved: new Date().toISOString(), data }, null, 1)], { type: 'application/json' }));
+  a.download = 'IndoorWarior-settings.json';
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  dataMsg(`Saved ${Object.keys(data).length} settings to your Downloads folder.`, 'ok');
+});
+$('dataLoad').addEventListener('click', () => $('dataFile').click());
+$('dataFile').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    if (j.app !== 'IndoorWarior' || !j.data || typeof j.data !== 'object') throw new Error('This is not an IndoorWarior settings file.');
+    if ((ride.status === 'riding' || ride.status === 'paused')) throw new Error('Finish this ride first.');
+    let n = 0;
+    for (const [k, v] of Object.entries(j.data)) if (typeof v === 'string') { localStorage.setItem(k, v); n++; }
+    dataMsg(`Loaded ${n} settings. Reloading…`, 'ok');
+    setTimeout(() => location.reload(), 800);
+  } catch (err) { dataMsg(`Could not load it: ${err.message}`, 'bad'); }
+});
 </script>
 </body>
 </html>
