@@ -303,6 +303,16 @@
     <div class="keys">Keys: E toggles ERG, ↑/↓ change target by 5 W, Shift+↑/↓ by 25 W.</div>
   </section>
 
+  <section class="panel hidden" id="calPanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Calibration</h2>
+      <button id="calBtn" class="secondary">Calibrate trainer</button>
+      <button id="calCancel" class="secondary hidden">Cancel</button>
+    </div>
+    <div id="calStatus" class="muted" style="margin-top:8px"></div>
+    <p class="muted" style="margin:8px 0 0">A spin-down: ride up to the speed shown, then stop pedalling and let the trainer coast to a stop. Do it after about 10 minutes of riding, when the trainer is warm, and again whenever the tyre pressure or the bike changes.</p>
+  </section>
+
   <section class="panel" id="di2Panel">
     <div class="erg-head">
       <h2 style="margin:0">Di2 gears (experimental)</h2>
@@ -376,7 +386,7 @@ const SIM = (() => {
   const world = {
     mode: 'free', target: 150, grade: 0, controlled: false,
     power: 0, trainerReads: 0, hr: 68, speed: 0, gear: 6,
-    revs: 0, crankTime: 0, t: 0,
+    revs: 0, crankTime: 0, t: 0, spin: null,
   };
 
   // ---- Minimal Web Bluetooth objects.
@@ -464,6 +474,17 @@ const SIM = (() => {
       const w = s16(a[1], a[2]);
       if (w < 50 || w > 600) result = 3; else { world.target = w; world.mode = 'erg'; }
     } else if (op === 0x11) { world.grade = s16(a[3], a[4]) / 100; world.mode = 'grade'; }
+    else if (op === 0x13) {
+      // Spin-down: answer with the target speed band (20-30 km/h), then
+      // report progress on Fitness Machine Status.
+      if (a[1] === 0x01) {
+        world.spin = 'up'; world.mode = 'free';
+        setTimeout(() => controlPoint.emit(dv([0x80, op, 1, 0xd0, 0x07, 0xb8, 0x0b])), 40);
+        setTimeout(() => status.emit(dv([0x14, 0x01])), 80);
+        return;
+      }
+      world.spin = null;
+    }
     else result = 2;
     setTimeout(() => controlPoint.emit(dv([0x80, op, result])), 40);
   };
@@ -538,17 +559,20 @@ const SIM = (() => {
   const DT = 0.25;
   setInterval(() => {
     world.t += DT;
-    const cadence = cfg.cadence > 0 ? cfg.cadence + (Math.random() - 0.5) * 3 : 0;
+    // During a spin-down the virtual rider does as told: sprint, then coast.
+    const cadence = world.spin === 'coast' ? 0 : cfg.cadence > 0 ? cfg.cadence + (Math.random() - 0.5) * 3 : 0;
     const k = 1 + cfg.bias / 100;
     // ERG holds the trainer's OWN reading at the target; the real watts at
     // the pedals are what the power meter sees.
     let want = 0;
-    if (cadence > 0) want = world.mode === 'erg' && trainer.gatt.connected ? world.target / k : cfg.power;
+    if (cadence > 0) want = world.spin === 'up' ? Math.max(cfg.power, 320) : world.mode === 'erg' && trainer.gatt.connected ? world.target / k : cfg.power;
     world.power += (want - world.power) * (1 - Math.exp(-DT / 1.5));
     const pedals = Math.max(0, world.power * (1 + (Math.random() - 0.5) * 0.04));
     world.trainerReads = pedals * k;
     const grade = world.mode === 'grade' ? world.grade : 0;
     world.speed += (roadSpeed(pedals, grade) * 3.6 - world.speed) * (1 - Math.exp(-DT / 4));
+    if (world.spin === 'up' && world.speed > 30) { world.spin = 'coast'; status.emit(dv([0x14, 0x04])); }
+    else if (world.spin === 'coast' && world.speed < 20) { world.spin = null; status.emit(dv([0x14, 0x02])); }
     const hrWant = cadence > 0 ? 55 + 0.42 * world.power - cfg.fit : 70;
     world.hr += (hrWant - world.hr) * (1 - Math.exp(-DT / 25));
     const before = Math.floor(world.revs);
@@ -1021,6 +1045,7 @@ async function setupTrainer() {
         } else if (c.uuid === uuid16(0x2ada)) {
           // Fitness Machine Status: 0xFF means another app took control.
           c.addEventListener('characteristicvaluechanged', e => {
+            if (e.target.value.getUint8(0) === 0x14 && e.target.value.byteLength > 1) calibration.status(e.target.value.getUint8(1));
             if (e.target.value.getUint8(0) === 0xff) {
               const wasOn = ERG.on;
               ERG.controlLost();
@@ -1040,6 +1065,8 @@ async function setupTrainer() {
   $('livePanel').classList.remove('hidden');
   $('reportPanel').classList.remove('hidden');
   $('ergPanel').classList.remove('hidden');
+  $('calPanel').classList.toggle('hidden', !(state.report.controlPoint && state.report.features && state.report.features.spinDown));
+  calibration.render();
   const canErg = state.report.controlPoint && (!state.report.features || state.report.features.powerTarget);
   $('ergToggle').disabled = !canErg;
   if (state.report.range) { $('targetRange').min = state.report.range.min; $('targetRange').max = state.report.range.max; }
@@ -1057,6 +1084,7 @@ async function setupTrainer() {
 // back as it was; Disconnect does not.
 let trainerManual = false;
 async function onDisconnected() {
+  calibration.stop(calibration.active ? 'Trainer disconnected during calibration. Try again once it is back.' : '', 'bad');
   const which = device, ergWasOn = ERG.on;
   ERG.detach();
   renderErg();
@@ -1086,7 +1114,7 @@ async function onDisconnected() {
 // Every write is answered by an indication: 0x80, request op code, result.
 // Writes go one at a time; the next waits for the previous answer.
 const FTMS_RESULT = { 1: 'success', 2: 'not supported', 3: 'invalid parameter', 4: 'operation failed', 5: 'control not permitted' };
-const OP = { requestControl: 0x00, reset: 0x01, setTargetPower: 0x05, start: 0x07, setSimulation: 0x11 };
+const OP = { requestControl: 0x00, reset: 0x01, setTargetPower: 0x05, start: 0x07, setSimulation: 0x11, spinDown: 0x13 };
 
 // ---- Power match. Trainers and power meters often disagree by 5-10%. With
 // a power meter sending, ERG aims the trainer at target x factor, where the
@@ -1133,14 +1161,14 @@ const ERG = (() => {
     if (view.getUint8(1) !== pending.op) return;
     const p = pending; pending = null;
     clearTimeout(p.timer);
-    p.resolve(view.getUint8(2));
+    p.resolve(p.full ? view : view.getUint8(2));
   }
 
   // Write one command and wait for its answer. Resolves with the result code.
-  function send(bytes) {
+  function send(bytes, full = false) {
     const run = () => new Promise((resolve, reject) => {
       if (!cp) return reject(new Error('not connected'));
-      pending = { op: bytes[0], resolve, timer: setTimeout(() => { pending = null; reject(new Error('trainer did not answer')); }, 3000) };
+      pending = { op: bytes[0], full, resolve, timer: setTimeout(() => { pending = null; reject(new Error('trainer did not answer')); }, 3000) };
       cp.writeValueWithResponse(new Uint8Array(bytes)).catch(e => {
         if (pending) { clearTimeout(pending.timer); pending = null; }
         reject(e);
@@ -1200,6 +1228,16 @@ const ERG = (() => {
       if (r !== 1) throw new Error(`trainer refused the gradient (${FTMS_RESULT[r] || r})`);
     },
     get connected() { return !!cp && !$('ergToggle').disabled; },
+    // FTMS Spin Down Control: start (1) answers with the target speed band in
+    // 0.01 km/h; ignore (2) cancels it.
+    async spinDown(start) {
+      await ensureControl();
+      const v = await send([OP.spinDown, start ? 1 : 2], true);
+      const r = v.getUint8(2);
+      if (r !== 1) throw new Error(FTMS_RESULT[r] || `code ${r}`);
+      if (!start || v.byteLength < 7) return null;
+      return { low: v.getUint16(3, true) / 100, high: v.getUint16(5, true) / 100 };
+    },
     detach() { cp = null; on = false; hasControl = false; pending = null; },
     // Another app took over: stop without sending anything, so we do not grab it back.
     controlLost() { hasControl = false; on = false; clearTimeout(sendTimer); },
@@ -1241,6 +1279,70 @@ setInterval(() => {
   $('matchRow').classList.toggle('hidden', !ext.pm.device);
   if (ERG.on) ERG.nudge(match.lost !== wasLost);
 }, 1000);
+
+// ---- Spin-down calibration. The trainer names a speed band; the rider
+// rides above it, stops pedalling, and the trainer measures how it coasts
+// down, which sets its own power reading. Progress comes as Fitness Machine
+// Status 0x14: 1 speed up, 4 stop pedalling, 2 done, 3 failed.
+const calibration = (() => {
+  let active = false, band = null, phase = '', timer = null, speedTimer = null;
+  const last = () => { try { return localStorage.getItem('lastCalibration'); } catch { return null; } };
+  function msg(text, cls = '') { $('calStatus').textContent = text; $('calStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : ''; }
+  const riding = () => ride.status === 'riding' || ride.status === 'paused';
+  function render() {
+    $('calBtn').classList.toggle('hidden', active);
+    $('calCancel').classList.toggle('hidden', !active);
+    $('calBtn').disabled = riding();
+    if (active) return;
+    const when = last();
+    msg(riding() ? 'Finish the ride to calibrate.'
+      : when ? `Last calibrated ${new Date(Number(when)).toLocaleString()}.` : 'Not calibrated from this page yet.');
+  }
+  function stop(text, cls) {
+    active = false; band = null; phase = '';
+    clearTimeout(timer); clearInterval(speedTimer);
+    render();
+    if (text) msg(text, cls);
+  }
+  function showPhase() {
+    const v = state.live.speed != null ? `${state.live.speed.toFixed(1)} km/h` : 'no speed yet';
+    if (phase === 'up') msg(`Pedal hard until you are above ${band ? `${Math.ceil(band.high)} km/h` : 'the trainer’s target speed'}. Now ${v}.`);
+    else if (phase === 'coast') msg(`Stop pedalling now and let the trainer coast to a stop. Now ${v}.`);
+  }
+  async function start() {
+    if (active || riding()) return;
+    active = true; phase = 'up'; render();
+    msg('Asking the trainer to start a spin-down…');
+    try {
+      if (ERG.on) { await ERG.setOn(false); renderErg(); }
+      band = await ERG.spinDown(true);
+    } catch (e) {
+      stop(`The trainer would not start a spin-down: ${e.message}.`, 'bad');
+      return;
+    }
+    if (!active) return;
+    showPhase();
+    speedTimer = setInterval(showPhase, 500);
+    timer = setTimeout(() => stop('No result from the trainer after 2 minutes. Try again, or calibrate in the trainer’s own app.', 'bad'), 120000);
+  }
+  function cancel() {
+    if (!active) return;
+    stop('Calibration cancelled.');
+    ERG.spinDown(false).catch(() => {});
+  }
+  function status(code) {
+    if (!active) return;
+    if (code === 1) { phase = 'up'; showPhase(); }
+    else if (code === 4) { phase = 'coast'; showPhase(); }
+    else if (code === 2) {
+      try { localStorage.setItem('lastCalibration', String(Date.now())); } catch {}
+      stop('Calibrated. The trainer’s power reading now comes from this spin-down.', 'ok');
+    } else if (code === 3) stop('The spin-down failed. Get above the target speed, then stop pedalling completely, and try again.', 'bad');
+  }
+  return { start, cancel, status, render, stop, get active() { return active; } };
+})();
+$('calBtn').addEventListener('click', () => calibration.start());
+$('calCancel').addEventListener('click', () => calibration.cancel());
 
 function ergStatus(text, cls = '') { $('ergStatus').textContent = text; $('ergStatus').className = cls; }
 
@@ -1629,7 +1731,9 @@ function pauseRide() {
 }
 
 function resumeRide() {
+  if (calibration.active) calibration.cancel();
   ride.status = 'riding';
+  calibration.render();
   ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'start' });
   applyStep();
   renderRide();
@@ -1648,6 +1752,7 @@ function nextStep() {
 function finishRide() {
   if (ride.status === 'riding') ride.events.push({ t: Math.floor(Date.now() / 1000), type: 'stop' });
   ride.status = 'finished';
+  calibration.render();
   if (ERG.on) { ERG.setOn(false); renderErg(); }
   else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
   saveUnsaved();

@@ -32,6 +32,16 @@ If the trainer's Bluetooth drops, the page reconnects by itself (up to five
 tries) and puts ERG back as it was; during a workout the current step's
 target is sent again. **Disconnect** does not reconnect.
 
+## Calibration
+
+On a trainer that supports it (Bram's does), the Calibration panel runs the
+trainer's own FTMS spin-down: it names a speed, you ride above it, then stop
+pedalling and let it coast; the trainer sets its power reading from how it
+slows down. The page shows your speed and what to do at each stage, says when
+it is done or failed, and remembers when you last calibrated. ERG is switched
+off for it, and it is not available during a ride. Best done warm, after
+about 10 minutes of riding.
+
 ## Riding today's plan
 
 The Ride panel signs in to Gradient once (only the token is stored, in the
@@ -141,7 +151,8 @@ the real ones, so the whole page runs unchanged:
 
 The Simulator panel sets cadence, the rider's power while ERG is off, how far
 the trainer reads above or below the power meter (to exercise power match),
-and heart rate fitness. It can shift the Di2, drop any device to test
+and heart rate fitness. The virtual trainer also answers a spin-down
+(20-30 km/h), and the virtual rider sprints and coasts as told. It can shift the Di2, drop any device to test
 reconnects, and have "another app" take the trainer. Gradient sign-in stays
 real; a finished simulator ride is not uploaded to Strava unless Upload is
 pressed. **Connect everything** connects all four virtual devices at once, and
