@@ -111,7 +111,28 @@
   .bblock .k { color: var(--muted); font-size: 13px; min-width: 64px; }
   .bblock input.d { width: 64px; } .bblock input.p { width: 56px; } .bblock input.n { width: 48px; }
   .bblock .tools { margin-left: auto; display: flex; gap: 4px; }
-  #bPreview { width: 100%; height: 48px; margin-top: 10px; background: #11141a; border-radius: 6px; }
+  .bblock { border-radius: 8px; padding: 8px; margin: 2px -8px; border-bottom: none; transition: background-color 150ms ease; }
+  .bblock.sel { background: #232836; box-shadow: inset 3px 0 0 var(--accent); }
+  .bblock .sw { width: 10px; height: 28px; border-radius: 3px; flex: none; }
+  .bblock .w { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; min-width: 52px; }
+  .bblock .x { font-variant-numeric: tabular-nums; }
+  @starting-style { .bblock.new { opacity: 0; transform: translateY(4px); } }
+  .bblock.new { transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease; }
+  .bchart { position: relative; margin-top: 4px; touch-action: none; user-select: none; }
+  #bChart { display: block; width: 100%; height: 180px; background: #11141a; border-radius: 8px; }
+  #bChart .bar { cursor: ns-resize; }
+  #bChart .edge { cursor: ew-resize; fill: transparent; }
+  #bChart .edge:hover, #bChart .edge.on { fill: rgba(255, 255, 255, 0.35); }
+  #bChart .sel { stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .btip { position: absolute; top: 6px; transform: translateX(-50%); background: #0b0d11; border: 1px solid #2f3542; border-radius: 6px; padding: 4px 8px; font-size: 13px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+  .bhelp { font-size: 12px; margin-top: 4px; }
+  .binfo { margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
+  .binfo b { font-weight: 600; }
+  .bpresets { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .bpresets button { padding: 5px 10px; font-weight: 500; font-size: 13px; background: #232836; color: var(--text); border-left: 4px solid var(--c); }
+  .builder button { transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
+  .builder button:active:not(:disabled) { transform: scale(0.97); }
+  @media (prefers-reduced-motion: reduce) { .bblock.new { transition: opacity 180ms ease; } @starting-style { .bblock.new { transform: none; } } .builder button:active { transform: none; } }
   .my-item .acts { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
   .lib-item .n { font-weight: 600; }
   .lib-item .m { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
@@ -238,13 +259,19 @@
       <div class="row" style="margin-top:8px"><button id="myNew" class="secondary sm">New workout</button></div>
       <div id="myEditor" class="hidden builder">
         <input id="bName" placeholder="Workout name" maxlength="80" aria-label="Workout name">
+        <div class="bchart" id="bChartWrap">
+          <svg id="bChart" aria-label="Workout profile. Drag a block up or down to change its power, or its right edge to change its length."></svg>
+          <div class="btip hidden" id="bTip"></div>
+        </div>
+        <div class="bhelp muted">Drag a block up or down for power, drag its right edge for length. Click one to edit it below.</div>
+        <div id="bInfo" class="binfo"></div>
+        <div class="bpresets" id="bPresets" aria-label="Add a block"></div>
         <div id="bBlocks"></div>
-        <div class="row">
+        <div class="row" style="margin-top:6px">
           <button class="secondary sm" id="bAddStep">+ Step</button>
           <button class="secondary sm" id="bAddRep">+ Intervals</button>
+          <button class="link" id="bUndo" disabled>Undo</button>
         </div>
-        <svg id="bPreview" viewBox="0 0 120 24" preserveAspectRatio="none" aria-hidden="true"></svg>
-        <div id="bInfo" class="muted"></div>
         <label class="muted" id="bFtpRow" style="display:block;margin-top:6px">FTP <input type="number" id="bFtp" min="50" max="600" step="1" style="width:80px"> W, used while you are not signed in to Gradient</label>
         <div class="row" style="margin-top:8px">
           <button id="bSave">Save</button>
@@ -1585,12 +1612,28 @@ function pickLibrary(i) {
 // ---- Workout builder: your own sessions in % of FTP, kept in this browser.
 // A workout is a list of blocks: a single step, or intervals (n x on/off).
 // Each expands to plain steps, so it rides exactly like a library workout.
+// The profile is the main control: drag a block's height for power and its
+// right edge for length; the rows below show the same blocks as numbers.
 const builder = (() => {
   const KEY = 'myWorkouts';
-  let list = [], edit = null; // edit: { id, name, blocks }
+  let list = [], edit = null, sel = -1, history = [], fresh = -1, currentFtp = null;
   try { list = JSON.parse(localStorage.getItem(KEY) || '[]'); if (!Array.isArray(list)) list = []; } catch { list = []; }
   const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {} };
   const localFtp = () => { try { return Number(localStorage.getItem('ftp')) || 200; } catch { return 200; } };
+  const ftpNow = () => currentFtp || localFtp();
+  const clone = x => JSON.parse(JSON.stringify(x));
+
+  const PRESETS = [
+    { label: 'Warm-up', b: { type: 'step', sec: 600, pct: 55 } },
+    { label: 'Endurance', b: { type: 'step', sec: 1200, pct: 68 } },
+    { label: 'Tempo', b: { type: 'step', sec: 900, pct: 83 } },
+    { label: 'Sweet spot', b: { type: 'repeat', n: 3, onSec: 600, onPct: 90, offSec: 300, offPct: 55 } },
+    { label: 'Threshold', b: { type: 'repeat', n: 2, onSec: 720, onPct: 100, offSec: 360, offPct: 55 } },
+    { label: 'VO2max', b: { type: 'repeat', n: 5, onSec: 180, onPct: 115, offSec: 180, offPct: 50 } },
+    { label: '30/30s', b: { type: 'repeat', n: 10, onSec: 30, onPct: 130, offSec: 30, offPct: 50 } },
+    { label: 'Sprints', b: { type: 'repeat', n: 6, onSec: 15, onPct: 180, offSec: 285, offPct: 50 } },
+    { label: 'Cool-down', b: { type: 'step', sec: 600, pct: 50 } },
+  ];
 
   // "45" is minutes; "4:30" minutes and seconds; "1:05:00" hours too.
   function parseDur(t) {
@@ -1601,24 +1644,38 @@ const builder = (() => {
     return sec > 0 && sec <= 6 * 3600 ? sec : null;
   }
   const fmtDur = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-  // Empty means ride it free (ERG off).
-  const parsePct = t => { const v = String(t).trim(); if (!v) return null; const n = Number(v); return n >= 20 && n <= 300 ? n : NaN; };
+  const parsePct = t => { const v = String(t).trim(); if (!v) return null; const n = Number(v); return n >= 20 && n <= 300 ? Math.round(n) : NaN; };
+  const watts = pct => (pct == null ? 'free' : `${Math.round(ftpNow() * pct / 100)} W`);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  function segments(blocks) {
+  // Expanded steps, each remembering which block and which field it came from.
+  function steps(blocks) {
     const out = [];
-    for (const b of blocks) {
-      if (b.type === 'step') out.push({ durationSec: b.sec, intensityFraction: b.pct == null ? null : b.pct / 100 });
-      else for (let i = 0; i < b.n; i++) {
-        out.push({ durationSec: b.onSec, intensityFraction: b.onPct == null ? null : b.onPct / 100 });
-        if (b.offSec) out.push({ durationSec: b.offSec, intensityFraction: b.offPct == null ? null : b.offPct / 100 });
+    blocks.forEach((b, i) => {
+      if (b.type === 'step') out.push({ i, sec: b.sec, pct: b.pct, sk: 'sec', pk: 'pct' });
+      else for (let r = 0; r < b.n; r++) {
+        out.push({ i, sec: b.onSec, pct: b.onPct, sk: 'onSec', pk: 'onPct' });
+        if (b.offSec) out.push({ i, sec: b.offSec, pct: b.offPct, sk: 'offSec', pk: 'offPct' });
       }
-    }
+    });
     return out;
   }
+  const segments = blocks => steps(blocks).map(s => ({ durationSec: s.sec, intensityFraction: s.pct == null ? null : s.pct / 100 }));
   // Rough training stress: free steps counted as easy (50%).
   const stress = segs => Math.round(segs.reduce((a, x) => a + x.durationSec * (x.intensityFraction ?? 0.5) ** 2, 0) / 36);
   const total = segs => segs.reduce((a, x) => a + x.durationSec, 0);
 
+  // ---- Undo: a snapshot before every change that is not mid-drag or mid-typing.
+  function remember() { history.push(clone(edit.blocks)); if (history.length > 50) history.shift(); $('bUndo').disabled = false; }
+  function undo() {
+    if (!history.length) return;
+    edit.blocks = history.pop();
+    $('bUndo').disabled = !history.length;
+    sel = Math.min(sel, edit.blocks.length - 1);
+    renderRows(); renderChart();
+  }
+
+  // ---- Saved list.
   function renderList() {
     $('myList').innerHTML = list.length ? list.map((w, i) => {
       const segs = segments(w.blocks);
@@ -1628,62 +1685,153 @@ const builder = (() => {
     }).join('') : '<div class="muted" style="padding:8px 0">No workouts of your own yet. Press New workout to make one.</div>';
   }
 
+  // ---- Rows.
   function blockRow(b, i) {
-    const tools = `<span class="tools"><button class="secondary sm" data-b-up="${i}" aria-label="Move up">↑</button><button class="secondary sm" data-b-down="${i}" aria-label="Move down">↓</button><button class="secondary sm" data-b-del="${i}" aria-label="Remove">✕</button></span>`;
-    if (b.type === 'step') return `<div class="bblock" data-i="${i}"><span class="k">Step</span>
-      <input class="d" data-k="sec" value="${fmtDur(b.sec)}" aria-label="Duration"> at
-      <input class="p" data-k="pct" value="${b.pct ?? ''}" placeholder="free" inputmode="numeric" aria-label="Percent of FTP"> % FTP${tools}</div>`;
-    return `<div class="bblock" data-i="${i}"><span class="k">Intervals</span>
-      <input class="n" data-k="n" value="${b.n}" inputmode="numeric" aria-label="Repeats"> ×
-      <input class="d" data-k="onSec" value="${fmtDur(b.onSec)}" aria-label="On duration"> at
-      <input class="p" data-k="onPct" value="${b.onPct ?? ''}" placeholder="free" inputmode="numeric" aria-label="On percent of FTP"> %, then
-      <input class="d" data-k="offSec" value="${b.offSec ? fmtDur(b.offSec) : ''}" placeholder="none" aria-label="Recovery duration"> at
-      <input class="p" data-k="offPct" value="${b.offPct ?? ''}" placeholder="free" inputmode="numeric" aria-label="Recovery percent of FTP"> %${tools}</div>`;
+    const tools = `<span class="tools"><button class="secondary sm" data-b-dup="${i}" title="Duplicate" aria-label="Duplicate">⧉</button><button class="secondary sm" data-b-up="${i}" title="Move up" aria-label="Move up">↑</button><button class="secondary sm" data-b-down="${i}" title="Move down" aria-label="Move down">↓</button><button class="secondary sm" data-b-del="${i}" title="Remove" aria-label="Remove">✕</button></span>`;
+    const cls = `bblock${i === sel ? ' sel' : ''}${i === fresh ? ' new' : ''}`;
+    const pctIn = (k, v, label) => `<input class="p" data-k="${k}" value="${v ?? ''}" placeholder="free" inputmode="numeric" aria-label="${label}"> %<span class="w" data-w="${k}">${watts(v)}</span>`;
+    if (b.type === 'step') return `<div class="${cls}" data-i="${i}"><span class="sw" style="background:${zoneColor(b.pct == null ? null : b.pct / 100)}"></span><span class="k">Step</span>
+      <input class="d" data-k="sec" value="${fmtDur(b.sec)}" aria-label="Duration"> at ${pctIn('pct', b.pct, 'Percent of FTP')}${tools}</div>`;
+    return `<div class="${cls}" data-i="${i}"><span class="sw" style="background:${zoneColor(b.onPct == null ? null : b.onPct / 100)}"></span><span class="k">Intervals</span>
+      <input class="n" data-k="n" value="${b.n}" inputmode="numeric" aria-label="Repeats"> <span class="x">×</span>
+      <input class="d" data-k="onSec" value="${fmtDur(b.onSec)}" aria-label="Effort duration"> at ${pctIn('onPct', b.onPct, 'Effort percent of FTP')} then
+      <input class="d" data-k="offSec" value="${b.offSec ? fmtDur(b.offSec) : ''}" placeholder="none" aria-label="Recovery duration"> at ${pctIn('offPct', b.offPct, 'Recovery percent of FTP')}${tools}</div>`;
   }
+  function renderRows() {
+    $('bBlocks').innerHTML = edit.blocks.map(blockRow).join('');
+    fresh = -1;
+  }
+  function select(i, scroll) {
+    sel = i;
+    document.querySelectorAll('#bBlocks .bblock').forEach(r => r.classList.toggle('sel', Number(r.dataset.i) === i));
+    if (scroll) document.querySelector(`#bBlocks .bblock[data-i="${i}"]`)?.scrollIntoView({ block: 'nearest' });
+    renderChart();
+  }
+  // Puts one block's values back into its row without rebuilding it, so typing keeps focus.
+  function syncRow(i) {
+    const row = document.querySelector(`#bBlocks .bblock[data-i="${i}"]`), b = edit.blocks[i];
+    if (!row || !b) return;
+    row.querySelectorAll('input').forEach(inp => {
+      if (inp === document.activeElement) return;
+      const k = inp.dataset.k, v = b[k];
+      inp.value = k === 'n' ? v : /Sec$|^sec$/.test(k) ? (v ? fmtDur(v) : '') : (v ?? '');
+      inp.style.borderColor = '';
+    });
+    row.querySelectorAll('[data-w]').forEach(w => { w.textContent = watts(b[w.dataset.w]); });
+    const lead = b.type === 'step' ? b.pct : b.onPct;
+    row.querySelector('.sw').style.background = zoneColor(lead == null ? null : lead / 100);
+  }
+
+  // Reads one input into the block; marks it red and returns false if invalid.
+  function readInput(inp) {
+    const b = edit.blocks[Number(inp.closest('.bblock').dataset.i)], k = inp.dataset.k, v = inp.value;
+    let val;
+    if (k === 'sec' || k === 'onSec') val = parseDur(v);
+    else if (k === 'offSec') val = v.trim() ? parseDur(v) : 0;
+    else if (k === 'n') { val = Number(v); if (!(Number.isInteger(val) && val >= 1 && val <= 50)) val = null; }
+    else { val = parsePct(v); if (Number.isNaN(val)) val = undefined; }
+    const bad = val === undefined || (val === null && !/pct$/i.test(k));
+    inp.style.borderColor = bad ? 'var(--bad)' : '';
+    if (!bad) b[k] = val;
+    return !bad;
+  }
+  const allValid = () => [...document.querySelectorAll('#bBlocks input')].every(i => i.style.borderColor === '');
+
+  // ---- Chart. x in seconds, y in % of FTP; drawn in a 1000 x 200 box.
+  const W = 1000, H = 200, PAD = 16;
+  let geo = null; // { tot, top, bars: [{x, w, s}] }
+  function yOf(pct) { return H - (pct / geo.top) * (H - PAD); }
+  // During a drag the scale stays fixed, so the block stays under the pointer.
+  function renderChart(fixed) {
+    const svg = $('bChart'), st = steps(edit.blocks);
+    const tot = fixed ? fixed.tot : Math.max(total(st.map(s => ({ durationSec: s.sec }))), 60);
+    const top = fixed ? fixed.top : Math.max(150, ...st.map(s => (s.pct ?? 0) + 15));
+    geo = { tot, top, bars: [] };
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    let x = 0, out = '';
+    for (let m = 600; m < tot; m += 600) out += `<line x1="${(m / tot) * W}" x2="${(m / tot) * W}" y1="0" y2="${H}" stroke="#20242d" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+    out += `<line x1="0" x2="${W}" y1="${yOf(100)}" y2="${yOf(100)}" stroke="#8b93a7" stroke-dasharray="4 4" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+    st.forEach((s, k) => {
+      const w = (s.sec / tot) * W, p = s.pct ?? 40, y = yOf(p);
+      geo.bars.push({ x, w, s });
+      out += `<rect class="bar${s.i === sel ? ' sel' : ''}" data-k="${k}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${Math.max(w - 0.6, 0.6).toFixed(2)}" height="${(H - y).toFixed(2)}" fill="${zoneColor(s.pct == null ? null : s.pct / 100)}"${s.pct == null ? ' fill-opacity="0.6"' : ''}/>`;
+      out += `<rect class="edge" data-e="${k}" x="${(x + w - Math.min(8, w / 3)).toFixed(2)}" y="0" width="${Math.min(8, w / 3).toFixed(2)}" height="${H}"/>`;
+      x += w;
+    });
+    svg.innerHTML = out;
+    const segs = segments(edit.blocks);
+    $('bInfo').innerHTML = !segs.length ? 'Add a block to start: pick one below.'
+      : `<b>${fmtTime(total(segs))}</b> · ${segs.length} steps · about <b>${stress(segs)}</b> TSS · FTP ${ftpNow()} W` + (allValid() ? '' : ' · <span style="color:var(--bad)">fix the fields in red</span>');
+  }
+
+  function tip(k, clientX) {
+    const t = $('bTip'), bar = geo && geo.bars[k];
+    if (!bar) { t.classList.add('hidden'); return; }
+    const r = $('bChart').getBoundingClientRect();
+    t.textContent = `${fmtDur(bar.s.sec)} at ${bar.s.pct == null ? 'free' : `${bar.s.pct}% · ${watts(bar.s.pct)}`}`;
+    t.style.left = `${clamp(clientX - r.left, 60, r.width - 60)}px`;
+    t.classList.remove('hidden');
+  }
+
+  // Dragging: a bar's height sets power (5% steps, Shift for 1%); its right
+  // edge sets length (15 s steps under 5 min, 30 s under 20 min, else 1 min).
+  let drag = null;
+  const durStep = sec => (sec < 300 ? 15 : sec < 1200 ? 30 : 60);
+  function onDown(e) {
+    const t = e.target, r = $('bChart').getBoundingClientRect();
+    const k = t.dataset.e ?? t.dataset.k;
+    if (k == null) return;
+    const bar = geo.bars[Number(k)];
+    remember();
+    drag = { mode: t.dataset.e != null ? 'len' : 'pow', bar, r, fixed: { tot: geo.tot, top: geo.top }, x0: e.clientX, y0: e.clientY, sec0: bar.s.sec, pct0: bar.s.pct ?? 40, moved: false };
+    t.setPointerCapture(e.pointerId);
+    if (drag.mode === 'len') t.classList.add('on');
+    if (bar.s.i !== sel) select(bar.s.i, true);
+    e.preventDefault();
+  }
+  function onMove(e) {
+    if (!drag) {
+      const k = e.target.dataset?.k ?? e.target.dataset?.e;
+      if (k != null) tip(Number(k), e.clientX); else $('bTip').classList.add('hidden');
+      return;
+    }
+    const { bar, r } = drag, b = edit.blocks[bar.s.i];
+    if (Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 3) drag.moved = true;
+    if (drag.mode === 'pow') {
+      const dPct = -((e.clientY - drag.y0) / r.height) * (H / (H - PAD)) * drag.fixed.top;
+      const stepP = e.shiftKey ? 1 : 5;
+      b[bar.s.pk] = clamp(Math.round((drag.pct0 + dPct) / stepP) * stepP, 20, 300);
+    } else {
+      const dSec = ((e.clientX - drag.x0) / r.width) * drag.fixed.tot;
+      const reps = b.type === 'repeat' ? b.n : 1; // every repeat stretches together
+      const raw = drag.sec0 + dSec / reps, stepS = durStep(raw);
+      b[bar.s.sk] = clamp(Math.round(raw / stepS) * stepS, 15, 6 * 3600);
+    }
+    renderChart(drag.fixed);
+    syncRow(bar.s.i);
+    const k = geo.bars.findIndex(x => x.s.i === bar.s.i && x.s.pk === bar.s.pk);
+    tip(k, e.clientX);
+  }
+  function onUp() {
+    if (!drag) return;
+    if (!drag.moved) history.pop(), $('bUndo').disabled = !history.length; // a click, not a change
+    drag = null;
+    renderChart();
+  }
+
+  function msg(text, cls = '') { $('bMsg').textContent = text; $('bMsg').className = cls; }
 
   function renderEditor() {
     $('myEditor').classList.toggle('hidden', !edit);
     if (!edit) return;
     $('bName').value = edit.name;
-    $('bBlocks').innerHTML = edit.blocks.map(blockRow).join('');
     $('bFtp').value = localFtp();
     $('bFtpRow').classList.toggle('hidden', !!gradient.token);
-    preview();
+    $('bUndo').disabled = !history.length;
+    renderRows(); renderChart();
   }
 
-  // Reads every field; marks bad ones and returns false if any is invalid.
-  function readFields() {
-    let ok = true;
-    document.querySelectorAll('#bBlocks .bblock').forEach(row => {
-      const b = edit.blocks[Number(row.dataset.i)];
-      row.querySelectorAll('input').forEach(inp => {
-        const k = inp.dataset.k, v = inp.value;
-        let val;
-        if (k === 'sec' || k === 'onSec') val = parseDur(v);
-        else if (k === 'offSec') val = v.trim() ? parseDur(v) : 0;
-        else if (k === 'n') { val = Number(v); if (!(Number.isInteger(val) && val >= 1 && val <= 50)) val = null; }
-        else { val = parsePct(v); if (Number.isNaN(val)) val = undefined; }
-        const bad = val === null && k !== 'pct' && k !== 'onPct' && k !== 'offPct' || val === undefined;
-        inp.style.borderColor = bad ? 'var(--bad)' : '';
-        if (bad) ok = false; else b[k] = val;
-      });
-    });
-    edit.name = $('bName').value.trim();
-    return ok;
-  }
-
-  function preview() {
-    const ok = readFields();
-    const segs = segments(edit.blocks);
-    const svg = miniProfile(segs).replace(/^<svg[^>]*>|<\/svg>$/g, '');
-    $('bPreview').innerHTML = svg;
-    const ftp = currentFtp || localFtp();
-    $('bInfo').textContent = !segs.length ? 'Add a step to start.'
-      : `${fmtTime(total(segs))} · ${segs.length} steps · about ${stress(segs)} TSS · at FTP ${ftp} W` + (ok ? '' : ' · fix the fields in red');
-    return ok && segs.length > 0;
-  }
-
-  let currentFtp = null;
   async function ftp() {
     if (gradient.token) {
       try { const t = await gradientApi('/api/settings/thresholds'); if (t && t.ftpWatts) return (currentFtp = t.ftpWatts); } catch { /* fall back */ }
@@ -1691,16 +1839,15 @@ const builder = (() => {
     return (currentFtp = localFtp());
   }
 
-  function msg(text, cls = '') { $('bMsg').textContent = text; $('bMsg').className = cls; }
-
   function save() {
-    if (!preview()) { msg('Some fields are not valid yet (marked in red), or there are no steps.', 'bad'); return null; }
-    if (!edit.name) edit.name = 'My workout';
-    const w = { id: edit.id || `w${Date.now()}`, name: edit.name, blocks: JSON.parse(JSON.stringify(edit.blocks)) };
+    document.querySelectorAll('#bBlocks input').forEach(readInput);
+    if (!allValid() || !edit.blocks.length) { msg('Some fields are not valid yet (marked in red), or there are no blocks.', 'bad'); renderChart(); return null; }
+    edit.name = $('bName').value.trim() || 'My workout';
+    const w = { id: edit.id || `w${Date.now()}`, name: edit.name, blocks: clone(edit.blocks) };
     const at = list.findIndex(x => x.id === w.id);
     if (at >= 0) list[at] = w; else list.push(w);
     persist();
-    edit = null;
+    edit = null; history = [];
     renderEditor(); renderList();
     return w;
   }
@@ -1712,41 +1859,93 @@ const builder = (() => {
     loadWorkout(w.name, segments(w.blocks), f);
   }
 
-  // Events.
-  $('myBtn').addEventListener('click', () => { $('myBox').classList.toggle('hidden'); renderList(); ftp().then(() => edit && preview()); });
-  $('myNew').addEventListener('click', () => {
-    edit = { id: null, name: '', blocks: [
-      { type: 'step', sec: 600, pct: 55 },
-      { type: 'repeat', n: 4, onSec: 240, onPct: 105, offSec: 180, offPct: 55 },
-      { type: 'step', sec: 600, pct: 50 },
-    ] };
-    msg(''); renderEditor(); $('bName').focus();
-  });
-  $('bAddStep').addEventListener('click', () => { readFields(); edit.blocks.push({ type: 'step', sec: 300, pct: 65 }); renderEditor(); });
-  $('bAddRep').addEventListener('click', () => { readFields(); edit.blocks.push({ type: 'repeat', n: 5, onSec: 60, onPct: 120, offSec: 60, offPct: 50 }); renderEditor(); });
-  $('bBlocks').addEventListener('input', preview);
-  $('bName').addEventListener('input', () => { edit.name = $('bName').value; });
-  $('bBlocks').addEventListener('click', e => {
-    const t = e.target.closest('button'); if (!t) return;
-    readFields();
-    const b = edit.blocks, d = t.dataset;
-    if (d.bDel != null) b.splice(Number(d.bDel), 1);
-    else if (d.bUp != null && Number(d.bUp) > 0) { const i = Number(d.bUp); [b[i - 1], b[i]] = [b[i], b[i - 1]]; }
-    else if (d.bDown != null && Number(d.bDown) < b.length - 1) { const i = Number(d.bDown); [b[i + 1], b[i]] = [b[i], b[i + 1]]; }
+  function add(b, at = sel >= 0 ? sel + 1 : edit.blocks.length) {
+    remember();
+    edit.blocks.splice(at, 0, clone(b));
+    fresh = at; sel = at;
+    renderRows(); renderChart();
+    document.querySelector(`#bBlocks .bblock[data-i="${at}"]`)?.scrollIntoView({ block: 'nearest' });
+  }
+  function open(w) {
+    edit = w; sel = -1; history = []; msg('');
     renderEditor();
+  }
+
+  // ---- Events.
+  $('bPresets').innerHTML = PRESETS.map((p, i) => {
+    const lead = p.b.type === 'step' ? p.b.pct : p.b.onPct;
+    return `<button data-preset="${i}" style="--c:${zoneColor(lead / 100)}" title="Add ${p.label}">${p.label}</button>`;
+  }).join('');
+  $('bPresets').addEventListener('click', e => { const t = e.target.closest('[data-preset]'); if (t) add(PRESETS[Number(t.dataset.preset)].b); });
+  $('myBtn').addEventListener('click', () => { $('myBox').classList.toggle('hidden'); renderList(); ftp().then(() => edit && renderChart()); });
+  $('myNew').addEventListener('click', () => {
+    open({ id: null, name: '', blocks: [clone(PRESETS[0].b), clone(PRESETS[5].b), clone(PRESETS[8].b)] });
+    $('bName').focus();
   });
+  $('bAddStep').addEventListener('click', () => add({ type: 'step', sec: 300, pct: 65 }));
+  $('bAddRep').addEventListener('click', () => add({ type: 'repeat', n: 5, onSec: 60, onPct: 120, offSec: 60, offPct: 50 }));
+  $('bUndo').addEventListener('click', undo);
+  $('myEditor').addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && e.target.tagName !== 'INPUT') { e.preventDefault(); undo(); }
+  });
+  let typing = false;
+  $('bBlocks').addEventListener('focusin', e => {
+    if (e.target.tagName === 'INPUT') { if (!typing) remember(); typing = true; select(Number(e.target.closest('.bblock').dataset.i)); }
+  });
+  $('bBlocks').addEventListener('focusout', () => { typing = false; });
+  $('bBlocks').addEventListener('input', e => {
+    if (e.target.tagName !== 'INPUT') return;
+    readInput(e.target);
+    syncRow(Number(e.target.closest('.bblock').dataset.i));
+    renderChart();
+  });
+  // Arrow keys nudge: durations by 15 s (Shift: 1 min), power by 1% (Shift: 5%), repeats by 1.
+  $('bBlocks').addEventListener('keydown', e => {
+    const inp = e.target;
+    if (inp.tagName !== 'INPUT' || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    const b = edit.blocks[Number(inp.closest('.bblock').dataset.i)], k = inp.dataset.k, dir = e.key === 'ArrowUp' ? 1 : -1;
+    if (k === 'n') b.n = clamp(b.n + dir, 1, 50);
+    else if (/Sec$|^sec$/.test(k)) b[k] = clamp((b[k] || 0) + dir * (e.shiftKey ? 60 : 15), k === 'offSec' ? 0 : 15, 6 * 3600);
+    else b[k] = clamp((b[k] ?? 50) + dir * (e.shiftKey ? 5 : 1), 20, 300);
+    inp.value = k === 'n' ? b.n : /Sec$|^sec$/.test(k) ? (b[k] ? fmtDur(b[k]) : '') : b[k];
+    inp.style.borderColor = '';
+    syncRow(Number(inp.closest('.bblock').dataset.i));
+    renderChart();
+  });
+  $('bBlocks').addEventListener('click', e => {
+    const row = e.target.closest('.bblock');
+    const t = e.target.closest('button');
+    if (!t) { if (row && Number(row.dataset.i) !== sel) select(Number(row.dataset.i)); return; }
+    document.querySelectorAll('#bBlocks input').forEach(readInput);
+    remember();
+    const b = edit.blocks, d = t.dataset;
+    if (d.bDel != null) { b.splice(Number(d.bDel), 1); sel = -1; }
+    else if (d.bDup != null) { const i = Number(d.bDup); b.splice(i + 1, 0, clone(b[i])); fresh = sel = i + 1; }
+    else if (d.bUp != null && Number(d.bUp) > 0) { const i = Number(d.bUp); [b[i - 1], b[i]] = [b[i], b[i - 1]]; sel = i - 1; }
+    else if (d.bDown != null && Number(d.bDown) < b.length - 1) { const i = Number(d.bDown); [b[i + 1], b[i]] = [b[i], b[i + 1]]; sel = i + 1; }
+    else history.pop();
+    $('bUndo').disabled = !history.length;
+    renderRows(); renderChart();
+  });
+  const chart = $('bChart');
+  chart.addEventListener('pointerdown', onDown);
+  chart.addEventListener('pointermove', onMove);
+  chart.addEventListener('pointerup', onUp);
+  chart.addEventListener('pointercancel', onUp);
+  chart.addEventListener('pointerleave', () => { if (!drag) $('bTip').classList.add('hidden'); });
   $('bFtp').addEventListener('change', () => {
     const v = Math.round(Number($('bFtp').value));
-    if (v >= 50 && v <= 600) { try { localStorage.setItem('ftp', String(v)); } catch {} currentFtp = gradient.token ? currentFtp : v; preview(); }
+    if (v >= 50 && v <= 600) { try { localStorage.setItem('ftp', String(v)); } catch {} if (!gradient.token) currentFtp = v; renderRows(); renderChart(); }
   });
   $('bSave').addEventListener('click', () => { if (save()) msg('Saved.', 'ok'); });
   $('bRide').addEventListener('click', () => { const w = save(); if (w) load(w); });
-  $('bCancel').addEventListener('click', () => { edit = null; msg(''); renderEditor(); });
+  $('bCancel').addEventListener('click', () => { edit = null; history = []; msg(''); renderEditor(); });
   $('myList').addEventListener('click', e => {
     const t = e.target.closest('button'); if (!t) return;
     const d = t.dataset;
     if (d.myLoad != null) load(list[Number(d.myLoad)]);
-    else if (d.myEdit != null) { const w = list[Number(d.myEdit)]; edit = { id: w.id, name: w.name, blocks: JSON.parse(JSON.stringify(w.blocks)) }; msg(''); renderEditor(); }
+    else if (d.myEdit != null) { const w = list[Number(d.myEdit)]; open({ id: w.id, name: w.name, blocks: clone(w.blocks) }); }
     else if (d.myDel != null) {
       const i = Number(d.myDel);
       if (!confirm(`Delete “${list[i].name}”?`)) return;
