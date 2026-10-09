@@ -955,8 +955,13 @@ const decoder = new TextDecoder();
 // Bluetooth connection next to the trainer's.
 const FRESH_MS = 3000;
 const isFresh = at => !!at && Date.now() - at < FRESH_MS;
+// Heart rate changes slowly, and with the tab in the background the browser
+// can hand over a strap's readings a few seconds apart, so the last reading
+// counts for longer before heart rate is treated as missing.
+const HR_FRESH_MS = 8000;
+const hrFresh = () => !!ext.hr.at && Date.now() - ext.hr.at < HR_FRESH_MS;
 const ext = {
-  hr: { device: null, manual: false, value: null, at: 0, noContactAt: 0 },
+  hr: { device: null, manual: false, value: null, at: 0, noContactAt: 0, msgAt: 0, waitFront: 0, waitBack: 0 },
   pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null },
 };
 
@@ -985,6 +990,12 @@ function renderSensors() {
 function onSensorValue(kind, view) {
   const now = Date.now();
   if (kind === 'hr') {
+    // The longest wait between two messages, with the tab in front and behind.
+    if (ext.hr.msgAt && ride.status === 'riding') {
+      const k = document.hidden ? 'waitBack' : 'waitFront';
+      ext.hr[k] = Math.max(ext.hr[k], now - ext.hr.msgAt);
+    }
+    ext.hr.msgAt = now;
     const v = BLE.heartRate(view);
     // 0 bpm or "no skin contact": the strap is there but cannot read the heart.
     if (!v || BLE.heartContact(view) === false) { ext.hr.noContactAt = now; return; }
@@ -1102,7 +1113,7 @@ function onValue(uuid, view) {
       if (d.speedKmh !== null) { state.live.speed = d.speedKmh; $('speed').textContent = `${d.speedKmh.toFixed(1)} km/h`; }
       if (d.heartRate) {
         state.live.hr = d.heartRate;
-        if (!isFresh(ext.hr.at)) $('hr').textContent = `${d.heartRate} bpm`;
+        if (!hrFresh()) $('hr').textContent = `${d.heartRate} bpm`;
       }
       break;
     }
@@ -2387,6 +2398,7 @@ async function startRide() {
     samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
     rpe: null, rpeNotes: '', rpeSent: null, hrGaps: { contact: 0, silent: 0, silentHidden: 0 },
   });
+  Object.assign(ext.hr, { waitFront: 0, waitBack: 0 });
   renderHrGaps();
   countdown.unlock(); // sound needs a click to be allowed
   rideMsg('');
@@ -2448,7 +2460,7 @@ function recordSample() {
     p: isFresh(ext.pm.at) ? ext.pm.power : trainerFresh ? (l.power ?? 0) : 0,
     c: isFresh(ext.pm.cadenceAt) ? Math.round(ext.pm.cadence) : trainerFresh && l.cadence != null ? Math.round(l.cadence) : null,
     s: trainerFresh ? l.speed : null,
-    hr: isFresh(ext.hr.at) ? ext.hr.value : trainerFresh ? l.hr : null,
+    hr: hrFresh() ? ext.hr.value : trainerFresh ? l.hr : null,
     ...routeSample(), // position, elevation, distance and road speed on a route
     tg: ERG.on ? ERG.target : null, // ERG target, for the live chart
     st: workout && !ride.workoutDone ? ride.step : null, // workout step, saved as a lap
@@ -2470,7 +2482,8 @@ function renderHrGaps() {
   const parts = [];
   if (g.contact) parts.push(`${g.contact} s the strap had no skin contact (wet its pads, or tighten it)`);
   if (g.silent) parts.push(`${g.silent} s the strap sent nothing` + (g.silentHidden ? `, ${g.silentHidden} s of it with this tab in the background` : ', all with this tab in front'));
-  el.textContent = `Heart rate missing this ride: ${parts.join('; ')}.`;
+  const w = ms => `${(ms / 1000).toFixed(1)} s`;
+  el.textContent = `Heart rate missing this ride: ${parts.join('; ')}. Longest wait between strap messages: ${w(ext.hr.waitFront)} in front, ${w(ext.hr.waitBack)} in the background.`;
   el.classList.remove('hidden');
 }
 
