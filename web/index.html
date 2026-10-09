@@ -104,6 +104,15 @@
   #libList { max-height: 340px; overflow-y: auto; border-radius: 8px; background: #12151b; }
   .lib-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: 100%; text-align: left; background: none; color: var(--text); font-weight: 400; border-radius: 0; border-bottom: 1px solid #20242d; padding: 10px 12px; }
   .lib-item:hover { background: #1c2029; }
+  .builder { margin-top: 10px; padding: 12px; background: #171a21; border-radius: 10px; }
+  .builder input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #2f3542; background: #11141a; color: var(--text); }
+  .builder #bName { width: 100%; margin-bottom: 8px; }
+  .bblock { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px solid #20242d; }
+  .bblock .k { color: var(--muted); font-size: 13px; min-width: 64px; }
+  .bblock input.d { width: 64px; } .bblock input.p { width: 56px; } .bblock input.n { width: 48px; }
+  .bblock .tools { margin-left: auto; display: flex; gap: 4px; }
+  #bPreview { width: 100%; height: 48px; margin-top: 10px; background: #11141a; border-radius: 6px; }
+  .my-item .acts { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
   .lib-item .n { font-weight: 600; }
   .lib-item .m { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
   .lib-item svg { width: 120px; height: 24px; grid-row: 1 / span 2; grid-column: 2; align-self: center; }
@@ -221,6 +230,29 @@
         <button data-sort="dur" aria-pressed="false">Shortest first</button>
       </div>
       <div id="libList"></div>
+    </div>
+
+    <div class="row" style="margin-top:8px"><button id="myBtn" class="secondary">My workouts</button></div>
+    <div id="myBox" class="hidden">
+      <div id="myList"></div>
+      <div class="row" style="margin-top:8px"><button id="myNew" class="secondary sm">New workout</button></div>
+      <div id="myEditor" class="hidden builder">
+        <input id="bName" placeholder="Workout name" maxlength="80" aria-label="Workout name">
+        <div id="bBlocks"></div>
+        <div class="row">
+          <button class="secondary sm" id="bAddStep">+ Step</button>
+          <button class="secondary sm" id="bAddRep">+ Intervals</button>
+        </div>
+        <svg id="bPreview" viewBox="0 0 120 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <div id="bInfo" class="muted"></div>
+        <label class="muted" id="bFtpRow" style="display:block;margin-top:6px">FTP <input type="number" id="bFtp" min="50" max="600" step="1" style="width:80px"> W, used while you are not signed in to Gradient</label>
+        <div class="row" style="margin-top:8px">
+          <button id="bSave">Save</button>
+          <button id="bRide" class="secondary">Save and load</button>
+          <button id="bCancel" class="link">Cancel</button>
+        </div>
+        <div id="bMsg"></div>
+      </div>
     </div>
 
     <div id="workoutBox" class="hidden">
@@ -1549,6 +1581,180 @@ function pickLibrary(i) {
   $('libBox').classList.add('hidden');
   loadWorkout(workoutTitle(w), w.segments, library.ftp);
 }
+
+// ---- Workout builder: your own sessions in % of FTP, kept in this browser.
+// A workout is a list of blocks: a single step, or intervals (n x on/off).
+// Each expands to plain steps, so it rides exactly like a library workout.
+const builder = (() => {
+  const KEY = 'myWorkouts';
+  let list = [], edit = null; // edit: { id, name, blocks }
+  try { list = JSON.parse(localStorage.getItem(KEY) || '[]'); if (!Array.isArray(list)) list = []; } catch { list = []; }
+  const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {} };
+  const localFtp = () => { try { return Number(localStorage.getItem('ftp')) || 200; } catch { return 200; } };
+
+  // "45" is minutes; "4:30" minutes and seconds; "1:05:00" hours too.
+  function parseDur(t) {
+    const parts = String(t).trim().split(':').map(x => x.trim());
+    if (!parts[0] || parts.some(x => !/^\d+$/.test(x)) || parts.length > 3) return null;
+    const n = parts.map(Number);
+    const sec = n.length === 1 ? n[0] * 60 : n.length === 2 ? n[0] * 60 + n[1] : n[0] * 3600 + n[1] * 60 + n[2];
+    return sec > 0 && sec <= 6 * 3600 ? sec : null;
+  }
+  const fmtDur = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  // Empty means ride it free (ERG off).
+  const parsePct = t => { const v = String(t).trim(); if (!v) return null; const n = Number(v); return n >= 20 && n <= 300 ? n : NaN; };
+
+  function segments(blocks) {
+    const out = [];
+    for (const b of blocks) {
+      if (b.type === 'step') out.push({ durationSec: b.sec, intensityFraction: b.pct == null ? null : b.pct / 100 });
+      else for (let i = 0; i < b.n; i++) {
+        out.push({ durationSec: b.onSec, intensityFraction: b.onPct == null ? null : b.onPct / 100 });
+        if (b.offSec) out.push({ durationSec: b.offSec, intensityFraction: b.offPct == null ? null : b.offPct / 100 });
+      }
+    }
+    return out;
+  }
+  // Rough training stress: free steps counted as easy (50%).
+  const stress = segs => Math.round(segs.reduce((a, x) => a + x.durationSec * (x.intensityFraction ?? 0.5) ** 2, 0) / 36);
+  const total = segs => segs.reduce((a, x) => a + x.durationSec, 0);
+
+  function renderList() {
+    $('myList').innerHTML = list.length ? list.map((w, i) => {
+      const segs = segments(w.blocks);
+      return `<div class="lib-item my-item"><span class="n">${esc(w.name)}</span>${miniProfile(segs)}
+        <span class="m">${fmtTime(total(segs))} · about ${stress(segs)} TSS</span>
+        <span class="acts"><button class="sm" data-my-load="${i}">Load</button><button class="secondary sm" data-my-edit="${i}">Edit</button><button class="link" data-my-del="${i}">Delete</button></span></div>`;
+    }).join('') : '<div class="muted" style="padding:8px 0">No workouts of your own yet. Press New workout to make one.</div>';
+  }
+
+  function blockRow(b, i) {
+    const tools = `<span class="tools"><button class="secondary sm" data-b-up="${i}" aria-label="Move up">↑</button><button class="secondary sm" data-b-down="${i}" aria-label="Move down">↓</button><button class="secondary sm" data-b-del="${i}" aria-label="Remove">✕</button></span>`;
+    if (b.type === 'step') return `<div class="bblock" data-i="${i}"><span class="k">Step</span>
+      <input class="d" data-k="sec" value="${fmtDur(b.sec)}" aria-label="Duration"> at
+      <input class="p" data-k="pct" value="${b.pct ?? ''}" placeholder="free" inputmode="numeric" aria-label="Percent of FTP"> % FTP${tools}</div>`;
+    return `<div class="bblock" data-i="${i}"><span class="k">Intervals</span>
+      <input class="n" data-k="n" value="${b.n}" inputmode="numeric" aria-label="Repeats"> ×
+      <input class="d" data-k="onSec" value="${fmtDur(b.onSec)}" aria-label="On duration"> at
+      <input class="p" data-k="onPct" value="${b.onPct ?? ''}" placeholder="free" inputmode="numeric" aria-label="On percent of FTP"> %, then
+      <input class="d" data-k="offSec" value="${b.offSec ? fmtDur(b.offSec) : ''}" placeholder="none" aria-label="Recovery duration"> at
+      <input class="p" data-k="offPct" value="${b.offPct ?? ''}" placeholder="free" inputmode="numeric" aria-label="Recovery percent of FTP"> %${tools}</div>`;
+  }
+
+  function renderEditor() {
+    $('myEditor').classList.toggle('hidden', !edit);
+    if (!edit) return;
+    $('bName').value = edit.name;
+    $('bBlocks').innerHTML = edit.blocks.map(blockRow).join('');
+    $('bFtp').value = localFtp();
+    $('bFtpRow').classList.toggle('hidden', !!gradient.token);
+    preview();
+  }
+
+  // Reads every field; marks bad ones and returns false if any is invalid.
+  function readFields() {
+    let ok = true;
+    document.querySelectorAll('#bBlocks .bblock').forEach(row => {
+      const b = edit.blocks[Number(row.dataset.i)];
+      row.querySelectorAll('input').forEach(inp => {
+        const k = inp.dataset.k, v = inp.value;
+        let val;
+        if (k === 'sec' || k === 'onSec') val = parseDur(v);
+        else if (k === 'offSec') val = v.trim() ? parseDur(v) : 0;
+        else if (k === 'n') { val = Number(v); if (!(Number.isInteger(val) && val >= 1 && val <= 50)) val = null; }
+        else { val = parsePct(v); if (Number.isNaN(val)) val = undefined; }
+        const bad = val === null && k !== 'pct' && k !== 'onPct' && k !== 'offPct' || val === undefined;
+        inp.style.borderColor = bad ? 'var(--bad)' : '';
+        if (bad) ok = false; else b[k] = val;
+      });
+    });
+    edit.name = $('bName').value.trim();
+    return ok;
+  }
+
+  function preview() {
+    const ok = readFields();
+    const segs = segments(edit.blocks);
+    const svg = miniProfile(segs).replace(/^<svg[^>]*>|<\/svg>$/g, '');
+    $('bPreview').innerHTML = svg;
+    const ftp = currentFtp || localFtp();
+    $('bInfo').textContent = !segs.length ? 'Add a step to start.'
+      : `${fmtTime(total(segs))} · ${segs.length} steps · about ${stress(segs)} TSS · at FTP ${ftp} W` + (ok ? '' : ' · fix the fields in red');
+    return ok && segs.length > 0;
+  }
+
+  let currentFtp = null;
+  async function ftp() {
+    if (gradient.token) {
+      try { const t = await gradientApi('/api/settings/thresholds'); if (t && t.ftpWatts) return (currentFtp = t.ftpWatts); } catch { /* fall back */ }
+    }
+    return (currentFtp = localFtp());
+  }
+
+  function msg(text, cls = '') { $('bMsg').textContent = text; $('bMsg').className = cls; }
+
+  function save() {
+    if (!preview()) { msg('Some fields are not valid yet (marked in red), or there are no steps.', 'bad'); return null; }
+    if (!edit.name) edit.name = 'My workout';
+    const w = { id: edit.id || `w${Date.now()}`, name: edit.name, blocks: JSON.parse(JSON.stringify(edit.blocks)) };
+    const at = list.findIndex(x => x.id === w.id);
+    if (at >= 0) list[at] = w; else list.push(w);
+    persist();
+    edit = null;
+    renderEditor(); renderList();
+    return w;
+  }
+
+  async function load(w) {
+    if (ride.status === 'riding' || ride.status === 'paused') return rideMsg('Finish this ride before loading another.', 'bad');
+    const f = await ftp();
+    $('myBox').classList.add('hidden');
+    loadWorkout(w.name, segments(w.blocks), f);
+  }
+
+  // Events.
+  $('myBtn').addEventListener('click', () => { $('myBox').classList.toggle('hidden'); renderList(); ftp().then(() => edit && preview()); });
+  $('myNew').addEventListener('click', () => {
+    edit = { id: null, name: '', blocks: [
+      { type: 'step', sec: 600, pct: 55 },
+      { type: 'repeat', n: 4, onSec: 240, onPct: 105, offSec: 180, offPct: 55 },
+      { type: 'step', sec: 600, pct: 50 },
+    ] };
+    msg(''); renderEditor(); $('bName').focus();
+  });
+  $('bAddStep').addEventListener('click', () => { readFields(); edit.blocks.push({ type: 'step', sec: 300, pct: 65 }); renderEditor(); });
+  $('bAddRep').addEventListener('click', () => { readFields(); edit.blocks.push({ type: 'repeat', n: 5, onSec: 60, onPct: 120, offSec: 60, offPct: 50 }); renderEditor(); });
+  $('bBlocks').addEventListener('input', preview);
+  $('bName').addEventListener('input', () => { edit.name = $('bName').value; });
+  $('bBlocks').addEventListener('click', e => {
+    const t = e.target.closest('button'); if (!t) return;
+    readFields();
+    const b = edit.blocks, d = t.dataset;
+    if (d.bDel != null) b.splice(Number(d.bDel), 1);
+    else if (d.bUp != null && Number(d.bUp) > 0) { const i = Number(d.bUp); [b[i - 1], b[i]] = [b[i], b[i - 1]]; }
+    else if (d.bDown != null && Number(d.bDown) < b.length - 1) { const i = Number(d.bDown); [b[i + 1], b[i]] = [b[i], b[i + 1]]; }
+    renderEditor();
+  });
+  $('bFtp').addEventListener('change', () => {
+    const v = Math.round(Number($('bFtp').value));
+    if (v >= 50 && v <= 600) { try { localStorage.setItem('ftp', String(v)); } catch {} currentFtp = gradient.token ? currentFtp : v; preview(); }
+  });
+  $('bSave').addEventListener('click', () => { if (save()) msg('Saved.', 'ok'); });
+  $('bRide').addEventListener('click', () => { const w = save(); if (w) load(w); });
+  $('bCancel').addEventListener('click', () => { edit = null; msg(''); renderEditor(); });
+  $('myList').addEventListener('click', e => {
+    const t = e.target.closest('button'); if (!t) return;
+    const d = t.dataset;
+    if (d.myLoad != null) load(list[Number(d.myLoad)]);
+    else if (d.myEdit != null) { const w = list[Number(d.myEdit)]; edit = { id: w.id, name: w.name, blocks: JSON.parse(JSON.stringify(w.blocks)) }; msg(''); renderEditor(); }
+    else if (d.myDel != null) {
+      const i = Number(d.myDel);
+      if (!confirm(`Delete “${list[i].name}”?`)) return;
+      list.splice(i, 1); persist(); renderList();
+    }
+  });
+  return { segments, parseDur };
+})();
 
 // ---- Live ride chart: the last 4 minutes of power, heart rate and target,
 // and the workout's next 6 minutes drawn ahead of "now".

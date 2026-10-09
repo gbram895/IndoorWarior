@@ -72,6 +72,14 @@ only). Search by name, filter by Endurance, Tempo, Threshold or VO2max, or
 sort shortest first; each row shows the length and a small profile. Picking
 one loads it exactly like today's plan.
 
+**My workouts** is a workout builder for your own sessions. Add steps (a
+duration and a % of FTP, or empty to ride it free) and intervals (repeats of
+an effort and a recovery), reorder or remove them, and see the profile, length
+and a rough TSS as you go. Durations are minutes (`45`), minutes and seconds
+(`4:30`) or hours too (`1:05:00`). Workouts are kept in this browser; **Load**
+rides one exactly like a library workout, at your FTP from Gradient, or at
+the FTP set in the builder when you are not signed in.
+
 During a ride a live chart shows the last 4 minutes of power (3 s smoothed),
 heart rate and the ERG target, with the workout's next 6 minutes drawn ahead
 of the "now" line as coloured blocks with their watts. On a free ride it shows
