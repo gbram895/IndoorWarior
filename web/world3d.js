@@ -251,21 +251,23 @@
   }
 
   // Trees either side of points s..e-1, thicker away from the road, never on it at a bend.
-  function trees(g, s, e, seed, kit) {
+  // `avoid(x, z, i)` is true where a tree must not stand (houses, an open summit).
+  function trees(g, s, e, seed, kit, models, avoid) {
     const rand = rng(seed), spots = [];
     for (let i = s; i < e; i++) {
       for (const s of [-1, 1]) {
         if (rand() > 0.55) continue;
         const o = s * (10 + rand() ** 1.6 * 230);
         const p = groundY(g, i, o);
-        let clear = true;
+        let clear = !avoid(p.x, p.z, i);
         for (let j = Math.max(0, i - 40); j <= Math.min(g.n - 1, i + 40) && clear; j++) {
           if (Math.hypot(g.xz[j][0] - p.x, g.xz[j][1] - p.z) < ROAD_HALF + 5) clear = false;
         }
-        if (clear) spots.push([p.x, p.y, p.z, 0.7 + rand() * 0.7, rand() * Math.PI]);
+        if (clear) spots.push([p.x, p.y, p.z, 0.7 + rand() * 0.7, rand() * Math.PI, Math.floor(rand() * 1e6)]);
       }
     }
     if (!spots.length) return [];
+    if (models) return kenneyTrees(spots, models);
     // three r149 culls instances by the bare tree shape at the origin, so each
     // piece gets a bounding sphere around its own trees.
     const box = new T.Box3(), pt = new T.Vector3();
@@ -284,6 +286,163 @@
     });
     trunk.castShadow = crown.castShadow = true;
     return [trunk, crown];
+  }
+
+  // ---- Kenney models (vendor/kenney-models.js, CC0): decoded once, shared by
+  // every route. Each is one mesh painted from a small colour-map texture.
+  function decode(str, Type) {
+    const bin = atob(str), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Type(bytes.buffer);
+  }
+  let kenney = null;
+  function kenneyModels() {
+    if (kenney !== null) return kenney;
+    kenney = false;
+    const src = window.IW_MODELS;
+    if (!src) return kenney;
+    const mats = {};
+    for (const [kit, url] of Object.entries(src.textures)) {
+      const tex = new T.TextureLoader().load(url);
+      tex.flipY = false; // left linear: sRGB made the houses dark navy
+      mats[kit] = new T.MeshLambertMaterial({ map: tex });
+    }
+    const models = {};
+    for (const [name, m] of Object.entries(src.models)) {
+      const geo = new T.BufferGeometry();
+      geo.setAttribute('position', new T.BufferAttribute(decode(m.pos, Float32Array), 3));
+      geo.setAttribute('normal', new T.BufferAttribute(decode(m.nor, Float32Array), 3));
+      geo.setAttribute('uv', new T.BufferAttribute(decode(m.uv, Float32Array), 2));
+      geo.setIndex(new T.BufferAttribute(decode(m.idx, Uint16Array), 1));
+      geo.computeBoundingBox();
+      models[name] = { geo, mat: mats[m.kit], size: geo.boundingBox.getSize(new T.Vector3()) };
+    }
+    models.trees = Object.keys(models).filter(k => k.startsWith('tree-')).map(k => models[k]);
+    models.houses = ['house-a', 'house-b', 'house-c', 'house-d', 'garage'].map(k => models[k]);
+    return (kenney = models);
+  }
+  // A mesh of a shared model, marked so changing route never disposes it.
+  function place(model, x, y, z, rotY, scale) {
+    const m = new T.Mesh(model.geo, model.mat);
+    m.position.set(x, y, z); m.rotation.y = rotY; m.scale.setScalar(scale);
+    m.castShadow = m.receiveShadow = true; m.userData.shared = true;
+    return m;
+  }
+
+  // Kenney trees, one instanced mesh per kind of tree in this piece, 5-11 m tall.
+  function kenneyTrees(spots, models) {
+    const byKind = new Map();
+    for (const sp of spots) { const k = sp[5] % models.trees.length; byKind.get(k)?.push(sp) || byKind.set(k, [sp]); }
+    const out = [], mtx = new T.Matrix4(), q = new T.Quaternion(), eu = new T.Euler(), sc = new T.Vector3(), v = new T.Vector3();
+    for (const [k, list] of byKind) {
+      const model = models.trees[k];
+      const box = new T.Box3(), pt = new T.Vector3();
+      for (const [x, y, z] of list) box.expandByPoint(pt.set(x, y, z));
+      const geo = new T.BufferGeometry();
+      for (const [name, attr] of Object.entries(model.geo.attributes)) geo.setAttribute(name, attr);
+      geo.setIndex(model.geo.index);
+      geo.boundingSphere = box.getBoundingSphere(new T.Sphere()); geo.boundingSphere.radius += 14;
+      const mesh = new T.InstancedMesh(geo, model.mat, list.length);
+      list.forEach(([x, y, z, s, r], n) => {
+        const h = (5 + 4 * (s - 0.7) / 0.7) / model.size.y;
+        q.setFromEuler(eu.set(0, r * 2, 0)); sc.set(h, h * (0.9 + (r % 0.2)), h);
+        mtx.compose(v.set(x, y - 0.1, z), q, sc); mesh.setMatrixAt(n, mtx);
+      });
+      mesh.castShadow = true; mesh.userData.sharedParts = true;
+      out.push(mesh);
+    }
+    return out;
+  }
+
+  // Houses along a stretch of road (d0..d1 m), both sides, fronts to the road.
+  function village(g, d0, d1, rand, models, homes) {
+    const group = new T.Group();
+    for (const sideSign of [-1, 1]) {
+      for (let d = d0 + rand() * 20; d < d1; d += 24 + rand() * 16) {
+        if (rand() < 0.2) continue; // a gap now and then
+        const i = Math.min(g.n - 2, Math.max(0, Math.round(d / STEP)));
+        const model = models.houses[Math.floor(rand() * models.houses.length)];
+        const size = 9 + rand() * 3, o = sideSign * (ROAD_HALF + 6 + size / 2 + rand() * 4);
+        const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
+        // Sit on the lowest corner so no corner floats.
+        let y = Infinity;
+        for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) y = Math.min(y, groundAt(g, x + a * size / 2, z + b * size / 2).y);
+        // The door is on the model's +x side: turn that side to the road.
+        const ux = -g.side[i][0] * sideSign, uz = -g.side[i][1] * sideSign;
+        const face = Math.atan2(-uz, ux);
+        group.add(place(model, x, y - 0.2, z, face, size));
+        homes.push([x, z, size * 0.75 + 4]);
+      }
+    }
+    return group;
+  }
+
+  // Where the scenery goes. A built-in course says so itself; any other route
+  // gets an arch at the start and the finish and a village every few
+  // kilometres where the road runs straight and fairly flat for a while.
+  function sceneryOf(route, g, seed) {
+    const total = route.total, c = route.scenery;
+    if (c) {
+      const pos = d => (d < 0 ? total + d : d);
+      return {
+        arch: c.arch.map(pos), tents: (c.tents || []).map(([d, side]) => [pos(d), side]),
+        villages: c.villages || [], flags: c.flags || [], clearings: c.clearings || [],
+      };
+    }
+    const rand = rng(seed + 3), villages = [];
+    for (let d = 1200 + rand() * 1500; d < total - 800; d += 2500 + rand() * 2500) {
+      const len = 300 + rand() * 250;
+      const i0 = Math.round(d / STEP), i1 = Math.min(g.n - 1, Math.round((d + len) / STEP));
+      let ok = i1 > i0;
+      for (let i = i0; i <= i1 && ok; i++) {
+        if (Math.abs(g.bend[i]) > 1 / 120) ok = false;
+        if (i > i0 && Math.abs(g.y[i] - g.y[i - 1]) / STEP / LIFT > 0.05) ok = false;
+      }
+      if (ok) villages.push([d, d + len]);
+    }
+    const arch = total > 400 ? [25, total - 25] : [25];
+    return { arch, tents: [[60, 'left']], villages, flags: [], clearings: [] };
+  }
+
+  // A few flat clouds high up, drifting slowly. Like the mountains they stay
+  // round the camera.
+  function clouds(models) {
+    const group = new T.Group(), rand = rng(99);
+    const mat = new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0xc8d0da, fog: false });
+    for (let k = 0; k < 22; k++) {
+      const a = rand() * Math.PI * 2, r = 220 + rand() * 380;
+      const m = new T.Mesh(models.cloud.geo, mat);
+      m.position.set(Math.cos(a) * r, 150 + rand() * 90, Math.sin(a) * r);
+      m.scale.set(70 + rand() * 70, 14 + rand() * 10, 45 + rand() * 40);
+      m.rotation.y = rand() * Math.PI;
+      group.add(m);
+    }
+    return group;
+  }
+
+  // Start/finish arches, team tents and flags.
+  function props(g, sc, models, total) {
+    const group = new T.Group();
+    const headingAt = i => { const a = g.xz[Math.max(0, i - 1)], b = g.xz[Math.min(g.n - 1, i + 1)]; return Math.atan2(b[0] - a[0], b[1] - a[1]); };
+    const idx = d => Math.min(g.n - 1, Math.max(0, Math.round(d / STEP)));
+    for (const d of sc.arch) {
+      const i = idx(d), s = 0.72; // 14 m wide model over a 6 m road
+      group.add(place(models.arch, g.xz[i][0], g.y[i], g.xz[i][1], headingAt(i), s));
+    }
+    for (const [d, side] of sc.tents) {
+      const i = idx(d), sg = side === 'left' ? -1 : 1, o = sg * (ROAD_HALF + 7);
+      const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
+      group.add(place(models.tents, x, groundAt(g, x, z).y + 0.05, z, headingAt(i), 1));
+    }
+    for (const [d0, d1] of sc.flags) {
+      let k = 0;
+      for (let d = d0; d < d1; d += 18, k++) {
+        const i = idx(d), sg = k % 2 ? 1 : -1, o = sg * (ROAD_HALF + 1.2);
+        const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
+        group.add(place(models.flag, x, groundAt(g, x, z).y, z, headingAt(i) + (sg > 0 ? Math.PI / 2 : -Math.PI / 2), 2.6));
+      }
+    }
+    return group;
   }
 
   function kmSigns(g, total) {
@@ -539,11 +698,19 @@
     bike.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
     const hills0 = mountains(); scene.add(hills0);
 
-    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null;
+    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
     function setRoute(route) {
-      if (world) { scene.remove(world); world.traverse(o => { o.geometry?.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m?.map?.dispose(); m?.dispose(); }); }); }
+      if (world) {
+        scene.remove(world);
+        world.traverse(o => {
+          if (o.userData.shared) return;                  // Kenney models are kept for the next route
+          if (o.userData.sharedParts) { o.dispose(); return; }
+          o.geometry?.dispose();
+          (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m?.map?.dispose(); m?.dispose(); });
+        });
+      }
       built = route; tiles = [];
       world = new T.Group();
       if (!route) return;
@@ -559,6 +726,21 @@
         bark: new T.MeshLambertMaterial({ color: 0x5b4632 }), leaf: new T.MeshLambertMaterial({ color: 0x2f5a2e }),
       };
       const seed = Math.round(route.total) + route.res.length;
+      const models = kenneyModels(), sc = sceneryOf(route, g, seed), homes = [];
+      world.userData.sc = sc;
+      if (models && !sky2) scene.add((sky2 = clouds(models)));
+      if (models) {
+        const rand = rng(seed + 7);
+        for (const [d0, d1] of sc.villages) world.add(village(g, d0, d1, rand, models, homes));
+        world.add(props(g, sc, models, route.total));
+      }
+      const within = (ranges, d) => ranges.some(([a, b]) => d >= a && d <= b);
+      const avoid = (x, z, i) => {
+        const d = i * STEP;
+        if (within(sc.clearings, d)) return true;
+        if (within(sc.villages, d) && Math.hypot(x - g.xz[i][0], z - g.xz[i][1]) < 45) return true;
+        return homes.some(([hx, hz, r]) => Math.abs(hx - x) < r && Math.abs(hz - z) < r);
+      };
       for (let s = 0; s < g.n - 1; s += CHUNK) {
         const e = Math.min(g.n - 1, s + CHUNK);
         const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; world.add(m); };
@@ -567,7 +749,7 @@
         strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint);
         strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0); // dashed centre line
         world.add(nearLand(g, s, e, land));
-        world.add(...trees(g, s, e, seed + s, kit));
+        world.add(...trees(g, s, e, seed + s, kit, models, avoid));
       }
       kit.trunk.dispose(); kit.crown.dispose();
       // The far land is built a few tiles per frame, nearest first, so a long
@@ -579,11 +761,13 @@
       camPos.set(0, 0, 0); camLook.set(0, 0, 0);
     }
 
-    // A point on the road at a distance, with its height.
+    // A point on the road at a distance, with its height. Before the start or
+    // past the end it carries straight on along the first or last stretch, so
+    // the camera behind the rider at 0 m sits on the road, not inside him.
     function at(d, out) {
-      const g = world.userData.g, f = Math.min(g.n - 1.001, Math.max(0, d / STEP)), i = Math.floor(f), t = f - i;
-      const a = g.xz[i], b = g.xz[i + 1];
-      return out.set(a[0] + (b[0] - a[0]) * t, g.y[i] + (g.y[i + 1] - g.y[i]) * t, a[1] + (b[1] - a[1]) * t);
+      const g = world.userData.g, f = d / STEP, i = Math.min(g.n - 2, Math.max(0, Math.floor(f))), t = f - i;
+      const a = g.xz[i], b = g.xz[i + 1], h = Math.min(1, Math.max(0, t));
+      return out.set(a[0] + (b[0] - a[0]) * t, g.y[i] + (g.y[i + 1] - g.y[i]) * h, a[1] + (b[1] - a[1]) * t);
     }
 
     function resize() {
@@ -643,6 +827,7 @@
       dome.position.copy(camPos);
       sun.target.position.copy(pos); sun.position.copy(pos).addScaledVector(SUN_DIR, 200);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);
+      if (sky2) { drift += dt * 1.5; sky2.position.set(camPos.x * 0.9 + drift, hills0.position.y, camPos.z * 0.9); }
       renderer.render(scene, camera);
     }
 
@@ -653,6 +838,7 @@
       get view() { return view; },
       set view(v) { if (VIEWS[v] && v !== view) { view = v; camPos.set(0, 0, 0); } },
       get info() { return renderer.info.render; },
+      get scenery() { return built && world.userData.sc; }, // where the arches and villages went
     };
   }
 

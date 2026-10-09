@@ -1,0 +1,7 @@
+The 3D models in kenney-models.js are by Kenney (www.kenney.nl), taken from
+the Starter Kit City Builder, Starter Kit Racing and Starter Kit 3D Platformer
+(github.com/KenneyNL). Kenney releases these models under Creative Commons
+Zero (CC0 1.0): https://creativecommons.org/publicdomain/zero/1.0/
+
+They were converted unchanged, except that trees were cut out of the forest
+tiles and the ground plates were left off, by a small build script.
