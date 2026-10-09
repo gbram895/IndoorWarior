@@ -3359,8 +3359,6 @@ const view3d = (() => {
     loading = loading || (async () => {
       if (!window.THREE) await loadScript('vendor/three.min.js');
       if (!window.World3D) await loadScript('world3d.js');
-      // The Kenney models are a nice-to-have: without them the world uses its own trees.
-      if (!window.IW_MODELS) await loadScript('vendor/kenney-models.js').catch(() => {});
       return World3D.mount($('route3d'), state);
     })();
     try { world = await loading; } catch (e) { loading = null; throw e; }

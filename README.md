@@ -172,21 +172,22 @@ If the browser has WebGL switched off, it falls back to the map.
 #### IndoorWarior Island
 
 **Ride IndoorWarior Island** (next to Load GPX) loads the built-in course
-without a GPX: a 12.6 km loop with 183 m of climbing. A flat start through a
-village, rolling forest, a 2.4 km climb at about 6% with a steeper kick near
-the top, flags on an open summit, a long descent and a second village before
-the finish. It is defined in `web/course.js` as points placed in the North
-Sea, so it rides, records and uploads like any GPX route and its Strava map
-lands over open water rather than someone's real roads.
+without a GPX: a 12.6 km loop with 183 m of climbing. A flat start through
+farmland, a 2.4 km climb through woods at about 6% with a steeper kick near the
+top, flags on an open summit, a long descent and a flat run home. It is defined
+in `web/course.js` as points placed in the North Sea, so it rides, records and
+uploads like any GPX route and its Strava map lands over open water rather
+than someone's real roads. A loop (the course, or a GPX that ends where it
+starts) keeps going round lap after lap.
 
-The houses, trees, start arch, team tents, flags and clouds are Kenney's free
-CC0 models (`web/vendor/kenney-models.js`, see `kenney-LICENSE.txt`). A loaded
-GPX gets the same graphics: an arch at the start and finish, tents, and a
-village every few kilometres where the road runs straight and fairly flat.
-`tools/kenney-pack.js` rebuilds the models file from Kenney's starter kits
-(`git clone` `KenneyNL/Starter-Kit-City-Builder`, `Starter-Kit-Racing` and
-`Starter-Kit-3D-Platformer` into one folder, then
-`node tools/kenney-pack.js <folder> web/vendor/kenney-models.js`).
+All the scenery is built in code, on the course and on any GPX: farmland cut
+into fields (pasture, meadow, wheat, young crops in rows, ploughed land, maize)
+with grass margins and hedges on some edges, woods of spruce and broadleaf
+trees, rough grass and bushes on the verge, white marker posts, a gantry at the
+start and finish, and clouds. The ground's colours are painted into a texture
+per piece of land, finer the closer it is, a few rows per frame; a fine grass
+grain laid on by position keeps it crisp at the wheels. Trees and hedges are
+grouped in 250 m squares, and squares past the haze are skipped.
 
 ## Di2 gears (experimental)
 
