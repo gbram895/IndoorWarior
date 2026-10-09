@@ -844,6 +844,29 @@ const nameOf = u => NAMES[u] || u;
 
 // ---- Connection state.
 const $ = id => document.getElementById(id);
+
+// ---- Ride clock. In a background tab Chrome and Edge slow page timers to
+// once a second, and after about 5 minutes hidden to once a MINUTE. The ride
+// runs on these ticks (workout steps and their ERG targets, route gradient,
+// power match, recording), so they ran a minute late while another tab was in
+// front. A worker's timers are not slowed like that, so a worker beats too;
+// whichever of the two arrives first after 200 ms makes the tick.
+const clock = (() => {
+  const fns = [];
+  let n = 0, last = -Infinity;
+  const beat = () => {
+    const now = performance.now();
+    if (now - last < 200) return;
+    last = now; n++;
+    for (const f of fns) f(n);
+  };
+  setInterval(beat, 250);
+  try {
+    const w = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 250);'], { type: 'text/javascript' })));
+    w.onmessage = beat;
+  } catch { /* page timers alone: fine while the tab is in front */ }
+  return { every: f => fns.push(f) };
+})();
 let device = null, wakeLock = null;
 let state;
 function resetState() {
@@ -1360,12 +1383,13 @@ const ERG = (() => {
 
 $('matchToggle').checked = match.enabled;
 $('matchToggle').addEventListener('change', e => { match.enabled = e.target.checked; ERG.nudge(true); });
-setInterval(() => {
+clock.every(n => {
+  if (n % 4) return; // once a second
   const wasLost = match.lost;
   match.tick();
   $('matchRow').classList.toggle('hidden', !ext.pm.device);
   if (ERG.on) ERG.nudge(match.lost !== wasLost);
-}, 1000);
+});
 
 // ---- Spin-down calibration. The trainer names a speed band; the rider
 // rides above it, stops pedalling, and the trainer measures how it coasts
@@ -2443,8 +2467,9 @@ function tick() {
       ride.stepElapsed = ride.workoutDone ? 0 : over;
     }
   }
-  renderRide();
-  renderRoute();
+  // Nothing to look at while hidden; only the step countdown still beeps.
+  if (document.hidden) countdown.update();
+  else { renderRide(); renderRoute(); }
 }
 
 function rideSeconds() { return ride.samples.length; }
@@ -2863,7 +2888,16 @@ document.querySelectorAll('[data-int]').forEach(b => b.addEventListener('click',
 window.addEventListener('beforeunload', e => {
   if (ride.status === 'riding' || ride.status === 'paused') { saveUnsaved(); e.preventDefault(); e.returnValue = ''; }
 });
-setInterval(tick, 250);
+clock.every(tick);
+// Back in front: catch the screen up, and take the screen lock again, which
+// the browser drops whenever the tab is hidden.
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden) return;
+  renderRide(); renderRoute();
+  if (device?.gatt?.connected && (!wakeLock || wakeLock.released)) {
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+  }
+});
 renderGradient();
 renderRide();
 

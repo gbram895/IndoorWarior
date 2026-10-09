@@ -156,6 +156,16 @@ the Di2 drops anyway, the page reconnects up to three times. A log of
 everything the Di2 sends sits under **Di2 log** for troubleshooting. Close
 E-TUBE first; Di2 accepts one app at a time.
 
+## Riding with another tab in front
+
+Browsers slow a background tab's timers to once a second, and after about
+five minutes hidden to once a minute. The ride clock (workout steps and their
+ERG targets, route gradient, power match, recording) therefore also beats from
+a small worker, whose timers are not slowed, so switching tabs mid-ride is
+fine. The step countdown still beeps from a background tab. The screen lock is
+dropped by the browser while the tab is hidden and taken again when you come
+back, so check that Windows is not set to sleep within the length of a ride.
+
 ## Running it
 
 1. Make sure the laptop's Bluetooth is on (Windows 10 or 11).
