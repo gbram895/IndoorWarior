@@ -48,6 +48,18 @@
   .gear-big .unit { font-size: 18px; font-weight: 400; margin-left: 8px; color: #9aa3b2; }
   .di2log { background: #11141a; border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 10px 0; }
   .route-map { width: 100%; height: 260px; display: block; background: #12151b; border-radius: 8px; }
+  .route3d { position: relative; height: 380px; border-radius: 8px; overflow: hidden; background: #bcd3e6; }
+  .route3d canvas { display: block; }
+  .route3d:fullscreen { height: 100%; border-radius: 0; }
+  .hud3d { position: absolute; left: 10px; top: 10px; display: flex; gap: 8px; pointer-events: none; }
+  .hud3d div { background: rgba(15, 17, 21, 0.72); border-radius: 8px; padding: 6px 10px; min-width: 64px; }
+  .hud3d b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .hud3d i { font-style: normal; font-size: 11px; color: var(--muted); }
+  .route3d:fullscreen .hud3d b { font-size: 34px; }
+  .r3dbtn { position: absolute; right: 10px; top: 10px; background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; }
+  .seg { display: inline-flex; background: #12151b; border-radius: 8px; padding: 2px; margin: 8px 0; }
+  .seg button { background: none; color: var(--muted); padding: 5px 12px; font-size: 13px; }
+  .seg button.on { background: #2a2f3a; color: var(--text); }
   .route-elev { width: 100%; height: 110px; display: block; background: #12151b; border-radius: 8px; margin-top: 8px; }
   .route-settings { margin-top: 12px; gap: 16px; color: var(--muted); font-size: 14px; }
   .route-settings input[type=number] { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #2f3542; background: #11141a; color: var(--text); }
@@ -356,6 +368,11 @@
     <p class="muted" style="margin:8px 0 0">Load a GPX file (a Strava or Komoot route export works) or drop one here.</p>
     <div id="routeBox" class="hidden">
       <div class="wname" id="routeName"></div>
+      <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
+      <div id="route3d" class="route3d hidden">
+        <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
+        <button class="r3dbtn" id="r3dFull">Full screen</button>
+      </div>
       <canvas id="routeMap" class="route-map"></canvas>
       <canvas id="routeElev" class="route-elev"></canvas>
       <div class="grid" style="margin-top:12px">
@@ -3226,6 +3243,7 @@ function renderRoute() {
   const i = Math.min(route.climb.length - 1, Math.floor(d / ROUTE_STEP));
   $('rClimb').textContent = `${Math.round(route.climb[i])} / ${Math.round(route.climb[route.climb.length - 1])} m`;
   $('rSpeed').textContent = `${(routeState.speed * 3.6).toFixed(1)} km/h`;
+  view3d.hud();
 }
 
 async function loadGpxFile(file) {
@@ -3236,6 +3254,7 @@ async function loadGpxFile(file) {
     Object.assign(routeState, { dist: 0, speed: 0, lastGrade: null, finished: false });
     $('routeBox').classList.remove('hidden');
     $('routeName').textContent = route.name;
+    view3d.refresh();
     routeMsg(`${fmtKm(route.total)} km with ${Math.round(route.climb[route.climb.length - 1])} m of climbing. Start a ride to roll. The trainer gets the gradient while ERG is off.`, 'ok');
     renderRoute();
   } catch (e) {
@@ -3246,6 +3265,7 @@ async function loadGpxFile(file) {
 function clearRoute() {
   if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before removing the route.', 'bad');
   route = null;
+  view3d.refresh();
   $('routeBox').classList.add('hidden');
   $('gpxInput').value = '';
   routeMsg('');
@@ -3266,6 +3286,57 @@ $('rDifficulty').addEventListener('input', e => {
 });
 $('rDifficultyLabel').textContent = `${Math.round(routeCfg.difficulty * 100)}%`;
 window.addEventListener('resize', () => renderRoute());
+
+// ---- 3D view of the route (world3d.js on three.js). The libraries load the
+// first time 3D is shown, so the page stays quick for everything else.
+const view3d = (() => {
+  let world = null, loading = null, mode = 'map';
+  try { mode = localStorage.getItem('routeView') === '2d' ? '2d' : '3d'; } catch { mode = '3d'; }
+  const loadScript = src => new Promise((ok, fail) => {
+    const el = document.createElement('script'); el.src = src;
+    el.onload = ok; el.onerror = () => fail(new Error(`Could not load ${src}.`));
+    document.head.append(el);
+  });
+  const state = () => {
+    const d = routeState.dist, cad = parseInt($('cadence').textContent, 10);
+    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0 };
+  };
+  async function ensure() {
+    if (world) return world;
+    loading = loading || (async () => {
+      if (!window.THREE) await loadScript('vendor/three.min.js');
+      if (!window.World3D) await loadScript('world3d.js');
+      return World3D.mount($('route3d'), state);
+    })();
+    try { world = await loading; } catch (e) { loading = null; throw e; }
+    return world;
+  }
+  async function show(next) {
+    mode = next;
+    try { localStorage.setItem('routeView', mode); } catch {}
+    document.querySelectorAll('#routeViewSeg button').forEach(b => b.classList.toggle('on', b.dataset.view === mode));
+    const three = mode === '3d' && !!route;
+    $('route3d').classList.toggle('hidden', !three);
+    $('routeMap').classList.toggle('hidden', three);
+    if (!three) { world?.stop(); return; }
+    try { (await ensure()).start(); }
+    catch (e) { routeMsg(`3D view unavailable: ${e.message} Showing the map instead.`, 'bad'); mode = '2d'; show('2d'); }
+  }
+  function hud() {
+    if (mode !== '3d' || !route) return;
+    const d = routeState.dist;
+    $('h3Power').textContent = $('watts').textContent;
+    $('h3Speed').textContent = (routeState.speed * 3.6).toFixed(1);
+    $('h3Grade').textContent = fmtGrade(gradeBetween(d - 25, d + 25));
+    $('h3Dist').textContent = fmtKm(d);
+  }
+  $('routeViewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.view); });
+  $('r3dFull').addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen(); else $('route3d').requestFullscreen?.().catch(() => {});
+  });
+  document.addEventListener('fullscreenchange', () => { $('r3dFull').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen'; });
+  return { show, hud, refresh: () => show(mode), get mode() { return mode; }, get info() { return world?.info; } };
+})();
 
 $('connectBtn').addEventListener('click', connect);
 // ---- Di2 explorer. Shimano's Bluetooth services use their own UUID base,

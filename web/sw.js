@@ -3,7 +3,7 @@
 // Pages and app files are fetched fresh when online and the copy is kept for
 // offline use, so a new version shows up on the next open without any step.
 const CACHE = 'indoorwarior-v1';
-const APP = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
+const APP = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './world3d.js', './vendor/three.min.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(APP)).then(() => self.skipWaiting()));

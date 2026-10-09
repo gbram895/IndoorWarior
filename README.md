@@ -139,6 +139,21 @@ Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
 while ERG is on, ERG wins. Rides on a route are saved with position and
 elevation as a virtual ride, so Strava shows the map.
 
+### 3D view
+
+With a route loaded, the Route panel shows it in 3D by default (switch with
+**3D / Map**; the choice is remembered). The road follows the GPX's real
+shape and climbs; the land beside it (hills, trees, a sign every kilometre) is
+made up from a fixed seed, so a route always looks the same. A rider pedals at
+your cadence and the camera follows behind. **Full screen** fills the screen
+with the view, power, speed, gradient and distance on top.
+
+It uses three.js r149 (`web/vendor/three.min.js`, MIT, loaded only when the 3D
+view is first shown) and `web/world3d.js`. Both are classic scripts so the
+3D view also works when `index.html` is opened as a file. The world is built
+once per route in 600 m pieces, so only the pieces near the rider are drawn.
+If the browser has WebGL switched off, it falls back to the map.
+
 ## Di2 gears (experimental)
 
 Shimano does not publish how Di2 reports gears over Bluetooth, so the gear
