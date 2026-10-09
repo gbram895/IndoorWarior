@@ -73,15 +73,22 @@ sort shortest first; each row shows the length and a small profile. Picking
 one loads it exactly like today's plan.
 
 **My workouts** is a workout builder for your own sessions. The profile is
-the main control: drag a block up or down to change its power (5% steps,
-Shift for 1%) and drag its right edge to change its length; hovering shows
-its time, % and watts. Below it, preset chips (warm-up, endurance, tempo,
-sweet spot, threshold, VO2max, 30/30s, sprints, cool-down) add a block after
-the selected one, and each block is also a row of numbers: steps (duration
-and % of FTP, empty to ride it free) and intervals (repeats of an effort and
-a recovery), with watts at your FTP. Arrow keys nudge a field (Shift for
-bigger steps); blocks can be duplicated, moved and removed, and Undo (or
-Ctrl+Z) takes back the last change. Durations are minutes (`45`), minutes and
+the main control: grab anywhere in a block's column and drag up or down to
+change its power (5% steps, Shift for 1%) or sideways to change its length;
+the first few pixels of movement decide which. Press and hold a block to lift
+it and drag it to a new place. Power resists past its 20% and 300% limits and
+eases back on release. The profile labels its FTP line and time grid, and a
+dashed orange line shows where the next block will go (after the selected
+one; Esc to add at the end). Below it, preset chips (warm-up, endurance,
+tempo, sweet spot, threshold, VO2max, 30/30s, sprints, cool-down) add a
+block, and each block is also a row of numbers: steps (duration and % of
+FTP, empty to ride it free) and intervals (repeats of an effort and a
+recovery), with watts at your FTP. Arrow keys nudge a field (Shift for
+bigger steps), Alt+arrows move the block; blocks can be duplicated and
+removed, and Undo (or Ctrl+Z) takes back the last change. Unsaved changes
+are kept: Cancel offers an Undo, and after closing the tab My workouts
+offers to resume them. Deleting a saved workout offers an Undo instead of a
+confirm box. Durations are minutes (`45`), minutes and
 seconds (`4:30`) or hours too (`1:05:00`). Workouts are kept in this browser;
 **Load** rides one exactly like a library workout, at your FTP from Gradient,
 or at the FTP set in the builder when you are not signed in.
