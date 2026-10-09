@@ -1861,7 +1861,12 @@ async function uploadToStrava(auto = false) {
   try {
     const res = await gradientApi('/api/health/strava/upload', {
       method: 'POST',
-      body: JSON.stringify({ fitBase64: fitBase64(buildFit(r)), name: r.name || 'Indoor ride', externalId: `indoorwarior-${r.samples[0].t}` }),
+      // A route ride has GPS and elevation; Strava hides the map of anything
+      // flagged as a trainer ride, so only a ride without a route is flagged.
+      body: JSON.stringify({
+        fitBase64: fitBase64(buildFit(r)), name: r.name || 'Indoor ride', externalId: `indoorwarior-${r.samples[0].t}`,
+        trainer: !r.samples.some(x => x.lat != null),
+      }),
     });
     r.strava = { activityId: res.activityId ?? null };
     if (r !== ride) store.set('unsavedRide', r); else saveUnsaved();
