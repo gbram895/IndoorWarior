@@ -147,6 +147,9 @@ shape and climbs. The land around it is made up from a fixed seed, so a route
 always looks the same: it sits at the road's average height over 1.2 km rather
 than copying the road, so a climb starts in a cutting and ends on a shoulder,
 and on a climb the land rises on one side and falls away on the other.
+The land is one height map for the whole area
+(a strip that follows the road up close, 200 m tiles further out, built a
+few tiles per frame nearest first), so it never folds over itself on a bend.
 Mountains stand on a level horizon, there is a sky, textured asphalt and
 grass, and the sun casts shadows near the rider.
 

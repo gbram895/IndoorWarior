@@ -67,14 +67,87 @@
       const slope = (y[b] - y[a]) / ((b - a) * STEP || 1);
       return Math.abs(slope) * 0.9 * (noise(i / 150, 0.5) * 2 - 1 >= 0 ? 1 : -1);
     });
-    return { n, xz, y, side, base, tilt };
+    // How sharply the road bends at each point (1 / radius), so the land strip
+    // beside it can stop short on the inside of a hairpin instead of folding.
+    const bend = xz.map((_, i) => {
+      const a = Math.max(0, i - 3), b = Math.min(n - 1, i + 3);
+      const h0 = Math.atan2(side[a][0], -side[a][1]), h1 = Math.atan2(side[b][0], -side[b][1]);
+      let dh = h1 - h0; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+      return dh / (((b - a) || 1) * STEP); // + bends right, - left
+    });
+    // Road points in 100 m buckets, to find the road near any spot quickly.
+    const hash = new Map();
+    xz.forEach(([x, z], i) => { const k = bucket(x, z); hash.get(k)?.push(i) || hash.set(k, [i]); });
+    return { n, xz, y, side, base, tilt, bend, hash };
   }
 
+  const BUCKET = 100;
+  const bucket = (x, z) => Math.floor(x / BUCKET) * 65536 + Math.floor(z / BUCKET);
+  // Road point indices within about r of (x, z).
+  function nearRoad(g, x, z, r) {
+    const out = [], bx = Math.floor(x / BUCKET), bz = Math.floor(z / BUCKET), k = Math.ceil(r / BUCKET);
+    for (let i = bx - k; i <= bx + k; i++) for (let j = bz - k; j <= bz + k; j++) {
+      const list = g.hash.get(i * 65536 + j); if (list) for (const v of list) out.push(v);
+    }
+    return out;
+  }
+
+  // ---- The height of the land at any spot. One function for the whole map,
+  // so pieces built from different parts of the route always agree where they
+  // meet (land built as strips beside the road folded over itself on bends).
+  // Near the road the land meets the road's edge; further out it blends into
+  // the lie of the land, hills, a hillside tilt on climbs and big far hills.
+  // `cand` is a list of nearby road points to measure from.
+  function landAt(g, x, z, cand) {
+    let dmin = Infinity, jmin = -1;
+    const ds = new Float64Array(cand.length);
+    for (let k = 0; k < cand.length; k++) {
+      const j = cand[k], ex = x - g.xz[j][0], ez = z - g.xz[j][1], d = Math.sqrt(ex * ex + ez * ez);
+      ds[k] = d; if (d < dmin) { dmin = d; jmin = j; }
+    }
+    if (jmin < 0) return null;
+    const dpt = dmin; // to the nearest listed point, before refining onto the segment
+    // Exact distance and road height from the nearer of the two segments at the closest point.
+    let roadY = g.y[jmin];
+    for (const j2 of [jmin - 1, jmin + 1]) {
+      if (j2 < 0 || j2 >= g.n) continue;
+      const ax = g.xz[jmin][0], az = g.xz[jmin][1], dx = g.xz[j2][0] - ax, dz = g.xz[j2][1] - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)), fx = x - ax - dx * t, fz = z - az - dz * t, d = Math.sqrt(fx * fx + fz * fz);
+      if (d < dmin) { dmin = d; roadY = g.y[jmin] + (g.y[j2] - g.y[jmin]) * t; }
+    }
+    // Smooth across the road points about as near: avoids a cliff where two
+    // parts of the route are equally close (inside a hairpin, between laps).
+    const width = Math.min(60, Math.max(2, dmin * 0.6));
+    let sw = 0, ry = 0, b = 0, tl = 0;
+    for (let k = 0; k < cand.length; k++) {
+      const e = ds[k] - dpt; if (e > width * 3) continue;
+      const j = cand[k], w = Math.exp(-((e / width) ** 2));
+      const so = (x - g.xz[j][0]) * g.side[j][0] + (z - g.xz[j][1]) * g.side[j][1];
+      sw += w; ry += w * g.y[j]; b += w * g.base[j]; tl += w * Math.max(-300, Math.min(300, so)) * g.tilt[j];
+    }
+    const near = 1 - smooth(4, 25, dmin); // right by the road, its exact height
+    roadY = roadY * near + (ry / sw) * (1 - near);
+    const far = smooth(120, 650, dmin);
+    const land = b / sw + hills(x, z) + far * (noise(x / 900, z / 900) * 160 - 40) - tl / sw;
+    return { y: roadY - 0.12 + hillWeight(dmin) * (land - roadY), d: dmin, road: roadY };
+  }
+  // The land at a spot within `r` of the road (searching wider if needed).
+  function groundAt(g, x, z, r = 260) {
+    for (const rr of [r, r * 3, 2000]) { const p = landAt(g, x, z, nearRoad(g, x, z, rr)); if (p) return p; }
+    return { y: 0, d: Infinity, road: 0 };
+  }
+
+  // Greens that vary across the land, a little drier on high ground.
+  function landColour(c, x, z, y, road, d) {
+    const t = noise(x / 90, z / 90), dry = smooth(10, 40, y - road);
+    if (d < 7) return c.setRGB(0.44, 0.5, 0.31); // verge
+    return c.setRGB(0.3 + 0.12 * t + 0.16 * dry, 0.46 + 0.1 * t - 0.04 * dry, 0.22 + 0.05 * t);
+  }
+
+  // The land at a side offset from a road point.
   function groundY(g, i, o) {
     const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
-    const w = hillWeight(o), far = smooth(120, 650, Math.abs(o));
-    const land = g.base[i] + hills(x, z) + far * (noise(x / 900, z / 900) * 160 - 40) - Math.max(-300, Math.min(300, o)) * g.tilt[i];
-    return { x, z, y: g.y[i] - 0.12 + w * (land - g.y[i]) };
+    return { x, z, y: groundAt(g, x, z, Math.abs(o) + 60).y };
   }
 
   // A strip along the route between two side offsets, one quad per route point.
@@ -96,24 +169,31 @@
     return geo;
   }
 
-  // Land either side for points s..e. Rows every second point; s and e are even
-  // (or the last point), so pieces meet on the same row.
-  function terrain(g, s, e, mat) {
-    const OFF = [-700, -380, -200, -110, -60, -30, -14, -6, -3.2, 3.2, 6, 14, 30, 60, 110, 200, 380, 700];
+  // The land close to the road, as a strip that follows it at the road's own
+  // spacing so the verge meets the tarmac exactly. Rows every second point; s
+  // and e are even (or the last point), so pieces meet on the same row. On
+  // the inside of a tight bend the strip stops short of where it would cross
+  // itself; the land map below fills in.
+  const NEAR = 80;
+  function nearLand(g, s, e, mat) {
+    const OFF = [-80, -55, -35, -20, -11, -6, -3.2, 3.2, 6, 11, 20, 35, 55, 80];
     const rowsAt = [];
     for (let i = s; i < e; i += 2) rowsAt.push(i);
     rowsAt.push(e);
     const pos = [], col = [], uv = [], idx = [], c = new T.Color();
     for (let r = 0; r < rowsAt.length; r++) {
-      const i = rowsAt[r];
-      for (const o of OFF) {
-        const p = groundY(g, i, o);
-        pos.push(p.x, p.y, p.z);
-        uv.push(p.x / 5, p.z / 5);
-        // Greens that vary across the land, a little drier on high ground.
-        const t = noise(p.x / 90, p.z / 90), dry = smooth(10, 40, p.y - g.y[i]);
-        c.setRGB(0.3 + 0.12 * t + 0.16 * dry, 0.46 + 0.1 * t - 0.04 * dry, 0.22 + 0.05 * t);
-        if (Math.abs(o) < 7) c.setRGB(0.44, 0.5, 0.31); // verge
+      const i = rowsAt[r], cand = nearRoad(g, g.xz[i][0], g.xz[i][1], NEAR + 60);
+      // Inside of the bend: no further than 80% of its radius.
+      let inner = Infinity;
+      for (let j = Math.max(0, i - 8); j <= Math.min(g.n - 1, i + 8); j++) inner = Math.min(inner, 0.8 / (Math.abs(g.bend[j]) || 1e-9));
+      const insideSign = Math.sign(g.bend[i]) || 1;
+      for (let o of OFF) {
+        if (Math.sign(o) === insideSign && Math.abs(o) > inner) o = Math.sign(o) * Math.max(3.4, inner);
+        const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
+        const p = landAt(g, x, z, cand);
+        pos.push(x, p.y, z);
+        uv.push(x / 5, z / 5);
+        landColour(c, x, z, p.y, p.road, Math.abs(o));
         col.push(c.r, c.g, c.b);
       }
       if (r) {
@@ -121,6 +201,10 @@
         for (let j = 0; j < w - 1; j++) idx.push(a + j, a + j + 1, b + j, a + j + 1, b + j + 1, b + j);
       }
     }
+    return landMesh(pos, col, uv, idx, mat);
+  }
+
+  function landMesh(pos, col, uv, idx, mat) {
     const geo = new T.BufferGeometry();
     geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
     geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
@@ -130,6 +214,40 @@
     const mesh = new T.Mesh(geo, mat);
     mesh.receiveShadow = true;
     return mesh;
+  }
+
+  // The rest of the land: a square grid in 200 m tiles (20 m cells) over
+  // everything within 700 m of the route. Close to the road it dips a few
+  // metres so it stays hidden under the strip above.
+  const TILE = 200, CELLS = 10;
+  function landTiles(g) {
+    const keys = new Map(), reach = 700 + TILE * 0.71;
+    for (let i = 0; i < g.n; i += 3) {
+      const [x, z] = g.xz[i], tx = Math.floor(x / TILE), tz = Math.floor(z / TILE), k = Math.ceil(reach / TILE);
+      for (let a = tx - k; a <= tx + k; a++) for (let b = tz - k; b <= tz + k; b++) {
+        if (Math.hypot((a + 0.5) * TILE - x, (b + 0.5) * TILE - z) < reach) keys.set(a * 65536 + b, [a, b]);
+      }
+    }
+    const c = new T.Color(), step = TILE / CELLS;
+    return [...keys.values()].map(([a, b]) => ({ x: (a + 0.5) * TILE, z: (b + 0.5) * TILE, build: mat => {
+      const x0 = a * TILE, z0 = b * TILE, cx = x0 + TILE / 2, cz = z0 + TILE / 2;
+      // Road points that can be nearest to any spot in this tile.
+      const dist = j => { const ex = g.xz[j][0] - cx, ez = g.xz[j][1] - cz; return Math.sqrt(ex * ex + ez * ez); };
+      let cand = nearRoad(g, cx, cz, 900), dc = Infinity;
+      for (const j of cand) if (j % 4 === 0) dc = Math.min(dc, dist(j));
+      // Every 4th point is close enough out here (the grid near the road is
+      // hidden under the strip), and keeps a long route quick to build.
+      cand = cand.filter(j => j % 4 === 0 && dist(j) < dc + TILE * 1.5 + 120);
+      const pos = [], col = [], uv = [], idx = [];
+      for (let r = 0; r <= CELLS; r++) for (let q = 0; q <= CELLS; q++) {
+        const x = x0 + q * step, z = z0 + r * step, p = landAt(g, x, z, cand);
+        const y = p.y - 3 * (1 - smooth(NEAR - 10, NEAR + 8, p.d));
+        pos.push(x, y, z); uv.push(x / 5, z / 5);
+        landColour(c, x, z, p.y, p.road, p.d); col.push(c.r, c.g, c.b);
+        if (r && q) { const i0 = (r - 1) * (CELLS + 1) + q - 1, i1 = i0 + CELLS + 1; idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1); }
+      }
+      return landMesh(pos, col, uv, idx, mat);
+    } }));
   }
 
   // Trees either side of points s..e-1, thicker away from the road, never on it at a bend.
@@ -421,12 +539,12 @@
     bike.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
     const hills0 = mountains(); scene.add(hills0);
 
-    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase';
+    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
     function setRoute(route) {
       if (world) { scene.remove(world); world.traverse(o => { o.geometry?.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m?.map?.dispose(); m?.dispose(); }); }); }
-      built = route;
+      built = route; tiles = [];
       world = new T.Group();
       if (!route) return;
       const g = geometryOf(route);
@@ -448,10 +566,13 @@
         strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint);
         strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint);
         strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0); // dashed centre line
-        world.add(terrain(g, s, e, land));
+        world.add(nearLand(g, s, e, land));
         world.add(...trees(g, s, e, seed + s, kit));
       }
       kit.trunk.dispose(); kit.crown.dispose();
+      // The far land is built a few tiles per frame, nearest first, so a long
+      // route shows at once instead of freezing the page for a second or two.
+      tiles = landTiles(g); tileMat = land; sortedAt = null;
       world.add(kmSigns(g, route.total));
       scene.add(world);
       disp = getState().dist;
@@ -480,6 +601,16 @@
       const s = getState();
       if (s.route !== built) setRoute(s.route);
       if (!built) return;
+      if (tiles.length) {
+        // Nearest to the rider first; sorted again after he has moved on 300 m (or jumped).
+        const here = at(disp, new T.Vector3());
+        if (!sortedAt || sortedAt.distanceTo(here) > 300) {
+          sortedAt = here;
+          for (const t of tiles) t.d = Math.hypot(t.x - here.x, t.z - here.z);
+          tiles.sort((p, q) => p.d - q.d);
+        }
+        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) world.add(tiles.shift().build(tileMat));
+      }
       // Glide between the ride's 4 ticks a second, then ease onto the real distance.
       disp += s.speed * dt;
       disp += (s.dist - disp) * Math.min(1, dt * 2.5);
