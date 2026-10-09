@@ -183,11 +183,20 @@ starts) keeps going round lap after lap.
 All the scenery is built in code, on the course and on any GPX: farmland cut
 into fields (pasture, meadow, wheat, young crops in rows, ploughed land, maize)
 with grass margins and hedges on some edges, woods of spruce and broadleaf
-trees, rough grass and bushes on the verge, white marker posts, a gantry at the
-start and finish, and clouds. The ground's colours are painted into a texture
-per piece of land, finer the closer it is, a few rows per frame; a fine grass
-grain laid on by position keeps it crisp at the wheels. Trees and hedges are
-grouped in 250 m squares, and squares past the haze are skipped.
+trees, bushes on the verge, white marker posts and a gantry at the start and
+finish. The ground's colours are painted into a texture per piece of land,
+finer the closer it is, a few rows per frame; photographed grass and soil laid
+on by position keep it crisp at the wheels, and the road is photographed grit.
+The sky is a photograph with the sun where the shadows say it is. Grass blades
+that sway in the wind grow along the verge for the stretch round the rider,
+and trees and hedges carry see-through leaf and needle cards for a ragged
+outline. Trees and hedges are grouped in 250 m squares, and squares past the
+haze are skipped.
+
+The photographs are in `web/vendor/photos.js` (loaded with the 3D view; without
+it the land is painted plain): grass, soil and road grit from the
+[Babylon.js assets](https://github.com/BabylonJS/Assets) (CC BY 4.0), and the
+sky from Poly Haven's "Immenstadter Horn" (CC0).
 
 ## Di2 gears (experimental)
 
