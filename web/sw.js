@@ -3,13 +3,13 @@
 // Pages and app files are fetched fresh when online and the copy is kept for
 // offline use, so a new version shows up on the next open without any step.
 const CACHE = 'indoorwarior-v1';
-const APP = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './world3d.js', './vendor/three.min.js', './vendor/photos.js', './course.js'];
+const APP = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './world3d.js', './places.js', './vendor/three.min.js', './vendor/photos.js', './course.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(APP)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== 'iw-places').map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);

@@ -1,9 +1,11 @@
 // IndoorWarior 3D view: rides a GPX route in three.js (r149, vendor/three.min.js,
 // a classic script so it also works when index.html is opened as a file).
 //
-// The road follows the route's real shape and elevation. The land beside it is
-// made up: rolling hills, fields and hedges, woods, the verge and a sign every
-// kilometre, all from a fixed seed so the same route always looks the same.
+// The road follows the route's real shape and elevation. For a GPX route the
+// land is the real place (see "The real place" below and places.js); for the
+// built-in course, or when that cannot load, it is made up: rolling hills,
+// fields and hedges, woods, the verge and a sign every kilometre, all from a
+// fixed seed so the same route always looks the same.
 // Everything is built once per route, in 600 m pieces so only the ones near the
 // rider get drawn; each frame only moves the rider and the camera, so it runs on
 // a laptop's built-in graphics.
@@ -50,6 +52,7 @@
     // 8% looks almost flat; this makes it read like the climb it feels like.
     // Only the picture: gradient, speed and the trainer use the real figures.
     const y = res.map(p => (p.ele - res[0].ele) * LIFT);
+    const dup = sameRoad(xz, y, !!route.loop);
     // Right-hand side of the direction of travel, flat.
     const side = xz.map((_, i) => {
       // A loop's ends share one direction, so the road closes without a crack at the line.
@@ -82,7 +85,61 @@
     // Road points in 100 m buckets, to find the road near any spot quickly.
     const hash = new Map();
     xz.forEach(([x, z], i) => { const k = bucket(x, z); hash.get(k)?.push(i) || hash.set(k, [i]); });
-    return { n, xz, y, side, base, tilt, bend, hash, loop: !!route.loop };
+    // Back and forth between metres and latitude/longitude (the exact inverse of raw above).
+    const ll = (x, z) => [lat0 - z / 110540, lon0 + x / (111320 * k)];
+    const xzOf = (lat, lon) => [(lon - lon0) * 111320 * k, -(lat - lat0) * 110540];
+    return { n, xz, y, side, base, tilt, bend, hash, dup, loop: !!route.loop, ll, xzOf, ele0: res[0].ele };
+  }
+
+  // Out and back, or any road ridden twice: where the route runs along road
+  // it has already used (the same line either way, within 15 m, at about the
+  // same height: not the next leg of a hairpin), its points are moved onto
+  // that road, height and all, instead of making a second road a few metres
+  // off that fights the first. Close in (6 m) they sit exactly on it; out to
+  // 15 m they ease across, so joining it is a smooth bend.
+  // Returns dup[i] = 1 where point i is on road already drawn, so neither the
+  // road nor the scenery beside it is built twice. A road merely crossing
+  // another is left alone (it is not running the same way), and so are the
+  // last few hundred metres of a loop meeting its own start.
+  function sameRoad(xz, y, loop) {
+    const n = xz.length, dup = new Uint8Array(n), seen = new Map(), CELL = 20, BEHIND = 30;
+    const key = (cx, cz) => cx * 65536 + cz;
+    const dir = i => { const a = xz[Math.max(0, i - 1)], b = xz[Math.min(n - 1, i + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1; return [dx / l, dz / l]; };
+    for (let i = 0; i < n; i++) {
+      const r = i - BEHIND; // only road well behind counts as road already there
+      if (r >= 0 && r < n - 1) { const k = key(Math.floor(xz[r][0] / CELL), Math.floor(xz[r][1] / CELL)); seen.get(k)?.push(r) || seen.set(k, [r]); }
+      const [x, z] = xz[i], cx = Math.floor(x / CELL), cz = Math.floor(z / CELL), di = dir(i);
+      let best = null;
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const j of seen.get(key(cx + a, cz + b)) || []) {
+        if (loop && n - 1 - i + j < BEHIND) continue; // a loop closing on its start
+        const ax = xz[j][0], az = xz[j][1], dx = xz[j + 1][0] - ax, dz = xz[j + 1][1] - az, l2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)), px = ax + dx * t, pz = az + dz * t, d = Math.hypot(x - px, z - pz);
+        if (d >= 15 || (best && d >= best.d)) continue;
+        const dj = dir(j), py = y[j] + (y[j + 1] - y[j]) * t;
+        if (Math.abs(di[0] * dj[0] + di[1] * dj[1]) < 0.85) continue; // crossing, not running along
+        if (Math.abs(y[i] - py) > 6 * LIFT) continue; // the next leg of a hairpin, higher up the mountain
+        best = { d, px, pz, py };
+      }
+      if (!best) continue;
+      const w = 1 - smooth(6, 15, best.d);
+      xz[i] = [x + (best.px - x) * w, z + (best.pz - z) * w];
+      y[i] += (best.py - y[i]) * w;
+      if (w > 0.99) dup[i] = 1;
+    }
+    return dup;
+  }
+
+  // How far (x, z) is from the road, anywhere on the route: the stretch it was
+  // placed beside, or another part of the route passing close by.
+  function roadDist(g, x, z) {
+    let best = Infinity;
+    for (const j of nearRoad(g, x, z, 30)) {
+      if (j >= g.n - 1) continue;
+      const ax = g.xz[j][0], az = g.xz[j][1], dx = g.xz[j + 1][0] - ax, dz = g.xz[j + 1][1] - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      best = Math.min(best, Math.hypot(x - ax - dx * t, z - az - dz * t));
+    }
+    return best;
   }
 
   const BUCKET = 100;
@@ -122,15 +179,28 @@
     // Smooth across the road points about as near: avoids a cliff where two
     // parts of the route are equally close (inside a hairpin, between laps).
     const width = Math.min(60, Math.max(2, dmin * 0.6));
-    let sw = 0, ry = 0, b = 0, tl = 0;
+    let sw = 0, ry = 0, b = 0, tl = 0, off = 0;
     for (let k = 0; k < cand.length; k++) {
       const e = ds[k] - dpt; if (e > width * 3) continue;
       const j = cand[k], w = Math.exp(-((e / width) ** 2));
       const so = (x - g.xz[j][0]) * g.side[j][0] + (z - g.xz[j][1]) * g.side[j][1];
       sw += w; ry += w * g.y[j]; b += w * g.base[j]; tl += w * Math.max(-300, Math.min(300, so)) * g.tilt[j];
+      if (g.off) off += w * g.off[j];
     }
     const near = 1 - smooth(4, 25, dmin); // right by the road, its exact height
     roadY = roadY * near + (ry / sw) * (1 - near);
+    const real = g.dem ? g.dem(x, z) : NaN;
+    if (Number.isFinite(real)) {
+      // The real land, shifted near the road by however far the GPX's heights
+      // and the height tiles disagree there, so the road sits on it. Under
+      // lakes and rivers it dips, so their water lies on top; under the sea
+      // it stops just below the water.
+      // Under water the GPX's offset is left out too, so a lake beside a road
+      // whose heights are off by a few metres still lies under its water.
+      const wet = REAL?.cover ? REAL.cover.water(x, z) : 0, shift = (off / sw) * (1 - smooth(80, 300, dmin)), k = smooth(5, 35, dmin);
+      const dry = (Math.max(real, -3) - g.ele0) * LIFT + shift, land = dry - wet * (WET_DIP * LIFT + Math.max(0, shift));
+      return { y: roadY - 0.12 + k * (land - roadY), d: dmin, road: roadY, h: real, dry: roadY - 0.12 + k * (dry - roadY) };
+    }
     const far = smooth(120, 650, dmin);
     const land = b / sw + hills(x, z) + far * (noise(x / 900, z / 900) * 160 - 40) - tl / sw;
     return { y: roadY - 0.12 + hillWeight(dmin) * (land - roadY), d: dmin, road: roadY };
@@ -139,6 +209,589 @@
   function groundAt(g, x, z, r = 260) {
     for (const rr of [r, r * 3, 2000]) { const p = landAt(g, x, z, nearRoad(g, x, z, rr)); if (p) return p; }
     return { y: 0, d: Infinity, road: 0 };
+  }
+
+  // ---- The real place (GPX routes). places.js fetches the land's height and
+  // the map; this turns them into what the land looks like: woods where the
+  // map has woods, lakes and rivers, the houses of the towns ridden through,
+  // farmland low down, meadows higher up, bare rock and snow on the tops.
+  // REAL is the place being built (null for the made-up world); the land's
+  // colour, the woods and the trees read it, like woodsAt.
+  let REAL = null;
+
+  // The real land under a route: heights in route metres, and how far the
+  // GPX's own heights sit from it along the road (smoothed over 300 m).
+  function useTerrain(g, near) {
+    g.dem = (x, z) => { const [lat, lon] = g.ll(x, z); return near(lat, lon); };
+    const raw = g.xz.map(([x, z], i) => { const h = g.dem(x, z); return Number.isFinite(h) ? g.y[i] - (h - g.ele0) * LIFT : 0; });
+    g.off = raw.map((_, i) => {
+      let s = 0, c = 0;
+      for (let j = Math.max(0, i - 15); j <= Math.min(g.n - 1, i + 15); j++) { s += raw[j]; c++; }
+      return s / c;
+    });
+  }
+
+  // Snow lies above snowLine (m) at this time of year; trees grow up to
+  // treeLine. Both from the latitude: about 2050 m for trees in the Alps,
+  // lower further north. The snow line climbs through the summer.
+  function climate(lat) {
+    const m = new Date().getMonth(), mm = lat >= 0 ? m : (m + 6) % 12;
+    const SNOW = [1100, 1100, 1400, 1900, 2500, 2800, 3000, 3100, 2900, 2600, 1900, 1300];
+    const shift = (45 - Math.abs(lat)) * 85;
+    return { snowLine: Math.max(300, SNOW[mm] + shift), treeLine: Math.min(3900, Math.max(250, 2050 + shift)) };
+  }
+  // The part of the world, for the look of the houses, crops and woods.
+  const MED = new Set(['ES', 'PT', 'IT', 'GR', 'HR', 'MT', 'CY', 'MC', 'SM', 'VA', 'ME', 'AL', 'TR', 'SI', 'BA']);
+  function regionOf(lat, lon, code) {
+    return {
+      med: MED.has(code) || (code === 'FR' && lat < 44.6) || (!code && lat > 35 && lat < 44),
+      alps: code === 'CH' || code === 'AT' || code === 'LI' || (lat > 43.6 && lat < 48.3 && lon > 5 && lon < 16.5),
+      // Haute-Provence and the Drôme: the lavender plateaus.
+      lavender: lat > 43.4 && lat < 44.7 && lon > 4.7 && lon < 6.9,
+    };
+  }
+
+  // What the map says covers the land, drawn once onto two grids over the
+  // route (about 20 m cells): woods, water and built-up land on one; bare
+  // rock, glacier and vineyards on the other. Each is read back smoothly,
+  // 0..1, at any spot.
+  function coverOf(g, osm) {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const [x, z] of g.xz) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    x0 -= 1300; z0 -= 1300; x1 += 1300; z1 += 1300;
+    const cell = Math.max(12, Math.sqrt(((x1 - x0) * (z1 - z0)) / 3e6)), W = Math.ceil((x1 - x0) / cell), H = Math.ceil((z1 - z0) / cell);
+    const px = ([lat, lon]) => { const [x, z] = g.xzOf(lat, lon); return [(x - x0) / cell, (z - z0) / cell]; };
+    const fill = (cx, shapes, colour) => {
+      cx.fillStyle = colour;
+      for (const sh of shapes) {
+        cx.beginPath();
+        for (const ring of sh.outer.concat(sh.inner)) ring.forEach((p, k) => { const [u, v] = px(p); if (k) cx.lineTo(u, v); else cx.moveTo(u, v); });
+        cx.fill('evenodd');
+      }
+    };
+    const layer = draw => {
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const cx = cv.getContext('2d', { willReadFrequently: true });
+      cx.globalCompositeOperation = 'lighter'; // each colour channel its own layer
+      draw(cx);
+      return cx.getImageData(0, 0, W, H).data;
+    };
+    const a = layer(cx => {
+      fill(cx, osm.woods, '#f00');
+      fill(cx, osm.water, '#0f0');
+      fill(cx, osm.towns, '#00f');
+      fill(cx, osm.buildings.map(b => ({ outer: [b.ring], inner: [] })), '#00f');
+    });
+    const b = layer(cx => {
+      fill(cx, osm.rock, '#f00');
+      fill(cx, osm.glacier, '#0f0');
+      fill(cx, osm.fields.filter(f => f.kind === 'vineyard' || f.kind === 'orchard').map(f => f.shape), '#00f');
+    });
+    // Rivers and streams on a grid of their own: painted as water, but the
+    // land does not dip under them (they are narrower than its mesh).
+    const c = osm.rivers.length ? layer(cx => {
+      cx.strokeStyle = '#f00'; cx.lineCap = cx.lineJoin = 'round';
+      for (const r of osm.rivers) {
+        cx.lineWidth = riverWidth(r) / cell;
+        cx.beginPath(); r.line.forEach((p, k) => { const [u, v] = px(p); if (k) cx.lineTo(u, v); else cx.moveTo(u, v); }); cx.stroke();
+      }
+    }) : null;
+    const read = (data, ch) => (x, z) => {
+      const fx = (x - x0) / cell - 0.5, fz = (z - z0) / cell - 0.5, i = Math.floor(fx), j = Math.floor(fz);
+      if (i < 0 || j < 0 || i >= W - 1 || j >= H - 1) return 0;
+      const u = fx - i, v = fz - j, k = (j * W + i) * 4 + ch, r = W * 4;
+      return ((data[k] * (1 - u) + data[k + 4] * u) * (1 - v) + (data[k + r] * (1 - u) + data[k + r + 4] * u) * v) / 255;
+    };
+    return { forest: read(a, 0), water: read(a, 1), town: read(a, 2), rock: read(b, 0), glacier: read(b, 1), vines: read(b, 2), river: c ? read(c, 0) : () => 0 };
+  }
+  const riverWidth = r => r.width || (r.kind === 'river' ? 14 : r.kind === 'canal' ? 10 : 3);
+  // How far (real m) the land dips under water on the map, and the land's
+  // height there as if it did not: the banks the water reaches up to.
+  const WET_DIP = 4;
+  const dryAt = (g, x, z, r) => { const p = groundAt(g, x, z, r); return p.dry ?? p.y; };
+
+  // The place a route runs through, from what has loaded so far: heights
+  // (near, and far for the distant mountains) and the map (osm), any of
+  // which may be missing.
+  function realOf(route, g, data) {
+    const lat = route.res[0].lat, lon = route.res[0].lon, osm = data.osm;
+    const R = { dem: g.dem, ele0: g.ele0, cover: osm ? coverOf(g, osm) : null, ...climate(lat) };
+    const borders = osm ? crossings(g, osm) : [];
+    const code = i => { let c = osm?.countries[osm.start]?.code || ''; for (const b of borders) if (b.i <= i) c = b.to.code; return c; };
+    Object.assign(R, regionOf(lat, lon, code(0)), { code, borders });
+    R.fieldTop = R.lavender ? 1300 : R.alps ? 1100 : 950;
+    // Trees thin out over the last 150 m below the tree line.
+    const treeOk = (x, z, h) => 1 - smooth(R.treeLine - 150 + (noise(x / 60, z / 60) - 0.5) * 120, R.treeLine + 30, h);
+    R.forest = (x, z) => {
+      const h = g.dem(x, z);
+      if (!Number.isFinite(h) || h <= 0) return 0;
+      const f = R.cover ? R.cover.forest(x, z) : Math.min(1, Math.max(0, (gameWoods(x, z) - WOOD) / 0.04 + 0.5));
+      return f * treeOk(x, z, h) * (R.cover ? 1 - Math.min(1, (R.cover.water(x, z) + R.cover.river(x, z)) * 2 + R.cover.town(x, z)) : 1);
+    };
+    // Spruce and larch from the mountain villages up; broadleaf below. In the
+    // south the low woods are dark evergreen oak (broadleaf, darker).
+    R.conifer = (x, z) => { const h = g.dem(x, z); return noise(x / 240 + 11, z / 240) * 0.5 + smooth(700, 1350, h) * 0.75 > (R.med ? 0.75 : 0.55); };
+    // Where a lone tree or a hedge may stand: open land below the tree line.
+    R.open = (x, z) => {
+      const h = g.dem(x, z);
+      if (!(h > 0) || treeOk(x, z, h) < 0.9) return false;
+      const c = R.cover;
+      return !c || (c.water(x, z) < 0.1 && c.river(x, z) < 0.2 && c.town(x, z) < 0.2 && c.rock(x, z) < 0.3 && c.glacier(x, z) < 0.1);
+    };
+    R.hedgy = (x, z) => !R.med && !R.alps && R.open(x, z) && g.dem(x, z) < 700;
+    // Lavender takes about a third of the fields on the plateaus.
+    R.crops = R.lavender ? LAVENDER : R.med ? DRY : CROPS;
+    R.towns = osm ? townsOf(g, osm) : [];
+    R.cols = osm ? colsOf(g, osm) : [];
+    R.sea = false;
+    for (let i = 0; i < g.n && !R.sea; i += 50) for (const o of [-600, 600]) { const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o; if (g.dem(x, z) <= 0) R.sea = true; }
+    return R;
+  }
+  // Crops in the south: dry pasture, stubble, vines, ploughed red earth, green.
+  const DRY = [[0.3, [0.46, 0.47, 0.27], 0], [0.5, [0.7, 0.6, 0.38], 1], [0.68, [0.4, 0.44, 0.24], 1], [0.8, [0.52, 0.36, 0.24], 1], [1, [0.36, 0.45, 0.22], 0]];
+  // On the plateaus: lavender in rows (code 2), wheat, dry pasture.
+  const LAVENDER = [[0.36, [0.47, 0.4, 0.66], 2], [0.6, [0.72, 0.62, 0.38], 1], [0.82, [0.45, 0.47, 0.27], 0], [1, [0.55, 0.4, 0.27], 1]];
+
+  // The ground's colour on real land, or false where the heights are missing.
+  // out[3] says what it is, for the grass blades: 0 grass, 1 bare (rock,
+  // snow, water, paving: no blades), 2 lavender.
+  function groundReal(x, z, out, d) {
+    const R = REAL, h = R.dem(x, z);
+    if (!Number.isFinite(h)) return false;
+    const c = R.cover, sl = Math.hypot(R.dem(x + 6, z) - h, R.dem(x, z + 6) - h) / 6; // real rise per metre
+    const n1 = noise(x / 45, z / 45), n2 = noise(x / 8, z / 8), alt = h + (n1 - 0.5) * 140; // ragged bands, not contour lines
+    let r, gg, b, kind = 0;
+    const mix = (t, cr, cg, cb) => { r += (cr - r) * t; gg += (cg - gg) * t; b += (cb - b) * t; };
+    if (alt < R.fieldTop && sl < 0.22 && !(c && c.vines(x, z) > 0.5)) { ground0(x, z, out); r = out[0]; gg = out[1]; b = out[2]; kind = out[3]; }
+    else { // meadow and pasture
+      const t = noise(x / 22, z / 22);
+      r = 0.32 + 0.07 * t; gg = 0.44 + 0.06 * t; b = 0.21;
+      if (R.med) mix(0.4, 0.5, 0.48, 0.28);
+      if (c && c.vines(x, z) > 0.5) { const row = Math.sin((x * 0.6 + z * 0.8) * 2.4) > 0.2; r = row ? 0.3 : 0.5; gg = row ? 0.42 : 0.42; b = row ? 0.2 : 0.3; }
+    }
+    // Above the tree line: short alpine grass, yellower, then stones.
+    const alpine = smooth(R.treeLine - 250, R.treeLine + 200, alt);
+    if (alpine > 0) { mix(alpine * 0.85, 0.44 + 0.06 * n2, 0.41 + 0.04 * n2, 0.27); if (alpine > 0.5) kind = kind === 2 ? 0 : kind; }
+    // Bare rock and scree: on steep ground, high up, or where the map says so.
+    const rock = Math.max(smooth(0.65, 1.05, sl), smooth(R.treeLine + 350, R.treeLine + 800, alt) * (0.55 + 0.45 * n2), c ? c.rock(x, z) : 0);
+    if (rock > 0) { const l = 0.85 + 0.3 * n2; mix(rock, 0.46 * l, 0.44 * l, 0.41 * l); if (rock > 0.5) kind = 1; }
+    // Woods.
+    const f = smooth(0.4, 0.62, R.forest(x, z));
+    if (f > 0) {
+      const t = noise(x / 4.5, z / 4.5), s = noise(x / 18 + 3, z / 18), dark = R.conifer(x, z);
+      mix(f, (dark ? 0.08 : 0.12) + 0.07 * t + 0.03 * s, (dark ? 0.17 : 0.22) + 0.1 * t + 0.04 * s, (dark ? 0.11 : 0.1) + 0.04 * t);
+    }
+    if (c) {
+      const town = c.town(x, z);
+      if (town > 0.3) { // paving, roofs' shadows and gardens
+        const t = noise(x / 6, z / 6), garden = t > 0.58;
+        mix(smooth(0.3, 0.7, town), garden ? 0.3 : 0.5 + 0.06 * n2, garden ? 0.42 : 0.48 + 0.05 * n2, garden ? 0.22 : 0.45);
+        if (!garden && town > 0.5) kind = 1;
+      }
+      const ice = c.glacier(x, z);
+      if (ice > 0) { mix(ice, 0.82, 0.88, 0.93); if (ice > 0.5) kind = 1; }
+    }
+    // Snow, lying thinner on steep ground.
+    const snow = smooth(R.snowLine, R.snowLine + 280, h + (n1 - 0.5) * 220) * (1 - smooth(0.75, 1.2, sl) * 0.7);
+    if (snow > 0) { mix(snow, 0.88 + 0.06 * n2, 0.9 + 0.06 * n2, 0.94 + 0.04 * n2); if (snow > 0.5) kind = 1; }
+    if (d < 5.5 && kind !== 1) { const t = noise(x / 3, z / 3); mix(0.85, 0.42 + 0.08 * t + alpine * 0.05, 0.5 + 0.06 * t - alpine * 0.03, 0.28); kind = 0; }
+    // Water: lakes and rivers, and the sea.
+    const wet = Math.max(c ? Math.max(c.water(x, z), c.river(x, z)) : 0, h <= 0.5 ? 1 : 0);
+    if (wet > 0.35) { mix(smooth(0.35, 0.6, wet), 0.15, 0.25, 0.29); kind = 1; }
+    const grain = n2 * 0.06 + noise(x / 1.3, z / 1.3) * 0.05 - 0.05;
+    out[0] = r + grain; out[1] = gg + grain; out[2] = b + grain * 0.7; out[3] = kind;
+    return true;
+  }
+
+  // Where the route crosses a country border, in order: the point and the
+  // country it enters. A route running along a border in and out within
+  // 300 m does not count.
+  function crossings(g, osm) {
+    const hits = [];
+    for (const bd of osm.borders) {
+      const pts = bd.line.map(p => g.xzOf(p[0], p[1]));
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const [ax, az] = pts[k], [bx, bz] = pts[k + 1], mx = (ax + bx) / 2, mz = (az + bz) / 2, half = Math.hypot(bx - ax, bz - az) / 2;
+        for (const j of nearRoad(g, mx, mz, half + 30)) {
+          if (j >= g.n - 1) continue;
+          const [cx, cz] = g.xz[j], [dx, dz] = g.xz[j + 1];
+          const den = (bx - ax) * (dz - cz) - (bz - az) * (dx - cx);
+          if (!den) continue;
+          const t = ((cx - ax) * (dz - cz) - (cz - az) * (dx - cx)) / den, u = ((cx - ax) * (bz - az) - (cz - az) * (bx - ax)) / den;
+          if (t >= 0 && t <= 1 && u >= 0 && u <= 1) hits.push({ i: j, between: bd.between });
+        }
+      }
+    }
+    hits.sort((p, q) => p.i - q.i);
+    let cur = osm.start ?? hits[0]?.between[0];
+    const out = [];
+    for (const h of hits) {
+      if (out.length && h.i - out[out.length - 1].i < 3) continue; // the same crossing found twice
+      const next = h.between.find(c => c !== cur);
+      if (next == null || !osm.countries[next]) continue;
+      const prev = out[out.length - 1];
+      if (prev && h.i - prev.i < 30 && next === prev.from) { out.pop(); cur = next; continue; } // in and straight out again
+      out.push({ i: h.i, from: cur, to: { id: next, ...osm.countries[next] } });
+      cur = next;
+    }
+    return out;
+  }
+
+  // Towns ridden through: where the route comes within reach of a place's
+  // centre, with a sign on the way in and on the way out.
+  const REACH = { city: 1800, town: 1000, village: 520, hamlet: 230 };
+  function townsOf(g, osm) {
+    const out = [];
+    for (const p of osm.places) {
+      const R = REACH[p.kind]; if (!R) continue;
+      const [x, z] = g.xzOf(p.lat, p.lon), near = [];
+      for (const j of nearRoad(g, x, z, R)) if (Math.hypot(g.xz[j][0] - x, g.xz[j][1] - z) < R) near.push(j);
+      near.sort((a, b) => a - b);
+      let a = -1, b = -1;
+      const flush = () => { if (a >= 0 && b - a >= 2) out.push({ name: p.name, kind: p.kind, a, b }); };
+      for (const j of near) { if (a < 0 || j - b > 100) { flush(); a = j; } b = j; } // a dip out of reach for under a kilometre is still the same visit
+      flush();
+    }
+    return out.sort((p, q) => p.a - q.a);
+  }
+  // Named cols (passes and saddles) on the route: where the climb to each
+  // starts (the lowest point before it, back to the last real dip) and its top.
+  function colsOf(g, osm) {
+    const out = [];
+    for (const p of osm.passes) {
+      const [x, z] = g.xzOf(p.lat, p.lon);
+      let top = -1, best = 220;
+      for (const j of nearRoad(g, x, z, 220)) { const d = Math.hypot(g.xz[j][0] - x, g.xz[j][1] - z); if (d < best) { best = d; top = j; } }
+      if (top < 0) continue;
+      for (let j = Math.max(0, top - 15); j <= Math.min(g.n - 1, top + 15); j++) if (g.y[j] > g.y[top]) top = j; // onto the very top
+      if (out.some(c => c.name === p.name && Math.abs(c.top - top) < 100)) continue;
+      let low = top;
+      for (let j = top; j >= 0 && top - j < 4000; j--) { if (g.y[j] < g.y[low]) low = j; if (g.y[j] > g.y[low] + 40 * LIFT) break; }
+      out.push({ name: p.name, ele: Math.round(p.ele || g.ele0 + g.y[top] / LIFT), top, start: (g.y[top] - g.y[low]) / LIFT > 80 ? low : Math.max(0, top - 100) });
+    }
+    return out.sort((p, q) => p.top - q.top);
+  }
+
+  // Houses: each building on the map near the road as a box with a roof,
+  // in the style of the region. A gable roof along the building's length;
+  // big buildings get a low one. Walls carry windows (a tiling picture).
+  const HOUSE = {
+    north: { walls: [[0.56, 0.3, 0.22], [0.62, 0.36, 0.27], [0.8, 0.76, 0.68], [0.52, 0.32, 0.24], [0.86, 0.84, 0.8]], roofs: [[0.22, 0.22, 0.24], [0.48, 0.22, 0.16], [0.3, 0.3, 0.33]], pitch: 0.9, eave: 0.35, shutter: null },
+    alpine: { walls: [[0.88, 0.86, 0.82], [0.66, 0.62, 0.56], [0.52, 0.38, 0.25], [0.8, 0.76, 0.68]], roofs: [[0.32, 0.32, 0.34], [0.44, 0.42, 0.4], [0.36, 0.26, 0.19]], pitch: 0.45, eave: 1.1, shutter: '#5a3b22' },
+    med: { walls: [[0.87, 0.75, 0.56], [0.91, 0.85, 0.72], [0.82, 0.62, 0.44], [0.93, 0.91, 0.86], [0.85, 0.7, 0.6]], roofs: [[0.68, 0.36, 0.23], [0.62, 0.31, 0.2], [0.72, 0.44, 0.29]], pitch: 0.32, eave: 0.45, shutter: '#3f6b4a' },
+  };
+  const windowTex = {};
+  function windows(style) {
+    if (windowTex[style]) return windowTex[style];
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 128;
+    const cx = cv.getContext('2d'), sh = HOUSE[style].shutter;
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, 128, 128);
+    // One window in the middle of each 3 m by 2.9 m bay: frame, glass, sill.
+    cx.fillStyle = '#e8e8e8'; cx.fillRect(40, 30, 48, 62);
+    cx.fillStyle = '#2b3138'; cx.fillRect(44, 34, 40, 54);
+    cx.fillStyle = '#4c5866'; cx.fillRect(44, 34, 40, 20);
+    cx.fillStyle = '#e8e8e8'; cx.fillRect(62, 34, 4, 54); cx.fillRect(38, 92, 52, 5);
+    if (sh) { cx.fillStyle = sh; cx.fillRect(26, 32, 13, 58); cx.fillRect(89, 32, 13, 58); }
+    const t = new T.CanvasTexture(cv);
+    t.wrapS = t.wrapT = T.RepeatWrapping;
+    return (windowTex[style] = t);
+  }
+  // The houses follow the country they stand in (the route may cross a border).
+  function houseStyle(R, h, i, lat) {
+    const c = R.code(i);
+    if ((h > 950 && R.alps) || c === 'CH' || c === 'AT') return 'alpine';
+    return MED.has(c) || (c === 'FR' && lat < 44.6) || (!c && R.med) ? 'med' : 'north';
+  }
+  function houses(g, R, osm) {
+    if (!osm) return [];
+    const cells = new Map(), rand = rng(77);
+    for (const bd of osm.buildings) {
+      const ring = bd.ring.map(p => g.xzOf(p[0], p[1]));
+      if (ring.length < 4) continue;
+      // The building's long axis and size, from its corners.
+      let cx = 0, cz = 0;
+      for (const [x, z] of ring) { cx += x; cz += z; }
+      cx /= ring.length; cz /= ring.length;
+      let sxx = 0, szz = 0, sxz = 0;
+      for (const [x, z] of ring) { sxx += (x - cx) ** 2; szz += (z - cz) ** 2; sxz += (x - cx) * (z - cz); }
+      const a = 0.5 * Math.atan2(2 * sxz, sxx - szz), ux = Math.cos(a), uz = Math.sin(a);
+      let l0 = Infinity, l1 = -Infinity, w0 = Infinity, w1 = -Infinity;
+      for (const [x, z] of ring) { const l = (x - cx) * ux + (z - cz) * uz, w = -(x - cx) * uz + (z - cz) * ux; l0 = Math.min(l0, l); l1 = Math.max(l1, l); w0 = Math.min(w0, w); w1 = Math.max(w1, w); }
+      const L = (l1 - l0) / 2, Wd = (w1 - w0) / 2;
+      if (L < 1.5 || Wd < 1.2 || L > 120) continue;
+      const mx = cx + ux * (l0 + L) - uz * (w0 + Wd), mz = cz + uz * (l0 + L) + ux * (w0 + Wd);
+      const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([p, q]) => [mx + ux * L * p - uz * Wd * q, mz + uz * L * p + ux * Wd * q]);
+      if (corners.concat([[mx, mz]]).some(([x, z]) => roadDist(g, x, z) < ROAD_HALF + 1.2)) continue; // the map and the GPX disagree by a few metres
+      const near = nearRoad(g, mx, mz, 260); if (!near.length) continue;
+      let low = Infinity, i0 = near[0];
+      for (const [x, z] of corners) low = Math.min(low, groundAt(g, x, z, 260).y);
+      const h = R.dem(mx, mz), style = houseStyle(R, h, i0, g.ll(mx, mz)[0]), S = HOUSE[style];
+      const small = L * Wd < 9 || /garage|shed|hut|carport|kiosk/.test(bd.kind);
+      const levels = bd.levels || (/apartments|hotel|commercial|retail|office/.test(bd.kind) ? 3 + Math.floor(rand() * 3) : /church|cathedral|chapel/.test(bd.kind) ? 3 : small ? 1 : style === 'north' ? 1 + Math.floor(rand() * 2) : 2 + Math.floor(rand() * 2));
+      const wallH = bd.height ? bd.height * 0.8 : levels * 2.9 + 0.4 + (small ? -0.4 : 0);
+      const k = Math.floor(mx / 250) * 65536 + Math.floor(mz / 250);
+      let cell = cells.get(k);
+      if (!cell) cells.set(k, (cell = {}));
+      const part = cell[style] || (cell[style] = { wp: [], wc: [], wu: [], rp: [], rc: [] });
+      const wall = S.walls[Math.floor(rand() * S.walls.length)], roof = S.roofs[Math.floor(rand() * S.roofs.length)], tone = 0.9 + rand() * 0.15;
+      const base = low - 0.6, top = low + wallH, flat = Wd > 9 || L * Wd > 400;
+      const ridge = top + Wd * (flat ? 0.12 : S.pitch), e = S.eave;
+      // Walls: four sides; the two short ones come up to the ridge (gables).
+      const quad = (p, cU, q) => { // four corners, and how many window bays across and up
+        const [A, B, C, D] = p;
+        for (const v of [A, B, C, A, C, D]) part.wp.push(v[0], v[1], v[2]);
+        for (const uv of [[0, 0], [cU, 0], [cU, q], [0, 0], [cU, q], [0, q]]) part.wu.push(small ? 0.02 : uv[0], small ? 0.02 : uv[1]);
+        for (let n = 0; n < 6; n++) part.wc.push(wall[0] * tone, wall[1] * tone, wall[2] * tone);
+      };
+      const C = corners, up = top - base;
+      for (let s2 = 0; s2 < 4; s2++) {
+        const P = C[s2], Q = C[(s2 + 1) % 4], len = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
+        quad([[P[0], base, P[1]], [Q[0], base, Q[1]], [Q[0], top, Q[1]], [P[0], top, P[1]]], len / 3, up / 2.9);
+        if (s2 % 2 === 1) { // a gable end: the triangle up to the ridge
+          const mx2 = (P[0] + Q[0]) / 2, mz2 = (P[1] + Q[1]) / 2;
+          for (const v of [[P[0], top, P[1]], [Q[0], top, Q[1]], [mx2, ridge, mz2]]) part.wp.push(...v);
+          part.wu.push(0.02, 0.02, 0.02, 0.02, 0.02, 0.02);
+          for (let n = 0; n < 3; n++) part.wc.push(wall[0] * tone, wall[1] * tone, wall[2] * tone);
+        }
+      }
+      // Roof: two slopes from the eaves to the ridge, overhanging all round.
+      const ex = [mx + ux * (L + e), mz + uz * (L + e)], ey = [mx - ux * (L + e), mz - uz * (L + e)], sx = -uz * (Wd + e), sz = ux * (Wd + e), drop = (e / Wd) * (ridge - top);
+      for (const sg of [-1, 1]) {
+        const A = [ey[0] + sx * sg, top - drop, ey[1] + sz * sg], B = [ex[0] + sx * sg, top - drop, ex[1] + sz * sg], Cc = [ex[0], ridge, ex[1]], D = [ey[0], ridge, ey[1]];
+        for (const v of [A, B, Cc, A, Cc, D]) part.rp.push(...v);
+        const shade = sg > 0 ? 1 : 0.85;
+        for (let n = 0; n < 6; n++) part.rc.push(roof[0] * shade, roof[1] * shade, roof[2] * shade);
+      }
+    }
+    // One mesh of walls and one of roofs per 250 m square and style.
+    const out = [];
+    for (const cell of cells.values()) for (const [style, p] of Object.entries(cell)) {
+      for (const [pos, col, uv, mat] of [[p.wp, p.wc, p.wu, houseMat(style)], [p.rp, p.rc, null, roofMat]]) {
+        const geo = new T.BufferGeometry();
+        geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+        if (uv) geo.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
+        geo.computeVertexNormals(); geo.computeBoundingSphere();
+        const m = new T.Mesh(geo, mat);
+        m.castShadow = m.receiveShadow = true;
+        out.push(m);
+      }
+    }
+    return out;
+  }
+  const houseMats = {};
+  const houseMat = style => houseMats[style] || (houseMats[style] = bothSides(new T.MeshLambertMaterial({ vertexColors: true, map: windows(style) })));
+  const roofMat = bothSides(new T.MeshLambertMaterial({ vertexColors: true }));
+
+  // Lakes and rivers: flat water on the lakes, a ribbon along each river and
+  // stream, both lying a little below the banks.
+  const waterMat = new T.MeshPhongMaterial({ color: 0x2a4655, specular: 0x9fb4c4, shininess: 70, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  function waters(g, osm) {
+    if (!osm) return [];
+    const out = [];
+    for (const sh of osm.water) for (const outer of sh.outer) {
+      let ring = outer.map(p => g.xzOf(p[0], p[1]));
+      if (ring.length > 2 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, -1);
+      if (ring.length < 3) continue;
+      // The water's level: the lowest of the banks round its shore.
+      let level = Infinity;
+      for (let k = 0; k < ring.length; k += Math.max(1, Math.floor(ring.length / 60))) level = Math.min(level, dryAt(g, ring[k][0], ring[k][1], 1500));
+      if (!Number.isFinite(level)) continue;
+      const holes = sh.inner.map(r => r.map(p => g.xzOf(p[0], p[1]))).filter(h => h.length > 3).map(h => h.map(([x, z]) => new T.Vector2(x, z)));
+      const contour = ring.map(([x, z]) => new T.Vector2(x, z)), tris = T.ShapeUtils.triangulateShape(contour, holes);
+      const all = contour.concat(...holes), pos = [];
+      for (const v of all) pos.push(v.x, level + 0.15, v.y);
+      const geo = new T.BufferGeometry();
+      geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      geo.setIndex(tris.flatMap(t => [t[0], t[2], t[1]]));
+      geo.computeVertexNormals();
+      if (geo.attributes.normal.getY(0) < 0) { geo.setIndex(tris.flat()); geo.computeVertexNormals(); }
+      geo.computeBoundingSphere();
+      const m = new T.Mesh(geo, waterMat); m.receiveShadow = true; out.push(m);
+    }
+    for (const r of osm.rivers) {
+      const w = riverWidth(r) / 2, pts = [];
+      // Every 8 m along it, near the route only.
+      const ll = r.line.map(p => g.xzOf(p[0], p[1]));
+      for (let k = 0; k + 1 < ll.length; k++) {
+        const [ax, az] = ll[k], [bx, bz] = ll[k + 1], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 8));
+        for (let q = 0; q < n; q++) pts.push([ax + ((bx - ax) * q) / n, az + ((bz - az) * q) / n]);
+      }
+      pts.push(ll[ll.length - 1]);
+      let run = [];
+      const flush = () => {
+        if (run.length > 2) {
+          const pos = [], idx = [];
+          run.forEach(([x, z, y], k) => {
+            const a = run[Math.max(0, k - 1)], b = run[Math.min(run.length - 1, k + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
+            pos.push(x - (dz / l) * w, y, z + (dx / l) * w, x + (dz / l) * w, y, z - (dx / l) * w);
+            if (k) { const v = (k - 1) * 2; idx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3); }
+          });
+          const geo = new T.BufferGeometry();
+          geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3)); geo.setIndex(idx);
+          geo.computeVertexNormals();
+          if (geo.attributes.normal.getY(0) < 0) { for (let q = 0; q < idx.length; q += 3) [idx[q + 1], idx[q + 2]] = [idx[q + 2], idx[q + 1]]; geo.setIndex(idx); geo.computeVertexNormals(); }
+          geo.computeBoundingSphere();
+          out.push(new T.Mesh(geo, waterMat));
+        }
+        run = [];
+      };
+      for (const [x, z] of pts) {
+        let d = Infinity; // to the nearest road point (roadDist only looks 30 m round)
+        for (const j of nearRoad(g, x, z, 760)) d = Math.min(d, Math.hypot(g.xz[j][0] - x, g.xz[j][1] - z));
+        if (d < 40) d = roadDist(g, x, z);
+        if (!(d < 760)) { flush(); continue; }
+        // Just over the land (drawn over it, see waterMat); under the road it
+        // ducks out of sight (the road crosses on a bridge).
+        const y = dryAt(g, x, z, 800) + (d < ROAD_HALF + 3 ? -3 : 0.1);
+        run.push([x, z, y]);
+      }
+      flush();
+    }
+    return out;
+  }
+
+  // Signs: the town's name on the way in and crossed out on the way out, in
+  // the country's own colours; the col's name and height at its top; the
+  // blue EU sign with the stars where the route crosses into a country.
+  const SIGN_COLOURS = { FR: ['#fff', '#c8102e', '#111'], BE: ['#fff', '#c8102e', '#111'], IT: ['#fff', '#111', '#111'], DE: ['#ffcc00', '#111', '#111'], NL: ['#1450a0', '#fff', '#fff'], CH: ['#1f57a5', '#fff', '#fff'], AT: ['#1f57a5', '#fff', '#fff'], LU: ['#fff', '#c8102e', '#111'], ES: ['#fff', '#c8102e', '#111'] };
+  function board(draw, w, h) {
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = Math.round((512 * h) / w);
+    draw(cv.getContext('2d'), cv.width, cv.height);
+    const tex = new T.CanvasTexture(cv);
+    tex.anisotropy = 4;
+    return new T.MeshBasicMaterial({ map: tex });
+  }
+  const fitText = (cx, text, maxW, size, weight = 800) => {
+    let s = size;
+    do { cx.font = `${weight} ${s}px "Segoe UI", Arial, sans-serif`; s -= 2; } while (cx.measureText(text).width > maxW && s > 10);
+  };
+  function placeSign(g, i, mat, w, h, postH, side = 1) {
+    const grp = new T.Group(), off = ROAD_HALF + 1.6, p = groundY(g, i, side * off);
+    const face = new T.Mesh(new T.PlaneGeometry(w, h), mat);
+    const back = new T.Mesh(new T.PlaneGeometry(w, h), new T.MeshLambertMaterial({ color: 0x9aa0a8 }));
+    back.rotation.y = Math.PI; back.position.z = -0.02;
+    const pole = new T.MeshLambertMaterial({ color: 0x8d949e });
+    for (const sx of w > 1.8 ? [-w / 3, w / 3] : [0]) {
+      const post = new T.Mesh(new T.CylinderGeometry(0.05, 0.05, postH + h / 2, 6), pole);
+      post.position.set(sx, (postH + h / 2) / 2 - postH - h / 2, -0.05); post.castShadow = true; grp.add(post);
+    }
+    grp.add(face, back);
+    grp.position.set(p.x, p.y + postH + h / 2, p.z);
+    // Facing the oncoming rider (on the right), or the other way on the left.
+    grp.rotation.y = Math.atan2(-g.side[i][1], g.side[i][0]) + (side > 0 ? 0 : Math.PI);
+    face.castShadow = true;
+    return grp;
+  }
+  function realSigns(g, R) {
+    const group = new T.Group();
+    for (const t of R.towns) {
+      if (t.kind === 'suburb') continue;
+      const [bg, edge, ink] = SIGN_COLOURS[R.code(t.a)] || SIGN_COLOURS.FR;
+      const sign = out => board((cx, W, H) => {
+        cx.fillStyle = edge; cx.fillRect(0, 0, W, H);
+        cx.fillStyle = bg; cx.fillRect(W * 0.04, H * 0.07, W * 0.92, H * 0.86);
+        cx.fillStyle = ink; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+        fitText(cx, t.name.toUpperCase(), W * 0.84, H * 0.36);
+        cx.fillText(t.name.toUpperCase(), W / 2, H / 2 + 2);
+        if (out) { cx.strokeStyle = '#c8102e'; cx.lineWidth = H * 0.1; cx.beginPath(); cx.moveTo(W * 0.08, H * 0.85); cx.lineTo(W * 0.92, H * 0.15); cx.stroke(); }
+      }, 1.9, 0.75);
+      group.add(placeSign(g, Math.min(g.n - 1, t.a), sign(false), 1.9, 0.75, 1.3));
+      if (t.b - t.a > 8) group.add(placeSign(g, Math.min(g.n - 1, t.b), sign(true), 1.9, 0.75, 1.3));
+    }
+    for (const c of R.cols) {
+      const it = R.code(c.top) === 'IT';
+      const mat = board((cx, W, H) => {
+        cx.fillStyle = it ? '#7a4a24' : '#fff'; cx.fillRect(0, 0, W, H);
+        cx.strokeStyle = it ? '#fff' : '#111'; cx.lineWidth = 8; cx.strokeRect(10, 10, W - 20, H - 20);
+        cx.fillStyle = it ? '#fff' : '#111'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+        fitText(cx, c.name.toUpperCase(), W * 0.86, H * 0.3);
+        cx.fillText(c.name.toUpperCase(), W / 2, H * 0.38);
+        fitText(cx, `${it ? 'm' : 'Altitude'} ${c.ele}${it ? '' : ' m'}`, W * 0.7, H * 0.22, 700);
+        cx.fillText(`${it ? 'm' : 'Altitude'} ${c.ele}${it ? '' : ' m'}`, W / 2, H * 0.72);
+      }, 2.6, 1.3);
+      group.add(placeSign(g, c.top, mat, 2.6, 1.3, 1.4));
+      group.add(placeSign(g, Math.min(g.n - 1, c.top + 2), mat, 2.6, 1.3, 1.4, -1));
+    }
+    for (const b of R.borders) {
+      const mat = board((cx, W, H) => {
+        cx.fillStyle = '#103f91'; cx.fillRect(0, 0, W, H);
+        cx.fillStyle = '#ffcc00';
+        const r = H * 0.3, ox = W / 2, oy = H * 0.4;
+        for (let k = 0; k < 12; k++) {
+          const a = (k / 12) * Math.PI * 2, x = ox + Math.cos(a) * r, y = oy + Math.sin(a) * r;
+          cx.beginPath();
+          for (let q = 0; q < 10; q++) { const rr = q % 2 ? H * 0.018 : H * 0.042, aa = -Math.PI / 2 + (q * Math.PI) / 5; cx.lineTo(x + Math.cos(aa) * rr, y + Math.sin(aa) * rr); }
+          cx.fill();
+        }
+        cx.fillStyle = '#fff'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+        fitText(cx, b.to.name.toUpperCase(), W * 0.5, H * 0.13);
+        cx.fillText(b.to.name.toUpperCase(), ox, oy);
+        fitText(cx, b.to.code, W * 0.3, H * 0.16);
+        cx.fillText(b.to.code, ox, H * 0.85);
+      }, 1.6, 1.6);
+      group.add(placeSign(g, b.i, mat, 1.6, 1.6, 1.4));
+    }
+    return group;
+  }
+
+  // The line shown over the view for where the rider is: a border just
+  // crossed, a col's top, a town, the climb to a col.
+  function bannerAt(R, i) {
+    for (const b of R.borders) if (i >= b.i && i < b.i + 40) return [`Welcome to ${b.to.en || b.to.name}`, b.to.name !== b.to.en ? b.to.name : ''];
+    for (const c of R.cols) if (i >= c.top && i < c.top + 30) return [c.name, `${c.ele} m · top`];
+    for (const t of R.towns) if (i >= t.a && i < Math.min(t.b, t.a + 40)) return [t.name, ''];
+    for (const c of R.cols) if (i >= c.start && i < c.top) return [c.name, `${c.ele} m · ${((c.top - i) * STEP / 1000).toFixed(1)} km to the top`];
+    return null;
+  }
+
+  // The distant land: the real heights out to 40 km, as rings round the
+  // camera (finer close in), coloured by height and slope and lit by the
+  // sun once, when built. Drawn first, past the near world (see frame).
+  function farLand(g, R, near, far, cx, cz, sunDir) {
+    const A = 360, rings = [];
+    for (let r = 250; r < 42000; r *= 1.06) rings.push(r);
+    const n = rings.length, pos = new Float32Array(A * n * 3), hs = new Float32Array(A * n);
+    for (let k = 0; k < n; k++) for (let a = 0; a < A; a++) {
+      const t = (a / A) * Math.PI * 2, x = cx + Math.cos(t) * rings[k], z = cz + Math.sin(t) * rings[k];
+      const [lat, lon] = g.ll(x, z);
+      let h = near(lat, lon);
+      if (!Number.isFinite(h)) h = far(lat, lon);
+      if (!Number.isFinite(h)) h = 0;
+      h = Math.max(h, 0);
+      const v = k * A + a;
+      hs[v] = h; pos[v * 3] = x; pos[v * 3 + 1] = (h - g.ele0) * LIFT; pos[v * 3 + 2] = z;
+    }
+    const idx = [];
+    for (let k = 1; k < n; k++) for (let a = 0; a < A; a++) {
+      const p = (k - 1) * A + a, q = (k - 1) * A + ((a + 1) % A), r = k * A + a, s = k * A + ((a + 1) % A);
+      idx.push(p, q, r, q, s, r);
+    }
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const nrm = geo.attributes.normal, col = new Float32Array(A * n * 3);
+    for (let v = 0; v < A * n; v++) {
+      const h = hs[v], ny = nrm.getY(v), sl = Math.sqrt(Math.max(0, 1 - ny * ny)) / Math.max(0.2, ny) / LIFT, x = pos[v * 3], z = pos[v * 3 + 2];
+      const nz = noise(x / 900, z / 900);
+      let c;
+      if (h <= 0.5 || (R.cover && R.cover.water(x, z) > 0.4)) c = [0.2, 0.3, 0.36]; // the sea, and lakes on the map
+      else {
+        const alt = h + (nz - 0.5) * 200;
+        c = alt < R.treeLine - 200 ? [0.17 + 0.06 * nz, 0.26 + 0.05 * nz, 0.15] : [0.36, 0.35, 0.25];
+        const rock = Math.max(smooth(0.6, 1.0, sl), smooth(R.treeLine + 400, R.treeLine + 900, alt));
+        c = c.map((q, m) => q + ([0.42, 0.4, 0.38][m] - q) * rock);
+        const patch = noise(x / 350 + 5, z / 350); // snow lies in gullies and on the shaded side first
+        const snow = smooth(R.snowLine, R.snowLine + 350, alt + (patch - 0.5) * 400) * (1 - smooth(0.8, 1.3, sl) * 0.6);
+        c = c.map(q => q + (0.92 - q) * snow);
+      }
+      const lit = 0.55 + 0.45 * Math.max(0, nrm.getX(v) * sunDir.x + nrm.getY(v) * sunDir.y + nrm.getZ(v) * sunDir.z);
+      col[v * 3] = c[0] * lit; col[v * 3 + 1] = c[1] * lit; col[v * 3 + 2] = c[2] * lit * 1.02;
+    }
+    geo.setAttribute('color', new T.BufferAttribute(col, 3));
+    geo.computeBoundingSphere();
+    return geo;
   }
 
   // The land's colour at a vertex, until its painted texture is in.
@@ -197,7 +850,7 @@
         landColour(c, x, z, p.y, p.road, Math.abs(o));
         col.push(c.r, c.g, c.b);
       }
-      if (r) {
+      if (r && !(g.dup[rowsAt[r - 1]] && g.dup[i])) { // land beside road ridden before is already there
         const w = OFF.length, a = (r - 1) * w, b = r * w;
         for (let j = 0; j < w - 1; j++) idx.push(a + j, a + j + 1, b + j, a + j + 1, b + j + 1, b + j);
       }
@@ -262,7 +915,9 @@
   // How wooded a spot is: above WOOD it is forest.
   // A course can shift the pattern so its woods fall where it wants them.
   let woodsAt = [0, 0];
-  const woods = (x, z) => { x += woodsAt[0]; z += woodsAt[1]; return noise(x / 380 + 7.3, z / 380) * 0.72 + noise(x / 110, z / 110 + 3.1) * 0.28; };
+  const gameWoods = (x, z) => { x += woodsAt[0]; z += woodsAt[1]; return noise(x / 380 + 7.3, z / 380) * 0.72 + noise(x / 110, z / 110 + 3.1) * 0.28; };
+  // On real land, the woods on the map (see realOf), on the same scale.
+  const woods = (x, z) => (REAL ? WOOD - 0.03 + 0.06 * REAL.forest(x, z) : gameWoods(x, z));
   const WOOD = 0.56;
   // The field a spot is in: columns FCOL wide, cut into rows whose length
   // varies per column. Returns which field, how far to its nearest edge, and
@@ -282,6 +937,8 @@
   // The colour of the ground at a spot (r, g, b in 0..1, into `out`). `d` is the
   // distance to the road when known, for the verge.
   function ground(x, z, out, d = 99) {
+    out[3] = 0;
+    if (REAL && groundReal(x, z, out, d)) return out;
     const grain = noise(x / 6, z / 6) * 0.08 + noise(x / 1.3, z / 1.3) * 0.06 - 0.07;
     let r, gg, b;
     const w = woods(x, z);
@@ -299,10 +956,18 @@
     return out;
   }
   function ground0(x, z, out) {
-    const f = field(x, z);
-    let k = 0; while (f.crop > CROPS[k][0]) k++;
-    const [, [r, g, b], rows] = CROPS[k], tone = hash(f.c + 0.5, f.r) * 0.08 - 0.04;
+    const f = field(x, z), crops = REAL?.crops || CROPS;
+    let k = 0; while (f.crop > crops[k][0]) k++;
+    const [, [r, g, b], rows] = crops[k], tone = hash(f.c + 0.5, f.r) * 0.08 - 0.04;
     let l = 1 + tone;
+    out[3] = 0;
+    if (rows === 2) { // lavender: round bushes in rows 1.6 m apart, bare earth between
+      const along = f.alongU ? f.v : f.u, across = f.alongU ? f.u : f.v, w = Math.sin((along * Math.PI * 2) / 1.6) * 0.5 + 0.5, bush = w * (0.75 + 0.25 * Math.sin(across * 3.9));
+      const t = smooth(0.35, 0.6, bush);
+      out[0] = 0.5 + (r - 0.5) * t; out[1] = 0.4 + (g - 0.4) * t; out[2] = 0.3 + (b - 0.3) * t; out[3] = t > 0.5 ? 2 : 1;
+      if (f.edge < 1.6) { out[0] = 0.45; out[1] = 0.47; out[2] = 0.28; out[3] = 0; }
+      return;
+    }
     if (rows) l *= 0.9 + 0.1 * Math.sin(((f.alongU ? f.v : f.u) * Math.PI * 2) / 3.2); // crop rows or furrows
     else l *= 0.94 + 0.12 * noise(x / 9, z / 9); // grass in patches
     out[0] = r * l; out[1] = g * l; out[2] = b * l;
@@ -528,13 +1193,9 @@
   // `avoid(x, z, i)` is true where nothing may stand (an open summit).
   function trees(g, s, e, seed, avoid) {
     const kit = treeKinds(), rand = rng(seed), spruce = [[], []], leafy = [[], []], hedges = [], posts = [], tufts = [];
-    const clearOfRoad = (x, z, i, gap) => {
-      for (let j = Math.max(0, i - 40); j <= Math.min(g.n - 1, i + 40); j++) {
-        const dx = g.xz[j][0] - x, dz = g.xz[j][1] - z;
-        if (dx * dx + dz * dz < gap * gap) return false;
-      }
-      return true;
-    };
+    // Clear of every road, not just this stretch: on an out and back, a
+    // hairpin or a road passing close by, trees used to stand on the other one.
+    const clearOfRoad = (x, z, gap) => roadDist(g, x, z) >= gap;
     // Only trees near the road cast shadows (the sun's shadow covers a 70 m
     // square round the rider); drawing the rest into the shadow map is waste.
     const tree = (x, z, i, scale, kind, o) => {
@@ -542,15 +1203,16 @@
       (kind ? spruce : leafy)[o < 45 ? 0 : 1].push([x, y, z, scale, rand() * 6.3, (rand() - 0.5) * 0.35, 0.85 + rand() * 0.3]);
     };
     for (let i = s; i < e; i++) {
+      if (g.dup[i]) continue; // this road's scenery was built the first time along it
       for (const sg of [-1, 1]) {
         for (let o = 7 + rand() * 4; o < 330; o += 6 + o * 0.07 + rand() * 5) {
           const a = (rand() - 0.5) * STEP, ii = Math.min(g.n - 2, i);
           const fx = g.xz[ii + 1][0] - g.xz[ii][0], fz = g.xz[ii + 1][1] - g.xz[ii][1], fl = Math.hypot(fx, fz) || 1;
           const x = g.xz[i][0] + g.side[i][0] * o * sg + (fx / fl) * a, z = g.xz[i][1] + g.side[i][1] * o * sg + (fz / fl) * a;
           const w = woods(x, z);
-          if (w < WOOD - 0.01 && !(rand() < 0.004)) continue; // a lone tree in the fields now and then
-          if (avoid(x, z, i) || !clearOfRoad(x, z, i, ROAD_HALF + 4)) continue;
-          const pine = noise(x / 240 + 11, z / 240) > 0.48;
+          if (w < WOOD - 0.01 && !(rand() < 0.004 && (!REAL || REAL.open(x, z)))) continue; // a lone tree in the fields now and then
+          if (avoid(x, z, i) || !clearOfRoad(x, z, ROAD_HALF + 4)) continue;
+          const pine = REAL ? REAL.conifer(x, z) : noise(x / 240 + 11, z / 240) > 0.48;
           tree(x, z, i, (0.75 + rand() * 0.5) * (w < WOOD ? 1.1 : 1), w > WOOD && pine, o);
         }
       }
@@ -565,7 +1227,7 @@
       return [Math.sqrt(best), bi];
     };
     const hedgeAt = (x, z, turn) => {
-      if (woods(x, z) > WOOD - 0.02) return;
+      if (woods(x, z) > WOOD - 0.02 || (REAL && !REAL.hedgy(x, z))) return;
       const [d, j] = nearest(x, z);
       if (j < s || j >= e || d > R || d < ROAD_HALF + 5 || avoid(x, z, j)) return;
       const f = field(x, z); if (!f.hedge) return;
@@ -589,11 +1251,12 @@
     // The odd bush along the verge, more where it is wooded (the grass itself
     // is blades, near the rider: see grassTuft).
     for (let i = s; i < e; i++) {
+      if (g.dup[i]) continue;
       for (const sg of [-1, 1]) for (let k = 0; k < 4; k++) {
         const o = sg * (ROAD_HALF + 0.9 + rand() ** 1.5 * 9), a = rand() * STEP;
         const x = g.xz[i][0] + g.side[i][0] * o + (g.xz[Math.min(g.n - 1, i + 1)][0] - g.xz[i][0]) * (a / STEP), z = g.xz[i][1] + g.side[i][1] * o + (g.xz[Math.min(g.n - 1, i + 1)][1] - g.xz[i][1]) * (a / STEP);
-        if (!clearOfRoad(x, z, i, ROAD_HALF + 0.6)) continue;
-        const big = rand() < (woods(x, z) > WOOD ? 0.15 : 0.03);
+        if (!clearOfRoad(x, z, ROAD_HALF + 0.6)) continue;
+        const big = rand() < (woods(x, z) > WOOD ? 0.15 : REAL && !REAL.open(x, z) ? 0 : 0.03);
         if (!big) continue;
         tufts.push([x, groundAt(g, x, z, 40).y - 0.05, z, big ? 1 + rand() * 0.6 : 0.4 + rand() * 0.5, rand() * 6.3, (rand() - 0.5) * 0.4, big ? 1.3 : 0.6 + rand() * 0.5]);
       }
@@ -601,7 +1264,8 @@
     // Marker posts every 50 m on both sides.
     for (let i = s - (s % 5); i < e; i += 5) {
       if (i < s) continue;
-      for (const sg of [-1, 1]) { const p = groundY(g, i, sg * (ROAD_HALF + 0.9)); posts.push([p.x, p.y, p.z, 1, 0, 0, 1]); }
+      if (g.dup[i]) continue;
+      for (const sg of [-1, 1]) { const p = groundY(g, i, sg * (ROAD_HALF + 0.9)); if (clearOfRoad(p.x, p.z, ROAD_HALF + 0.5)) posts.push([p.x, p.y, p.z, 1, 0, 0, 1]); }
     }
     // Grouped in 250 m squares, so the squares out of sight or past the haze
     // are skipped as a whole (see `scatter` in mount).
@@ -656,12 +1320,10 @@
     for (let k = 0; k < 340; k++) {
       const sg = rand() < 0.5 ? -1 : 1, o = ROAD_HALF + 0.3 + rand() ** 1.4 * 14, a = rand() * STEP;
       const x = g.xz[j][0] + g.side[j][0] * o * sg + (fx / fl) * a, z = g.xz[j][1] + g.side[j][1] * o * sg + (fz / fl) * a;
-      let near = Infinity; // on a bend the far side of the next stretch may be the road
-      for (let q = Math.max(0, j - 4); q <= Math.min(g.n - 1, j + 5); q++) near = Math.min(near, Math.hypot(g.xz[q][0] - x, g.xz[q][1] - z));
-      if (near < ROAD_HALF + 0.25) continue;
+      if (roadDist(g, x, z) < ROAD_HALF + 0.25) continue; // on a bend, or another part of the route
       ground(x, z, rgb, o);
-      if (rgb[0] - rgb[1] > 0.04) continue; // ploughed land
-      const tint = 0.85 + rand() * 0.4, s = 0.7 + rand() * 0.7;
+      if (rgb[3] === 1 || (rgb[3] !== 2 && rgb[0] - rgb[1] > 0.04)) continue; // ploughed land, rock, snow, water, paving
+      const tint = 0.85 + rand() * 0.4, s = (0.7 + rand() * 0.7) * (rgb[3] === 2 ? 1.8 : 1); // lavender stands taller
       out.push(x, groundAt(g, x, z, 40).y - 0.02, z, s, rand() * 6.3, rgb[0] * tint, rgb[1] * tint * 1.05, rgb[2] * tint);
     }
     return out;
@@ -783,18 +1445,24 @@
   // With the photographs (detail.photo) that grain is real grass, and real
   // soil wherever the painted colour is brown (ploughed land, stubble, wood
   // floor), each at two sizes so the repeat does not show. The photographs
-  // are evened out to mid grey, so the paint keeps its colour.
+  // are evened out to mid grey, so the paint keeps its colour (applied after
+  // the vertex colours, so it sees the land's real colour either way).
+  // snowCover: snow lying on the land, 0 none, 1 white over; shared by all.
+  const snowCover = { value: 0 };
   function grained(mat, detail) {
     mat.onBeforeCompile = sh => {
+      sh.uniforms.snowCover = snowCover;
       sh.uniforms.grassMap = { value: detail.grass };
       sh.uniforms.soilMap = { value: detail.soil };
       sh.vertexShader = 'varying vec2 vDetail;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vDetail = position.xz;');
-      sh.fragmentShader = 'uniform sampler2D grassMap;\nuniform sampler2D soilMap;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <map_fragment>', detail.photo
-        ? `#include <map_fragment>
+      sh.fragmentShader = 'uniform sampler2D grassMap;\nuniform sampler2D soilMap;\nuniform float snowCover;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <color_fragment>', (detail.photo
+        ? `#include <color_fragment>
   vec3 grassD = texture2D(grassMap, vDetail / 1.7).rgb * 0.65 + texture2D(grassMap, vDetail / 9.0 + 0.37).rgb * 0.35;
   vec3 soilD = texture2D(soilMap, vDetail / 2.5).rgb * 0.6 + texture2D(soilMap, vDetail / 12.0 + 0.21).rgb * 0.4;
   diffuseColor.rgb *= 2.0 * mix(grassD, soilD, smoothstep(0.0, 0.07, diffuseColor.r - diffuseColor.g));`
-        : '#include <map_fragment>\n  float grain = texture2D(grassMap, vDetail / 3.0).r * 0.6 + texture2D(grassMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;');
+        : '#include <color_fragment>\n  float grain = texture2D(grassMap, vDetail / 3.0).r * 0.6 + texture2D(grassMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;')
+        // Snow: white with the grass showing through in patches.
+        + '\n  float drift = texture2D(grassMap, vDetail / 23.0).g;\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.92, 0.96) * (0.9 + 0.2 * drift), snowCover * smoothstep(0.25, 0.6, drift + snowCover * 0.5));');
     };
     mat.customProgramCacheKey = () => detail.photo ? 'grained-photo' : 'grained';
     return mat;
@@ -891,6 +1559,14 @@
     const geo = new T.SphereGeometry(680, 48, 24, 0, Math.PI * 2, 0, (P.skyRows * Math.PI) / 180);
     const m = new T.Mesh(geo, new T.MeshBasicMaterial({ map: tex, side: T.BackSide, fog: false, depthWrite: false, depthTest: false }));
     m.scale.x = -1; // seen from inside, unmirrored
+    // A veil over the photo for cloud, rain and fog: mixed toward a colour by
+    // an amount, so the dome stays opaque and is still drawn first.
+    const veil = { value: new T.Vector4(1, 1, 1, 0) };
+    m.material.onBeforeCompile = sh => {
+      sh.uniforms.veil = veil;
+      sh.fragmentShader = 'uniform vec4 veil;\n' + sh.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, veil.rgb, veil.a);');
+    };
+    m.userData.veil = veil.value;
     m.renderOrder = -3; m.frustumCulled = false;
     // Where the sun is in the picture, so the shadows fall the way it shines.
     const phi = P.sun[0] * Math.PI * 2, th = ((90 - P.sun[1]) * Math.PI) / 180;
@@ -1065,6 +1741,58 @@
     side: { back: -0.6, ahead: 0.4, up: 1.0, look: 0.9, side: 3.6 },
   };
 
+  // Weather presets: how much of the photographed sky shows, the sun and
+  // sky light, fog density and its colour (null: the photo's own haze).
+  const WEATHER = {
+    // On real land in clear or cloudy weather the near haze is thin (realFog)
+    // and the distant mountains show, fading out over `far` metres.
+    clear: { sky: 1, sun: 1.1, hemi: 0.62, fog: 0.0023, haze: null, shadow: true, realFog: 0.00025, far: 45000 },
+    cloudy: { sky: 0.35, sun: 0.35, hemi: 0.95, fog: 0.003, haze: 0xa3a8b0, shadow: false, realFog: 0.0005, far: 22000 },
+    rain: { sky: 0.15, sun: 0.2, hemi: 0.8, fog: 0.0065, haze: 0x868c94, shadow: false, fall: 'rain', wet: true },
+    fog: { sky: 0, sun: 0.2, hemi: 1, fog: 0.02, haze: 0xbcc0c4, shadow: false },
+    snow: { sky: 0.1, sun: 0.3, hemi: 1, fog: 0.009, haze: 0xc6cbd2, shadow: false, fall: 'snow', cover: 0.8 },
+  };
+  // Rain streaks or snowflakes in a 50 m box that travels with the camera:
+  // each drop falls, drifts, and when it leaves the box comes back in at the
+  // other side, so the box always looks full wherever the rider is.
+  function flake() { // a soft round dot
+    const cv = document.createElement('canvas'); cv.width = cv.height = 32;
+    const cx = cv.getContext('2d'), g = cx.createRadialGradient(16, 16, 0, 16, 16, 16);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.5, 'rgba(255,255,255,0.8)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    cx.fillStyle = g; cx.fillRect(0, 0, 32, 32);
+    return new T.CanvasTexture(cv);
+  }
+  function falling(kind) {
+    const rain = kind === 'rain', N = rain ? 3500 : 4000, B = 50, H = 24, rand = rng(rain ? 71 : 73);
+    const p = new Float32Array(N * 3), speed = new Float32Array(N);
+    for (let k = 0; k < N; k++) { p[k * 3] = rand() * B; p[k * 3 + 1] = rand() * H; p[k * 3 + 2] = rand() * B; speed[k] = rain ? 9 + rand() * 3 : 0.8 + rand() * 0.6; }
+    const geo = new T.BufferGeometry(), pos = new T.Float32BufferAttribute(new Float32Array(N * (rain ? 6 : 3)), 3);
+    geo.setAttribute('position', pos);
+    const obj = rain
+      ? new T.LineSegments(geo, new T.LineBasicMaterial({ color: 0xc8d0da, transparent: true, opacity: 0.45, fog: false }))
+      : new T.Points(geo, new T.PointsMaterial({ color: 0xffffff, size: 0.13, map: flake(), transparent: true, depthWrite: false, fog: false }));
+    obj.frustumCulled = false;
+    let t = 0;
+    const wrap = (v, lo) => lo + ((((v - lo) % B) + B) % B);
+    return {
+      obj,
+      step(dt, cam) {
+        t += dt;
+        const x0 = cam.x - B / 2, z0 = cam.z - B / 2, y0 = cam.y - H / 2, a = pos.array;
+        for (let k = 0; k < N; k++) {
+          const i = k * 3;
+          p[i + 1] -= speed[k] * dt;
+          if (!rain) { p[i] += Math.sin(t * 0.9 + k) * 0.3 * dt; p[i + 2] += Math.cos(t * 0.7 + k * 1.3) * 0.3 * dt; }
+          if (p[i + 1] < 0) p[i + 1] += H;
+          const x = wrap(p[i], x0), y = y0 + p[i + 1], z = wrap(p[i + 2], z0);
+          if (rain) { const j = k * 6; a[j] = x; a[j + 1] = y; a[j + 2] = z; a[j + 3] = x + 0.05; a[j + 4] = y + 0.55; a[j + 5] = z + 0.02; }
+          else { a[i] = x; a[i + 1] = y; a[i + 2] = z; }
+        }
+        pos.needsUpdate = true;
+      },
+    };
+  }
+
   function mount(container, getState) {
     let renderer;
     try { renderer = new T.WebGLRenderer({ antialias: true }); }
@@ -1072,12 +1800,19 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     container.prepend(renderer.domElement);
     const scene = new T.Scene();
+    // Two scenes, drawn one over the other each frame: far (the sky and, on
+    // real land, the mountains out to 40 km) and then everything near. The
+    // near camera stops at 700 m so the land there can be fine.
+    const farScene = new T.Scene(), farCam = new T.PerspectiveCamera(62, 1, 150, 60000);
+    renderer.autoClear = false;
     const photoDome = photoSky(renderer), haze = photoDome ? new T.Color().fromArray(window.IW_PHOTOS.haze) : new T.Color(HAZE);
-    scene.background = photoDome ? haze : new T.Color(SKY);
+    farScene.background = photoDome ? haze : new T.Color(SKY);
+    farScene.fog = new T.Fog(haze, 0, 45000);
     // Haze that thickens with distance but never quite hides the land, so the
     // far edge of the land and the mountains behind it share one tone.
     scene.fog = new T.FogExp2(haze, 0.0023);
-    scene.add(new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x5d5440, 0.62));
+    const hemi = new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x5d5440, 0.62);
+    scene.add(hemi);
     // The sun casts shadows in a 70 m square that travels with the rider:
     // enough for him, the bike and the nearest trees, cheap to draw.
     renderer.shadowMap.enabled = true;
@@ -1088,7 +1823,7 @@
     Object.assign(sun.shadow.camera, { left: -35, right: 35, top: 35, bottom: -35, near: 1, far: 400 });
     sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03;
     scene.add(sun, sun.target);
-    const dome = photoDome || sky(); scene.add(dome);
+    const dome = photoDome || sky(); farScene.add(dome);
     const camera = new T.PerspectiveCamera(62, 1, 0.2, FAR);
     const bike = rider(); scene.add(bike.root);
     bike.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
@@ -1111,7 +1846,69 @@
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
+    // Weather. Clear is the photographed sky as it is; the others fade the sky
+    // into a heavier haze, dim the sun (no hard shadows under cloud), thicken
+    // the fog and, for rain and snow, let it fall round the camera. Rain also
+    // darkens the road, as wet tarmac does.
+    let weather = 'clear', fall = null, roadMat = null;
+    const clearHaze = haze.clone();
+    function setWeather(w) {
+      weather = w;
+      const W = WEATHER[w];
+      haze.set(W.haze ?? clearHaze);
+      scene.fog.color.copy(haze); farScene.fog.color.copy(haze);
+      if (!photoDome) farScene.background.set(W.haze ?? SKY);
+      dome.userData.veil?.set(haze.r, haze.g, haze.b, 1 - W.sky);
+      hazeFor();
+      sun.intensity = W.sun; sun.castShadow = W.shadow;
+      hemi.intensity = W.hemi;
+      roadMat?.color.set(W.wet ? 0x2f3236 : 0x4a4e55);
+      snowCover.value = W.cover || 0;
+      grass.visible = !W.cover; // buried
+      if (fall) { scene.remove(fall.obj); fall.obj.geometry.dispose(); fall.obj.material.map?.dispose(); fall.obj.material.dispose(); fall = null; }
+      if (W.fall) { fall = falling(W.fall); scene.add(fall.obj); }
+    }
+
+    // How far one can see: thick haze for the made-up world (its land ends at
+    // 700 m), thin on real land when the distant mountains can show.
+    function hazeFor() {
+      const W = WEATHER[weather], far = REAL && W.far;
+      scene.fog.density = far ? W.realFog : W.fog;
+      farScene.fog.far = far || 1;
+      if (farMesh) farMesh.visible = !!far;
+      hills0.visible = weather === 'clear' && !REAL; // their foot is painted into the clear-sky haze
+    }
+
+    // The real place for a route, loading in the background: the heights
+    // near the road, the far heights, the map. The world is built again as
+    // each arrives (v counts them). note is the line shown under the view.
+    const placeData = new WeakMap();
+    let realWant = true, builtV = null, farMesh = null, farAt = null, sea = null, bannerTick = 0, bannerText = '', afterRender = null;
+    const farMat = new T.MeshBasicMaterial({ vertexColors: true });
+    function placesFor(route) {
+      let rec = placeData.get(route);
+      if (rec || !window.IW_PLACES) return rec || null;
+      placeData.set(route, (rec = { v: 0 }));
+      const P = window.IW_PLACES, pts = route.res.filter((_, i) => i % 3 === 0).map(p => [p.lat, p.lon]);
+      P.terrain(pts, 1100, [13, 12, 11], 160).then(h => { rec.near = h; }, e => { rec.nearErr = e.message || String(e); }).finally(() => rec.v++);
+      P.terrain(pts, 42000, [10, 9, 8], 40).then(h => { rec.far = h; }, () => {});
+      P.osm(pts).then(m => { rec.osm = m; }, e => { rec.osmErr = e.message || String(e); }).finally(() => rec.v++);
+      return rec;
+    }
+    function noteOf(rec) {
+      if (!rec) return '';
+      if (rec.nearErr) return `The real land could not load (${rec.nearErr}), so this is made-up land.`;
+      if (!rec.near) return 'Loading the real land…';
+      const credit = 'Heights: AWS Terrain Tiles · Map © OpenStreetMap contributors';
+      if (rec.osmErr) return `The map could not load (${rec.osmErr}), so the woods are made up and there are no towns. Heights: AWS Terrain Tiles`;
+      if (!rec.osm) return `Loading the map (woods, water, towns)… ${credit}`;
+      return credit;
+    }
+    let note = '';
+
     function setRoute(route) {
+      if (farMesh) { farScene.remove(farMesh); farMesh.geometry.dispose(); farMesh = null; farAt = null; }
+      sea = null; REAL = null; builtV = null; note = ''; showBanner(null);
       if (world) {
         scene.remove(world);
         world.traverse(o => {
@@ -1126,11 +1923,17 @@
       if (!route) return;
       const g = geometryOf(route);
       world.userData.g = g;
+      // Real land for a GPX route (the built-in course is the made-up world).
+      const rec = realWant && !route.scenery ? placesFor(route) : null;
+      builtV = rec ? rec.v : null; note = noteOf(rec);
+      if (rec?.near) { useTerrain(g, rec.near); REAL = realOf(route, g, rec); }
+      hazeFor();
       // Built in pieces of CHUNK points (600 m) so the ones behind the rider
       // or past the fog are skipped instead of drawn every frame.
       const tarmac = photo('asphalt', renderer);
       tarmac?.repeat.set(2, 2); // a 2 m tile
-      const asphalt = new T.MeshLambertMaterial({ color: 0x4a4e55, map: tarmac || surface('road', renderer) });
+      const asphalt = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x2f3236 : 0x4a4e55, map: tarmac || surface('road', renderer) });
+      roadMat = asphalt;
       const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
       const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
       const seed = Math.round(route.total) + route.res.length;
@@ -1138,25 +1941,39 @@
       const sc = sceneryOf(route);
       woodsAt = route.scenery?.woods || [0, 0];
       world.userData.sc = sc;
+      if (REAL) for (const c of REAL.cols) sc.flags.push([c.top * STEP - 70, c.top * STEP + 70]); // flags over each col
       if (!sky2 && !photoDome) scene.add((sky2 = clouds())); // the photographed sky has its own
       world.add(props(g, sc));
       const avoid = (x, z, i) => sc.clearings.some(([a, b]) => i * STEP >= a && i * STEP <= b);
       for (let s = 0; s < g.n - 1; s += CHUNK) {
         const e = Math.min(g.n - 1, s + CHUNK);
         const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; world.add(m); };
-        strip(-ROAD_HALF, ROAD_HALF, 0.02, asphalt);
-        strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint);
-        strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint);
-        strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0); // dashed centre line
+        const fresh = i => !(g.dup[i] && g.dup[i - 1]); // road ridden before is drawn once
+        strip(-ROAD_HALF, ROAD_HALF, 0.02, asphalt, fresh);
+        strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint, fresh);
+        strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint, fresh);
+        strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0 && fresh(i)); // dashed centre line
         const strip0 = nearLand(g, s, e, land);
         world.add(strip0); pieces.push(strip0);
         const t = trees(g, s, e, seed + s, avoid);
-        world.add(...t); scatter.push(...t);
+        if (t.length) world.add(...t); scatter.push(...t);
       }
       // The far land is built a few tiles per frame, nearest first, so a long
       // route shows at once instead of freezing the page for a second or two.
       tiles = landTiles(g); tileMat = land; sortedAt = null;
       world.add(kmSigns(g, route.total));
+      if (REAL) {
+        const h = houses(g, REAL, rec.osm);
+        if (h.length) world.add(...h); scatter.push(...h);
+        const wt = waters(g, rec.osm);
+        if (wt.length) world.add(...wt);
+        world.add(realSigns(g, REAL));
+        if (REAL.sea) { // the sea, a plane at sea level that travels with the camera
+          sea = new T.Mesh(new T.PlaneGeometry(2400, 2400), waterMat);
+          sea.rotation.x = -Math.PI / 2; sea.position.y = -g.ele0 * LIFT; sea.receiveShadow = true;
+          world.add(sea);
+        }
+      }
       scene.add(world);
       disp = getState().dist;
       camPos.set(0, 0, 0); camLook.set(0, 0, 0);
@@ -1230,6 +2047,22 @@
       renderer.setSize(w, h, false);
       renderer.domElement.style.width = '100%'; renderer.domElement.style.height = '100%';
       camera.aspect = w / h; camera.updateProjectionMatrix();
+      farCam.aspect = w / h; farCam.updateProjectionMatrix();
+    }
+    // The name of the place, a col or a border, over the top of the view.
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:absolute;left:0;right:0;top:12%;text-align:center;color:#fff;pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,.6),0 0 14px rgba(0,0,0,.45);opacity:0;transform:translateY(-6px);transition:opacity 300ms cubic-bezier(.23,1,.32,1),transform 300ms cubic-bezier(.23,1,.32,1);font-family:"Segoe UI",Arial,sans-serif';
+    container.append(banner);
+    function showBanner(b) {
+      const text = b ? b.join('|') : '';
+      if (text === bannerText) return;
+      bannerText = text;
+      if (!b) { banner.style.opacity = 0; banner.style.transform = 'translateY(-6px)'; return; }
+      banner.innerHTML = '';
+      const t = document.createElement('div'); t.textContent = b[0]; t.style.cssText = 'font-size:clamp(20px,3.2vw,40px);font-weight:800;letter-spacing:.02em';
+      banner.append(t);
+      if (b[1]) { const s = document.createElement('div'); s.textContent = b[1]; s.style.cssText = 'font-size:clamp(13px,1.6vw,19px);font-weight:600;opacity:.9;margin-top:2px'; banner.append(s); }
+      banner.style.opacity = 1; banner.style.transform = 'none';
     }
     const ro = new ResizeObserver(resize); ro.observe(container);
 
@@ -1237,7 +2070,9 @@
       raf = running ? requestAnimationFrame(frame) : 0;
       const dt = Math.min(0.1, (now - last) / 1000); last = now;
       const s = getState();
-      if (s.route !== built) setRoute(s.route);
+      const want = s.real !== false;
+      if (s.route !== built || want !== realWant) { realWant = want; setRoute(s.route); }
+      else if (built && !built.scenery && realWant && placeData.get(built)?.v !== builtV) setRoute(built); // more of the real place is in
       if (!built) return;
       if (tiles.length) {
         // Nearest to the rider first; sorted again after he has moved on 300 m (or jumped).
@@ -1283,14 +2118,34 @@
         scatterTick = 0.3;
         for (const m of scatter) { const c = m.geometry.boundingSphere.center; m.visible = Math.hypot(c.x - camPos.x, c.z - camPos.z) < FAR - 50 + m.geometry.boundingSphere.radius * 0.6; }
       }
-      tuft.wind.value += dt;
+      tuft.wind.value += dt * (WEATHER[weather].fall ? 1.8 : 1); // gustier in rain and snow
+      if (fall) fall.step(dt, camPos);
+      if (REAL) {
+        // The distant land, built again round the camera every 700 m.
+        const rec = placeData.get(built);
+        if (rec?.far && (!farAt || Math.hypot(farAt.x - camPos.x, farAt.z - camPos.z) > 700)) {
+          farAt = camPos.clone();
+          const geo = farLand(g, REAL, rec.near, rec.far, camPos.x, camPos.z, SUN_DIR);
+          if (farMesh) { farMesh.geometry.dispose(); farMesh.geometry = geo; }
+          else { farMesh = new T.Mesh(geo, farMat); farMesh.frustumCulled = false; farScene.add(farMesh); hazeFor(); }
+        }
+        if (sea) sea.position.set(camPos.x, sea.position.y, camPos.z);
+        if ((bannerTick -= dt) <= 0) { bannerTick = 0.25; showBanner(bannerAt(REAL, Math.floor(disp / STEP))); }
+      }
       const gi = Math.floor(disp / STEP);
       if (gi !== grassAt) { grassAt = gi; plantGrass(g, gi); }
       dome.position.copy(camPos);
       sun.target.position.copy(pos); sun.position.copy(pos).addScaledVector(SUN_DIR, 200);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);
       if (sky2) { drift += dt * 1.5; sky2.position.set(camPos.x * 0.9 + drift, hills0.position.y, camPos.z * 0.9); }
+      farCam.position.copy(camera.position); farCam.quaternion.copy(camera.quaternion);
+      renderer.clear();
+      renderer.render(farScene, farCam);
+      renderer.clearDepth();
       renderer.render(scene, camera);
+      // The drawing buffer is only readable until this frame is handed over,
+      // so screenshots and recordings copy it from here.
+      if (afterRender) afterRender(renderer.domElement);
     }
 
     return {
@@ -1299,8 +2154,14 @@
       get canvas() { return renderer.domElement; },
       get view() { return view; },
       set view(v) { if (VIEWS[v] && v !== view) { view = v; camPos.set(0, 0, 0); } },
+      get weather() { return weather; },
+      set weather(w) { if (WEATHER[w]) setWeather(w); },
       get info() { return renderer.info.render; },
       get scenery() { return built && world.userData.sc; }, // where the gantries and flags went
+      get note() { return note; }, // what has loaded of the real place, and its credits
+      get real() { return REAL && { towns: REAL.towns.map(t => [t.name, t.a * STEP, t.b * STEP]), cols: REAL.cols.map(c => [c.name, c.ele, c.start * STEP, c.top * STEP]), borders: REAL.borders.map(b => [b.to.name, b.i * STEP]), region: { med: REAL.med, alps: REAL.alps, lavender: REAL.lavender, snowLine: REAL.snowLine, treeLine: REAL.treeLine, code: REAL.code(0) } }; },
+      get banner() { return bannerText; },
+      set afterRender(fn) { afterRender = fn || null; },
     };
   }
 

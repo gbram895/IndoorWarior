@@ -160,14 +160,62 @@ The rider and bike are built in code. The legs follow the pedals at your
 cadence (two-bone IK from the hip to the pedal), the arms reach the hoods,
 and on a real gradient above 6% the rider gets out of the saddle and rocks
 the bike. **Camera** switches between behind, close behind and the roadside;
+**Weather** between clear, cloudy, rain (falling rain, a wet road), fog and
+snow (falling snow, snow lying on the land), or **real**: the weather at the
+route's start right now, from [Open-Meteo](https://open-meteo.com);
 **Full screen** fills the screen with the view, power, speed, gradient and
 distance on top.
+
+**Screenshot** and **Record** (bottom right of the view) capture the 3D view
+with the place name and your power, speed, gradient, distance and heart rate
+drawn in. A recording stops by itself after three minutes. During a ride they
+wait in the browser until Gradient has them; when the ride ends Gradient
+emails them to you (a long recording comes as a download link) and keeps them
+on the workout as downloads. Without a ride running they go straight to the
+Downloads folder. The email needs `RESEND_API_KEY` set on Gradient.
 
 It uses three.js r149 (`web/vendor/three.min.js`, MIT, loaded only when the 3D
 view is first shown) and `web/world3d.js`. Both are classic scripts so the
 3D view also works when `index.html` is opened as a file. The world is built
 once per route in 600 m pieces, so only the pieces near the rider are drawn.
 If the browser has WebGL switched off, it falls back to the map.
+
+#### The real place
+
+For a GPX route the 3D view shows the place the route really runs through
+(**World: real**, the default; **World: made up** goes back to the made-up
+land). When the route opens, `web/places.js` fetches, straight from the
+browser and free of any key:
+
+- the land's height from [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
+  (about 13 m detail within a kilometre of the road, coarser out to 40 km);
+- lakes, rivers and streams, woods, built-up areas, buildings, vineyards,
+  bare rock, glaciers, place names, named cols and country borders from
+  [OpenStreetMap](https://www.openstreetmap.org/copyright) through the
+  Overpass API (kept in the browser's cache, so a route opened again is
+  instant).
+
+The world shows made-up land until the heights are in, then is built again on
+the real land, and again when the map arrives. A line under the view says
+what is loading or what failed (and falls back to made-up land or made-up
+woods), and carries the credits.
+
+On the real land: the mountains on the horizon are the real ones out to
+40 km, with snow above this month's snow line; lakes lie flat in their basins,
+rivers run under the road, the sea reaches the coast. Woods stand where the
+map has woods, spruce and larch from about 1,000 m up and none above the tree
+line; farmland lies low down, meadows higher, then yellow alpine grass, scree
+and bare rock on steep or high ground. Each building on the map near the road
+stands as a house in the style of where it is: brick with dark roofs in the
+north, stucco with terracotta and green shutters in the south, white and
+timber with wide low roofs in the mountains. In Haute-Provence a third of the
+fields are lavender. Hedges grow only in the lowland north.
+
+Signs stand where they would: each town's name on the way in, crossed out on
+the way out, in the country's colours; the col's name and height at its top
+(with flags); the blue EU sign where the route crosses a border. The name
+also shows over the view: the town, the col with the distance to its top
+while climbing, and "Welcome to Italy" over a border.
 
 #### IndoorWarior Island
 
