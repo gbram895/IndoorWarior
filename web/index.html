@@ -58,6 +58,10 @@
   .route3d:fullscreen .hud3d b { font-size: 34px; }
   .r3dbtns { position: absolute; right: 10px; top: 10px; display: flex; gap: 6px; }
   .r3dbtn { background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; }
+  .r3dshoot { top: auto; bottom: 30px; }
+  .r3dbtn.rec { background: rgba(200, 30, 30, 0.85); color: #fff; }
+  .r3dflash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 400ms ease-out; }
+  .r3dflash.on { opacity: 0.55; transition: none; }
   .r3dnote { position: absolute; left: 10px; bottom: 8px; right: 10px; font-size: 11px; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); pointer-events: none; }
   .seg { display: inline-flex; background: #12151b; border-radius: 8px; padding: 2px; margin: 8px 0; }
   .seg button { background: none; color: var(--muted); padding: 5px 12px; font-size: 13px; }
@@ -350,6 +354,7 @@
         <div id="rpeStatus" class="muted" style="margin-top:4px"></div>
       </div>
       <div id="stravaStatus" class="muted" style="margin-top:6px"></div>
+      <div id="mediaStatus" class="muted" style="margin-top:6px"></div>
       <div class="row" style="margin-top:8px">
         <button id="stravaBtn">Upload to Strava</button>
         <a id="stravaAllow" class="hidden" target="_blank" rel="noopener"><button type="button">Allow uploads to Strava</button></a>
@@ -375,6 +380,8 @@
       <div id="route3d" class="route3d hidden">
         <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
         <div class="r3dbtns"><button class="r3dbtn hidden" id="r3dWorld">World: real</button><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
+        <div class="r3dbtns r3dshoot"><button class="r3dbtn" id="r3dPhoto">Screenshot</button><button class="r3dbtn" id="r3dRec">Record</button></div>
+        <div class="r3dflash" id="r3dFlash"></div>
         <div class="r3dnote" id="r3dNote"></div>
       </div>
       <canvas id="routeMap" class="route-map"></canvas>
@@ -1561,7 +1568,7 @@ async function gradientApi(path, options = {}) {
   try {
     res = await fetch(base + path, {
       ...options,
-      headers: { 'Content-Type': 'application/json', ...(gradient.token ? { Authorization: `Bearer ${gradient.token}` } : {}) },
+      headers: { 'Content-Type': 'application/json', ...options.headers, ...(gradient.token ? { Authorization: `Bearer ${gradient.token}` } : {}) },
     });
   } catch {
     throw new Error(`Could not reach Gradient at ${base}. Check the laptop is online and the address under "Gradient address".`);
@@ -1601,6 +1608,7 @@ async function signIn(e) {
     store.set('gradient', gradient);
     $('gPassword').value = '';
     renderGradient();
+    rideMedia.send();
     await loadToday();
   } catch (err) {
     rideMsg(`Sign-in failed: ${err.message}`, 'bad');
@@ -2486,6 +2494,7 @@ function finishRide() {
   else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
   saveUnsaved();
   renderRide();
+  rideMedia.finished(ride);
   // A simulator ride never goes to Strava by itself.
   if (SIM) stravaMsg('Simulator ride, so it was not sent to Strava. Discard it, or press Upload to Strava to send it anyway.');
   else uploadToStrava(true);
@@ -2850,6 +2859,97 @@ const countdown = (() => {
   });
 })();
 
+// ---- Screenshots and recordings from the 3D view. Each waits in this
+// browser (IndexedDB, which survives a closed tab) until Gradient has it.
+// Once a ride is finished Gradient emails you its files, and keeps them on
+// the workout as downloads.
+const rideMedia = (() => {
+  let dbp = null, busy = null;
+  const db = () => dbp || (dbp = new Promise((ok, fail) => {
+    const req = indexedDB.open('iw-media', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => fail(req.error);
+  }));
+  const tx = async (mode, fn) => {
+    const d = await db();
+    return new Promise((ok, fail) => {
+      const t = d.transaction('files', mode), r = fn(t.objectStore('files'));
+      t.oncomplete = () => ok(r.result); t.onerror = () => fail(t.error);
+    });
+  };
+  const all = () => tx('readonly', s => s.getAll());
+  const put = rec => tx('readwrite', s => s.put(rec));
+  const del = id => tx('readwrite', s => s.delete(id));
+  const msg = (text, cls = '') => {
+    $('mediaStatus').textContent = text;
+    $('mediaStatus').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : '';
+  };
+  const what = recs => {
+    const p = recs.filter(r => r.mime.startsWith('image/')).length, v = recs.length - p;
+    return [p && `${p} screenshot${p > 1 ? 's' : ''}`, v && `${v} recording${v > 1 ? 's' : ''}`].filter(Boolean).join(' and ');
+  };
+  const current = () => (ride.status !== 'idle' && ride.samples.length ? ride.samples[0].t : null);
+
+  async function keep(blob) {
+    const start = current(), video = blob.type.startsWith('video/');
+    if (!start) {
+      // No ride to keep it with, so it goes straight to the Downloads folder.
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `IndoorWarior-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${video ? 'webm' : 'jpg'}`;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      rideMsg(`${video ? 'Recording' : 'Screenshot'} saved to your Downloads folder. Start a ride to have them emailed to you.`, 'ok');
+      return;
+    }
+    try { await put({ rideStart: start, takenAt: Math.floor(Date.now() / 1000), mime: blob.type || 'video/webm', blob, name: ride.name || '', sent: false }); }
+    catch (e) { rideMsg(`Could not keep the ${video ? 'recording' : 'screenshot'}: ${e.message}`, 'bad'); return; }
+    rideMsg(`${video ? 'Recording' : 'Screenshot'} kept. It is emailed to you when the ride ends.`, 'ok');
+    send();
+  }
+
+  // Uploads whatever Gradient does not have yet, then asks it to email every
+  // finished ride's files. Safe to call any time; calls never overlap.
+  function send() { return (busy = busy || run().finally(() => { busy = null; })); }
+  async function run() {
+    let recs;
+    try { recs = await all(); } catch { return; }
+    if (!recs.length) return;
+    if (!gradient.token) { msg(`${what(recs)} kept here. Sign in to Gradient above to have them emailed to you.`); return; }
+    for (const r of recs.filter(r => !r.sent)) {
+      try {
+        await gradientApi(`/api/media?startedAt=${r.rideStart}&takenAt=${r.takenAt}`, { method: 'POST', headers: { 'Content-Type': r.mime }, body: r.blob });
+        r.sent = true; delete r.blob; // Gradient has it now
+        await put(r);
+      } catch (err) {
+        msg(err.status === 404 ? 'Gradient needs its latest update before it can take screenshots and recordings.'
+          : `Could not send ${what(recs)} to Gradient: ${err.message} They are kept here and go with the next try.`, 'bad');
+        return;
+      }
+    }
+    const now = current();
+    const rides = [...new Set(recs.map(r => r.rideStart))].filter(t => t !== now || ride.status === 'finished');
+    for (const t of rides) {
+      const mine = recs.filter(r => r.rideStart === t);
+      msg(`Emailing ${what(mine)}…`);
+      try {
+        const out = await gradientApi('/api/media/email', { method: 'POST', body: JSON.stringify({ startedAt: t, title: mine[0].name || undefined }) });
+        msg(out.sent ? `Emailed ${what(mine)} to ${out.to}. They are on the workout in Gradient too.`
+          : `${what(mine)} saved on the workout in Gradient. ${out.reason}`, out.sent ? 'ok' : '');
+        for (const r of mine) await del(r.id);
+      } catch (err) {
+        msg(`${what(mine)} are in Gradient but the email failed: ${err.message}`, 'bad');
+      }
+    }
+  }
+
+  // A recording still running when the ride ends is stopped and goes in the
+  // same email; it takes a moment to be written out.
+  function finished() { view3d.stopRec(); setTimeout(send, 1500); }
+  return { keep, send, finished };
+})();
+
 function keepRide(r) { if (r !== ride) store.set('unsavedRide', r); else saveUnsaved(); }
 
 function rpeMsg(text, cls = '') {
@@ -3030,6 +3130,7 @@ document.addEventListener('visibilitychange', async () => {
 });
 renderGradient();
 renderRide();
+rideMedia.send(); // anything left from an earlier ride
 
 // ---- Route: a GPX file drawn as a map and an elevation profile. During a
 // ride your position moves at a speed worked out from your power, and while
@@ -3345,7 +3446,7 @@ window.addEventListener('resize', () => renderRoute());
 // ---- 3D view of the route (world3d.js on three.js). The libraries load the
 // first time 3D is shown, so the page stays quick for everything else.
 const view3d = (() => {
-  let world = null, loading = null, mode = 'map', realWorld = true, noteTimer = 0;
+  let world = null, loading = null, mode = 'map', realWorld = true, noteTimer = 0, stopRec = () => {};
   try { mode = localStorage.getItem('routeView') === '2d' ? '2d' : '3d'; } catch { mode = '3d'; }
   const loadScript = src => new Promise((ok, fail) => {
     const el = document.createElement('script'); el.src = src;
@@ -3392,7 +3493,7 @@ const view3d = (() => {
     $('route3d').classList.toggle('hidden', !three);
     $('routeMap').classList.toggle('hidden', three);
     clearInterval(noteTimer);
-    if (!three) { world?.stop(); return; }
+    if (!three) { stopRec(); world?.stop(); return; }
     showNote(); noteTimer = setInterval(showNote, 500);
     try { (await ensure()).start(); applyWeather(); }
     catch (e) { routeMsg(`3D view unavailable: ${e.message} Showing the map instead.`, 'bad'); mode = '2d'; show('2d'); }
@@ -3453,7 +3554,78 @@ const view3d = (() => {
     if (document.fullscreenElement) document.exitFullscreen(); else $('route3d').requestFullscreen?.().catch(() => {});
   });
   document.addEventListener('fullscreenchange', () => { $('r3dFull').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen'; });
-  return { show, hud, refresh: () => show(mode), get mode() { return mode; }, get info() { return world?.info; }, get scenery() { return world?.scenery; } };
+  // Screenshot and Record: the 3D view with the ride's numbers and the place
+  // name drawn in, kept with the ride and emailed by Gradient when it ends.
+  const shot = (() => {
+    const out = document.createElement('canvas'), ctx = out.getContext('2d');
+    let wantPhoto = null, rec = null;
+    function compose(gl) {
+      const s = Math.min(1, 1920 / gl.width), w = Math.round(gl.width * s), h = Math.round(gl.height * s);
+      if (out.width !== w || out.height !== h) { out.width = w; out.height = h; }
+      ctx.drawImage(gl, 0, 0, w, h);
+      const u = h / 720;
+      ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 8 * u;
+      const [name, sub] = (world?.banner || '').split('|');
+      if (name) {
+        ctx.font = `800 ${Math.round(40 * u)}px "Segoe UI", Arial, sans-serif`; ctx.fillText(name, w / 2, h * 0.12 + 40 * u);
+        if (sub) { ctx.font = `600 ${Math.round(19 * u)}px "Segoe UI", Arial, sans-serif`; ctx.fillText(sub, w / 2, h * 0.12 + 66 * u); }
+      }
+      const hr = $('hr').textContent.trim();
+      const stats = [[$('h3Power').textContent, 'W'], [$('h3Speed').textContent, 'km/h'], [$('h3Grade').textContent, ''], [$('h3Dist').textContent, 'km'], ...(/\d/.test(hr) ? [[hr, 'bpm']] : [])];
+      ctx.textAlign = 'left'; ctx.shadowBlur = 0;
+      ctx.font = `700 ${Math.round(22 * u)}px "Segoe UI", Arial, sans-serif`;
+      const text = stats.map(([v, unit]) => `${v}${unit ? ' ' + unit : ''}`).join('   ·   ');
+      const pad = 12 * u, bw = ctx.measureText(text).width + pad * 2, bh = 40 * u;
+      ctx.fillStyle = 'rgba(15,17,21,.72)'; ctx.fillRect(14 * u, h - bh - 14 * u, bw, bh);
+      ctx.fillStyle = '#fff'; ctx.fillText(text, 14 * u + pad, h - 14 * u - bh / 2 + 8 * u);
+    }
+    function afterRender(gl) {
+      if (!wantPhoto && !rec) { world.afterRender = null; return; }
+      compose(gl);
+      if (wantPhoto) { const done = wantPhoto; wantPhoto = null; out.toBlob(done, 'image/jpeg', 0.9); }
+      if (rec) rec.track.requestFrame?.();
+    }
+    async function photo() {
+      if (!world) return;
+      const blob = await new Promise(ok => { wantPhoto = ok; world.afterRender = afterRender; });
+      $('r3dFlash').classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => $('r3dFlash').classList.remove('on')));
+      if (blob) rideMedia.keep(blob);
+    }
+    // Recordings stop by themselves after three minutes, which keeps each
+    // one under what Gradient stores and an email can carry.
+    const MAX_REC = 180;
+    function stopRec() { if (rec && rec.mr.state !== 'inactive') rec.mr.stop(); }
+    function record() {
+      if (rec) { stopRec(); return; }
+      if (!world || !window.MediaRecorder) return;
+      const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
+      const stream = out.captureStream(0), parts = [], started = Date.now();
+      const mr = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 2000000 });
+      rec = { mr, track: stream.getVideoTracks()[0], timer: 0 };
+      world.afterRender = afterRender;
+      mr.ondataavailable = e => { if (e.data.size) parts.push(e.data); };
+      mr.onstop = () => {
+        clearInterval(rec.timer); rec = null;
+        $('r3dRec').textContent = 'Record'; $('r3dRec').classList.remove('rec');
+        stream.getTracks().forEach(t => t.stop());
+        if (parts.length) rideMedia.keep(new Blob(parts, { type: 'video/webm' }));
+      };
+      mr.start(1000);
+      const label = () => {
+        const s = Math.floor((Date.now() - started) / 1000);
+        if (s >= MAX_REC) stopRec();
+        $('r3dRec').textContent = `Stop ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      };
+      $('r3dRec').classList.add('rec'); label(); rec.timer = setInterval(label, 500);
+    }
+    $('r3dPhoto').addEventListener('click', photo);
+    $('r3dRec').addEventListener('click', record);
+    $('r3dRec').classList.toggle('hidden', !window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream);
+    return { stopRec };
+  })();
+  stopRec = shot.stopRec;
+
+  return { show, hud, stopRec: () => stopRec(), refresh: () => show(mode), get mode() { return mode; }, get info() { return world?.info; }, get scenery() { return world?.scenery; } };
 })();
 
 $('connectBtn').addEventListener('click', connect);

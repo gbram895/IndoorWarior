@@ -1883,7 +1883,7 @@
     // near the road, the far heights, the map. The world is built again as
     // each arrives (v counts them). note is the line shown under the view.
     const placeData = new WeakMap();
-    let realWant = true, builtV = null, farMesh = null, farAt = null, sea = null, bannerTick = 0, bannerText = '';
+    let realWant = true, builtV = null, farMesh = null, farAt = null, sea = null, bannerTick = 0, bannerText = '', afterRender = null;
     const farMat = new T.MeshBasicMaterial({ vertexColors: true });
     function placesFor(route) {
       let rec = placeData.get(route);
@@ -2143,6 +2143,9 @@
       renderer.render(farScene, farCam);
       renderer.clearDepth();
       renderer.render(scene, camera);
+      // The drawing buffer is only readable until this frame is handed over,
+      // so screenshots and recordings copy it from here.
+      if (afterRender) afterRender(renderer.domElement);
     }
 
     return {
@@ -2158,6 +2161,7 @@
       get note() { return note; }, // what has loaded of the real place, and its credits
       get real() { return REAL && { towns: REAL.towns.map(t => [t.name, t.a * STEP, t.b * STEP]), cols: REAL.cols.map(c => [c.name, c.ele, c.start * STEP, c.top * STEP]), borders: REAL.borders.map(b => [b.to.name, b.i * STEP]), region: { med: REAL.med, alps: REAL.alps, lavender: REAL.lavender, snowLine: REAL.snowLine, treeLine: REAL.treeLine, code: REAL.code(0) } }; },
       get banner() { return bannerText; },
+      set afterRender(fn) { afterRender = fn || null; },
     };
   }
 

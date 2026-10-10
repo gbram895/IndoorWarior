@@ -166,6 +166,14 @@ route's start right now, from [Open-Meteo](https://open-meteo.com);
 **Full screen** fills the screen with the view, power, speed, gradient and
 distance on top.
 
+**Screenshot** and **Record** (bottom right of the view) capture the 3D view
+with the place name and your power, speed, gradient, distance and heart rate
+drawn in. A recording stops by itself after three minutes. During a ride they
+wait in the browser until Gradient has them; when the ride ends Gradient
+emails them to you (a long recording comes as a download link) and keeps them
+on the workout as downloads. Without a ride running they go straight to the
+Downloads folder. The email needs `RESEND_API_KEY` set on Gradient.
+
 It uses three.js r149 (`web/vendor/three.min.js`, MIT, loaded only when the 3D
 view is first shown) and `web/world3d.js`. Both are classic scripts so the
 3D view also works when `index.html` is opened as a file. The world is built
