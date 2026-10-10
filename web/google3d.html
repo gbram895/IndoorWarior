@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IndoorWarior - Google 3D test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 14px "Segoe UI", Arial, sans-serif; }
+  #map { position: fixed; inset: 0; }
+  #panel { position: fixed; left: 12px; top: 12px; z-index: 2; background: rgba(20,20,20,.82); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; max-width: 340px; }
+  #panel label { display: grid; gap: 4px; font-size: 12px; color: #bbb; }
+  #panel input[type=text] { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #444; background: #222; color: #eee; }
+  #panel button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 0; background: #e8641b; color: #fff; cursor: pointer; }
+  #panel button.secondary { background: #333; }
+  #row { display: flex; gap: 6px; align-items: center; }
+  #msg { font-size: 12px; color: #ccc; }
+  #stats { font-size: 20px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <div><b>Google 3D test</b> - flies along a GPX at riding speed</div>
+  <label>Google Maps API key <input type="text" id="key" placeholder="AIza..." autocomplete="off"></label>
+  <label>GPX route <input type="file" id="gpx" accept=".gpx"></label>
+  <label>Speed: <span id="speedOut">25</span> km/h <input type="range" id="speed" min="5" max="60" value="25"></label>
+  <label>Ground offset (if the camera dips into the hill): <span id="offOut">0</span> m <input type="range" id="off" min="-40" max="40" value="0"></label>
+  <label>Camera: <span id="camOut">behind</span> <input type="range" id="cam" min="0" max="2" value="0"></label>
+  <div id="row"><button id="go">Start</button><button id="pause" class="secondary">Pause</button><button id="back" class="secondary">-1 km</button><button id="fwd" class="secondary">+1 km</button></div>
+  <div id="stats">0.00 km</div>
+  <div id="msg">Enter your key and pick a GPX.</div>
+</div>
+<script>
+// A throwaway test of Google's photoreal 3D map (Maps JavaScript API,
+// Map3DElement) for IndoorWarior: the camera rides a GPX route at a set
+// speed, the way the 3D view does, so the scenery can be judged before
+// anything is rebuilt on it. Google's 3D tiles API is closed to EEA
+// accounts; this widget is Google's own replacement for them there.
+(function () {
+  const $ = id => document.getElementById(id);
+  const msg = t => { $('msg').textContent = t; };
+  let refused = false, route = null, dist = 0, playing = false, last = 0, map = null, heading = null;
+  const CAMS = [['behind', 32, 72], ['low', 14, 82], ['high', 120, 55]];
+  try { $('key').value = new URLSearchParams(location.search).get('key') || localStorage.getItem('gmapsKey') || ''; } catch (e) {}
+
+  function parseGpx(text) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    const pts = [...doc.querySelectorAll('trkpt, rtept')].map(p => ({ lat: +p.getAttribute('lat'), lon: +p.getAttribute('lon'), ele: +(p.querySelector('ele')?.textContent || 0) }));
+    if (pts.length < 2) throw new Error('No track points in that GPX.');
+    const R = 6371000, rad = Math.PI / 180;
+    let d = 0; pts[0].d = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      const x = (b.lon - a.lon) * rad * Math.cos((a.lat + b.lat) / 2 * rad), y = (b.lat - a.lat) * rad;
+      d += Math.hypot(x, y) * R; b.d = d;
+    }
+    return { pts, total: d };
+  }
+  function at(d) {
+    const p = route.pts; d = Math.max(0, Math.min(route.total, d));
+    let lo = 0, hi = p.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (p[m].d <= d) lo = m; else hi = m; }
+    const a = p[lo], b = p[hi], t = b.d > a.d ? (d - a.d) / (b.d - a.d) : 0;
+    return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lon + (b.lon - a.lon) * t, ele: a.ele + (b.ele - a.ele) * t };
+  }
+  function bearing(a, b) {
+    const rad = Math.PI / 180, y = Math.sin((b.lng - a.lng) * rad) * Math.cos(b.lat * rad);
+    const x = Math.cos(a.lat * rad) * Math.sin(b.lat * rad) - Math.sin(a.lat * rad) * Math.cos(b.lat * rad) * Math.cos((b.lng - a.lng) * rad);
+    return (Math.atan2(y, x) / rad + 360) % 360;
+  }
+
+  function loadMaps(key) {
+    return new Promise((res, rej) => {
+      if (window.google?.maps?.importLibrary) return res();
+      window.__gmReady = res;
+      window.gm_authFailure = () => { refused = true; playing = false; msg('Google refused the key. Check that the Maps JavaScript API is enabled, billing is on, and the key allows this site.'); };
+      const s = document.createElement('script');
+      s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=beta&loading=async&callback=__gmReady`;
+      s.onerror = () => rej(new Error('Could not load Google Maps.'));
+      document.head.append(s);
+    });
+  }
+
+  async function start() {
+    const key = $('key').value.trim();
+    if (!key) return msg('Enter your Google Maps API key first.');
+    if (!route) return msg('Pick a GPX route first.');
+    try { localStorage.setItem('gmapsKey', key); } catch (e) {}
+    msg('Loading Google 3D...');
+    try { await loadMaps(key); } catch (e) { return msg(e.message); }
+    if (!map) {
+      const { Map3DElement, Polyline3DElement } = await google.maps.importLibrary('maps3d');
+      const p = at(dist);
+      map = new Map3DElement({ center: { lat: p.lat, lng: p.lng, altitude: p.ele }, range: 300, tilt: 65, heading: 0, mode: 'SATELLITE', defaultUIHidden: true });
+      map.addEventListener('gmp-error', () => msg('Google 3D reported an error (see the browser console).'));
+      $('map').append(map);
+      const step = Math.max(1, Math.floor(route.pts.length / 3000));
+      map.append(new Polyline3DElement({
+        path: route.pts.filter((_, i) => i % step === 0).map(q => ({ lat: q.lat, lng: q.lon })),
+        strokeColor: '#e8641b', outerColor: '#ffffff', strokeWidth: 4, outerWidth: 0.3, altitudeMode: 'CLAMP_TO_GROUND', drawsOccludedSegments: false,
+      }));
+    }
+    if (refused) return;
+    playing = true; last = performance.now();
+    msg('Riding. Slower scenery loading shows as blur that sharpens.');
+    requestAnimationFrame(frame);
+  }
+
+  function frame(now) {
+    if (!playing || !map) return;
+    const dt = Math.min(0.2, (now - last) / 1000); last = now;
+    dist += (+$('speed').value / 3.6) * dt;
+    if (dist >= route.total) { dist = route.total; playing = false; msg('Route finished.'); }
+    const here = at(dist), ahead = at(dist + 40);
+    const want = bearing(here, ahead);
+    if (heading === null) heading = want;
+    let diff = ((want - heading + 540) % 360) - 180;
+    heading = (heading + diff * Math.min(1, dt * 1.5) + 360) % 360;
+    const [, range, tilt] = CAMS[+$('cam').value];
+    // The camera looks at a point a little ahead of the rider, 1.5 m up.
+    const look = at(dist + 8);
+    map.center = { lat: look.lat, lng: look.lng, altitude: look.ele + 1.5 + +$('off').value };
+    map.heading = heading; map.tilt = tilt; map.range = range;
+    $('stats').textContent = `${(dist / 1000).toFixed(2)} km of ${(route.total / 1000).toFixed(1)} km`;
+    if (playing) requestAnimationFrame(frame);
+  }
+
+  $('gpx').addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try { route = parseGpx(await f.text()); dist = 0; heading = null; msg(`${(route.total / 1000).toFixed(1)} km loaded. Press Start.`); }
+    catch (err) { msg(err.message); }
+  });
+  $('go').addEventListener('click', start);
+  $('pause').addEventListener('click', () => { playing = false; msg('Paused.'); });
+  $('back').addEventListener('click', () => { if (route) dist = Math.max(0, dist - 1000); });
+  $('fwd').addEventListener('click', () => { if (route) dist = Math.min(route.total, dist + 1000); });
+  $('speed').addEventListener('input', () => { $('speedOut').textContent = $('speed').value; });
+  $('off').addEventListener('input', () => { $('offOut').textContent = $('off').value; });
+  $('cam').addEventListener('input', () => { $('camOut').textContent = CAMS[+$('cam').value][0]; });
+})();
+</script>
+</body>
+</html>

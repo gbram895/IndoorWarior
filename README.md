@@ -207,6 +207,13 @@ the odd sealed crack and patched rectangles. The rider wears a printed jersey,
 a vented helmet and wraparound glasses; the bike has deep carbon rims and a
 bottle.
 
+**Google 3D test** (`google3d.html`, not linked from the app): a separate
+page that flies Google's photoreal 3D map along a GPX at a chosen speed, to
+judge whether Google's scenery is worth building the ride view on. It needs
+your own Google Maps API key (Maps JavaScript API, billing on, restricted to
+this site). Google's 3D tiles API is closed to EU/EEA accounts; this
+widget is Google's own replacement there.
+
 **Look: video** (top right, on by default) films the view through a camera
 instead of drawing it straight to the screen. The road and the land smear as
 they would at a 1/50 s shutter while the rider stays sharp, bright sky and wet
