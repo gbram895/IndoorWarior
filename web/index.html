@@ -235,6 +235,24 @@
   @media (prefers-reduced-motion: reduce) { #modeToast { transition: none; } }
   body.riding #route3d.hidden { display: block !important; }
   .rv-wk { display: block; width: 220px; height: 26px; margin: 6px auto 0; }
+  /* Ride anywhere: the map to pick where, and the junction ahead. */
+  .roampick { position: fixed; inset: 0; z-index: 70; background: rgba(6, 8, 12, 0.72); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .roampick-card { background: var(--panel); border-radius: 14px; padding: 16px; width: min(920px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: auto; }
+  .roampick input[type=search] { font: inherit; background: #10131a; color: var(--text); border: 1px solid #2a2f3a; border-radius: 8px; padding: 9px 12px; min-width: 0; }
+  .roammap { height: min(62vh, 580px); min-height: 260px; border-radius: 10px; margin-top: 10px; background: #1b1f27; }
+  .roamhits { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .roamhits:empty { display: none; }
+  .roamhits button { background: #20242d; color: var(--text); font-weight: 500; text-align: left; padding: 8px 12px; }
+  .turnbox { position: absolute; left: 50%; bottom: 52px; transform: translateX(-50%); background: rgba(12, 14, 18, 0.8); color: #f2f4f8; border-radius: 12px; padding: 8px 10px; text-align: center; z-index: 3; max-width: calc(100% - 24px); }
+  body.riding .turnbox { bottom: 248px; }
+  .turnbox .t { font-size: 13px; color: #c9cfda; }
+  .turnbox .opts { display: flex; gap: 6px; justify-content: center; margin-top: 6px; }
+  .turnbox .opts:empty { display: none; }
+  .turnbox button { background: #2a2f3a; color: #f2f4f8; padding: 6px 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 62px; font-size: 12px; font-weight: 600; }
+  .turnbox button.on { background: var(--accent); color: #111; }
+  .turnbox svg { width: 26px; height: 26px; }
+  .turnbox .nm { max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .turnbox .back { flex-direction: row; gap: 6px; margin: 6px auto 0; background: transparent; color: #c9cfda; font-weight: 500; padding: 3px 8px; }
 </style>
 </head>
 <body>
@@ -454,10 +472,11 @@
       <h2 style="margin:0">Route</h2>
       <div class="row">
         <button id="courseBtn">Ride IndoorWarior Island</button>
+        <button id="roamBtn" class="secondary">Ride anywhere</button>
         <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,application/gpx+xml"><span>Load GPX</span></label>
       </div>
     </div>
-    <p class="muted" style="margin:8px 0 0">Ride the built-in 12 km island loop, or load a GPX file (a Strava or Komoot route export works) or drop one here.</p>
+    <p class="muted" style="margin:8px 0 0">Ride the built-in 12 km island loop, load a GPX file (a Strava or Komoot route export works) or drop one here, or ride anywhere: pick a road on a map and choose your way at every junction.</p>
     <div id="routeBox" class="hidden">
       <div class="wname" id="routeName"></div>
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
@@ -467,6 +486,7 @@
         <div class="r3dbtns r3dshoot"><button class="r3dbtn" id="r3dPhoto">Screenshot</button><button class="r3dbtn" id="r3dRec">Record</button></div>
         <div class="r3dflash" id="r3dFlash"></div>
         <div class="r3dnote" id="r3dNote"></div>
+        <div class="turnbox hidden" id="turnBox"><div class="t" id="turnT"></div><div class="opts" id="turnOpts"></div><button class="back" id="turnBack" title="Turn round (U)">↺ Turn round</button></div>
         <div class="rv" id="rv">
           <div class="rv-box rv-left">
             <div class="rv-big"><b id="rvW">--</b><i>W</i><span class="rv-zone" id="rvZone">Z1</span></div>
@@ -511,6 +531,15 @@
     </div>
     <div id="routeMsg" class="muted" style="margin-top:8px"></div>
   </section>
+  <div class="roampick hidden" id="roamPick" role="dialog" aria-modal="true" aria-labelledby="roamTitle">
+    <div class="roampick-card">
+      <div class="erg-head"><h2 id="roamTitle" style="margin:0">Ride anywhere</h2><button class="link" id="roamClose">Cancel</button></div>
+      <form class="row" id="roamSearch" style="flex-wrap:nowrap"><input type="search" id="roamQ" placeholder="Search a town, a col or an address" autocomplete="off" enterkeyhint="search" style="flex:1"><button type="submit" class="secondary">Search</button></form>
+      <div class="roamhits" id="roamHits"></div>
+      <div class="roammap" id="roamMap"></div>
+      <div class="row" style="justify-content:space-between;margin-top:10px"><span class="muted" id="roamMsg">Click a road on the map to start there.</span><button id="roamGo" disabled>Start here</button></div>
+    </div>
+  </div>
 
   <section class="panel hidden ergOff" id="ergPanel">
     <div class="erg-head">
@@ -3429,6 +3458,7 @@ function routeTick(dt) {
     return;
   }
   routeState.dist = Math.min(route.total, routeState.dist + v * dt);
+  if (route.roam) { route.roam.update(routeState.dist); sendGrade(grade); return; } // riding anywhere: the road goes on, no finish
   if (routeState.dist >= route.total) {
     routeState.finished = true;
     routeMsg('Route finished. Keep riding or press Finish.', 'ok');
@@ -3579,7 +3609,8 @@ function useRoute(next) {
   $('routeBox').classList.remove('hidden');
   $('routeName').textContent = route.name;
   view3d.refresh();
-  routeMsg(`${fmtKm(route.total)} km with ${Math.round(route.climb[route.climb.length - 1])} m of climbing. Start a ride to roll. The trainer gets the gradient while ERG is off.`, 'ok');
+  if (route.roam) routeMsg('Ride where you like. As a junction comes up, pick your way with the arrows on screen or the ← and → keys; U turns you round. The trainer gets the gradient while ERG is off.', 'ok');
+  else routeMsg(`${fmtKm(route.total)} km with ${Math.round(route.climb[route.climb.length - 1])} m of climbing. Start a ride to roll. The trainer gets the gradient while ERG is off.`, 'ok');
   renderRoute();
 }
 
@@ -3597,6 +3628,118 @@ $('courseBtn').addEventListener('click', () => loadCourse('island'));
 $('routePanel').addEventListener('dragover', e => e.preventDefault());
 $('routePanel').addEventListener('drop', e => { e.preventDefault(); loadGpxFile(e.dataTransfer.files[0]); });
 $('routeClear').addEventListener('click', clearRoute);
+// ---- Ride anywhere (roam.js): pick a spot on a map, start on the nearest
+// road and choose your way at every junction. The map is Leaflet with
+// OpenStreetMap's tiles; places come from OpenStreetMap's Nominatim search.
+const roamUi = (() => {
+  const load = src => new Promise((ok, fail) => {
+    const el = document.createElement('script'); el.src = src;
+    el.onload = ok; el.onerror = () => fail(new Error(`Could not load ${src}.`));
+    document.head.append(el);
+  });
+  let map = null, pin = null, at = null, busy = false;
+  async function open() {
+    if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before picking somewhere else.', 'bad');
+    $('roamPick').classList.remove('hidden');
+    $('roamMsg').textContent = 'Click a road on the map to start there.';
+    if (!window.L) {
+      const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'vendor/leaflet/leaflet.css'; document.head.append(css);
+      try { await load('vendor/leaflet/leaflet.js'); } catch (e) { $('roamMsg').textContent = e.message; return; }
+    }
+    if (!map) {
+      const last = store.get('roamAt', null);
+      map = L.map('roamMap', { zoomControl: true }).setView(last ? [last.lat, last.lon] : [50.85, 4.35], last ? 13 : 8);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(map);
+      map.on('click', e => choose(e.latlng.lat, e.latlng.lng));
+      if (last) choose(last.lat, last.lon);
+    }
+    setTimeout(() => map.invalidateSize(), 0);
+    $('roamQ').focus();
+  }
+  function choose(lat, lon) {
+    at = { lat, lon };
+    if (pin) pin.setLatLng([lat, lon]);
+    else pin = L.circleMarker([lat, lon], { radius: 8, color: '#111', weight: 2, fillColor: '#ff7a1a', fillOpacity: 1 }).addTo(map);
+    $('roamGo').disabled = busy;
+    $('roamMsg').textContent = map.getZoom() < 13 ? 'Zoom in to put the dot on the road you want.' : 'Start here, or click somewhere else.';
+  }
+  function close() { if (!busy) $('roamPick').classList.add('hidden'); }
+  async function search(q) {
+    $('roamHits').textContent = '';
+    if (!q.trim()) return;
+    $('roamMsg').textContent = 'Searching…';
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`, { headers: { 'Accept-Language': navigator.language || 'en' } });
+      if (!r.ok) throw new Error(`the search said ${r.status}`);
+      const hits = await r.json();
+      if (!hits.length) { $('roamMsg').textContent = 'Nothing found by that name.'; return; }
+      $('roamMsg').textContent = 'Pick one, then click the road you want.';
+      for (const h of hits) {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = h.display_name;
+        b.addEventListener('click', () => { $('roamHits').textContent = ''; map.setView([+h.lat, +h.lon], 15); choose(+h.lat, +h.lon); });
+        $('roamHits').append(b);
+      }
+    } catch (e) { $('roamMsg').textContent = `The search did not work (${e.message}). Move the map by hand instead.`; }
+  }
+  async function go() {
+    if (!at || busy) return;
+    busy = true; $('roamGo').disabled = true;
+    try {
+      if (!window.IW_PLACES) await load('places.js');
+      if (!window.IW_ROAM) await load('roam.js');
+      const r = await IW_ROAM.start(at.lat, at.lon, { onState: t => { $('roamMsg').textContent = t; } });
+      store.set('roamAt', at);
+      busy = false; close();
+      useRoute(r);
+    } catch (e) {
+      $('roamMsg').textContent = e.message || String(e);
+    } finally { busy = false; $('roamGo').disabled = !at; }
+  }
+  $('roamBtn').addEventListener('click', open);
+  $('roamClose').addEventListener('click', close);
+  $('roamPick').addEventListener('click', e => { if (e.target === $('roamPick')) close(); });
+  $('roamSearch').addEventListener('submit', e => { e.preventDefault(); search($('roamQ').value); });
+  $('roamGo').addEventListener('click', go);
+
+  // The junction ahead, over the 3D view: each way on as an arrow, the one
+  // you will take lit. Click one, or ← and → move along them; U turns round.
+  let shown = '';
+  const arrow = turn => `<svg viewBox="-12 -12 24 24" aria-hidden="true"><path d="M0 9V-6M-6 0L0-7L6 0" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="rotate(${Math.round(turn)})"/></svg>`;
+  const wordFor = t => (Math.abs(t) < 25 ? 'Straight on' : t < 0 ? (t < -120 ? 'Sharp left' : 'Left') : (t > 120 ? 'Sharp right' : 'Right'));
+  function render() {
+    const box = $('turnBox');
+    if (!route?.roam) { if (!box.classList.contains('hidden')) box.classList.add('hidden'); shown = ''; return; }
+    box.classList.remove('hidden');
+    const n = route.roam.next(routeState.dist);
+    $('turnT').textContent = n ? `Junction in ${Math.max(0, Math.round(n.dist / 10) * 10)} m` : route.roam.loading ? 'Loading the map ahead…' : 'Road ahead';
+    const key = n ? `${n.sel}|${n.options.map(o => Math.round(o.turn)).join()}` : '';
+    if (key === shown) return;
+    shown = key;
+    $('turnOpts').innerHTML = '';
+    if (!n) return;
+    n.options.forEach((o, k) => {
+      const b = document.createElement('button'); b.type = 'button';
+      b.className = k === n.sel ? 'on' : '';
+      b.title = o.name ? `${wordFor(o.turn)}: ${o.name}` : wordFor(o.turn);
+      b.innerHTML = `${arrow(o.turn)}<span class="nm"></span>`;
+      b.querySelector('.nm').textContent = o.name || wordFor(o.turn);
+      b.addEventListener('click', () => { route.roam.choose(k); render(); });
+      $('turnOpts').append(b);
+    });
+  }
+  const uTurn = () => { if (route?.roam) { route.roam.uTurn(routeState.dist); shown = ''; render(); } };
+  $('turnBack').addEventListener('click', uTurn);
+  document.addEventListener('keydown', e => {
+    if (!route?.roam || e.ctrlKey || e.metaKey || e.altKey) return;
+    if ((/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'checkbox') || e.target.isContentEditable) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); route.roam.left(); render(); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); route.roam.right(); render(); }
+    else if (e.key === 'u' || e.key === 'U') uTurn();
+  });
+  setInterval(render, 250);
+  return { open, render };
+})();
+
 $('rMass').value = routeCfg.mass;
 // Esri key for the sharp aerial photos outside the countries that publish theirs free.
 window.IW_ESRI_KEY = store.get('esriKey', '');
@@ -3678,8 +3821,9 @@ const view3d = (() => {
     $('h3Dist').textContent = fmtKm(routeRidden());
   }
   $('routeViewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.view); });
-  // Camera: behind (default), close behind, or from the roadside. Remembered.
-  const CAMS = [['chase', 'behind'], ['close', 'close'], ['side', 'side']];
+  // Camera: behind (default), close behind, from the roadside, or free (drag
+  // round the rider, wheel or pinch to zoom). Remembered.
+  const CAMS = [['chase', 'behind'], ['close', 'close'], ['side', 'side'], ['free', 'free (drag, zoom)']];
   let cam = 'chase';
   try { cam = CAMS.some(c => c[0] === localStorage.getItem('camera3d')) ? localStorage.getItem('camera3d') : 'chase'; } catch {}
   const setCam = c => {
@@ -4182,7 +4326,8 @@ const rideView = (() => {
   const climbCache = new WeakMap();
   function climbs() {
     if (!route) return [];
-    if (climbCache.has(route)) return climbCache.get(route);
+    const hit = climbCache.get(route);
+    if (hit && hit.ver === route.ver) return hit.list; // riding anywhere: found again as the road grows
     const B = 100, n = Math.floor(route.total / B), out = [], ele = d => routeAt(Math.min(route.total, d)).ele;
     let i = 0;
     while (i < n) {
@@ -4199,7 +4344,7 @@ const rideView = (() => {
       if (len >= 500 && gain / len >= 0.03) out.push({ start: s, top, len, gain, avg: (gain / len) * 100 });
       i = Math.max(i + 1, Math.round(top / B));
     }
-    climbCache.set(route, out);
+    climbCache.set(route, { ver: route.ver, list: out });
     return out;
   }
   // A climb's name: the named col (from the real map) whose top is within 600 m of it.
