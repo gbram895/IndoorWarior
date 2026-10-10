@@ -58,6 +58,7 @@
   .route3d:fullscreen .hud3d b { font-size: 34px; }
   .r3dbtns { position: absolute; right: 10px; top: 10px; display: flex; gap: 6px; }
   .r3dbtn { background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; }
+  .r3dnote { position: absolute; left: 10px; bottom: 8px; right: 10px; font-size: 11px; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); pointer-events: none; }
   .seg { display: inline-flex; background: #12151b; border-radius: 8px; padding: 2px; margin: 8px 0; }
   .seg button { background: none; color: var(--muted); padding: 5px 12px; font-size: 13px; }
   .seg button.on { background: #2a2f3a; color: var(--text); }
@@ -373,7 +374,8 @@
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
       <div id="route3d" class="route3d hidden">
         <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
-        <div class="r3dbtns"><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
+        <div class="r3dbtns"><button class="r3dbtn hidden" id="r3dWorld">World: real</button><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
+        <div class="r3dnote" id="r3dNote"></div>
       </div>
       <canvas id="routeMap" class="route-map"></canvas>
       <canvas id="routeElev" class="route-elev"></canvas>
@@ -3343,7 +3345,7 @@ window.addEventListener('resize', () => renderRoute());
 // ---- 3D view of the route (world3d.js on three.js). The libraries load the
 // first time 3D is shown, so the page stays quick for everything else.
 const view3d = (() => {
-  let world = null, loading = null, mode = 'map';
+  let world = null, loading = null, mode = 'map', realWorld = true, noteTimer = 0;
   try { mode = localStorage.getItem('routeView') === '2d' ? '2d' : '3d'; } catch { mode = '3d'; }
   const loadScript = src => new Promise((ok, fail) => {
     const el = document.createElement('script'); el.src = src;
@@ -3352,20 +3354,36 @@ const view3d = (() => {
   });
   const state = () => {
     const d = route?.loop ? routeRidden() : routeState.dist, cad = parseInt($('cadence').textContent, 10); // laps: the 3D view rides on round
-    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0 };
+    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0, real: realWorld };
   };
   async function ensure() {
     if (world) return world;
     loading = loading || (async () => {
       if (!window.THREE) await loadScript('vendor/three.min.js');
       if (!window.IW_PHOTOS) await loadScript('vendor/photos.js').catch(() => {}); // without it the land is painted plain
+      if (!window.IW_PLACES) await loadScript('places.js').catch(() => {}); // without it every route is made-up land
       if (!window.World3D) await loadScript('world3d.js');
       return World3D.mount($('route3d'), state);
     })();
     try { world = await loading; } catch (e) { loading = null; throw e; }
-    world.view = cam; world.weather = weather;
+    world.view = cam; applyWeather();
     return world;
   }
+  // World: for a GPX route, the real land, woods, water and towns where it
+  // runs (loaded from free map services), or the made-up world. Remembered.
+  // The built-in course is always made up.
+  try { realWorld = localStorage.getItem('world3d') !== 'game'; } catch {}
+  const setWorld = real => {
+    realWorld = real;
+    $('r3dWorld').textContent = `World: ${real ? 'real' : 'made up'}`;
+    try { localStorage.setItem('world3d', real ? 'real' : 'game'); } catch {}
+  };
+  setWorld(realWorld);
+  $('r3dWorld').addEventListener('click', () => setWorld(!realWorld));
+  const showNote = () => {
+    $('r3dWorld').classList.toggle('hidden', !route || !!route.scenery);
+    $('r3dNote').textContent = realWorld && route && !route.scenery ? world?.note || '' : '';
+  };
   async function show(next) {
     mode = next;
     try { localStorage.setItem('routeView', mode); } catch {}
@@ -3373,8 +3391,10 @@ const view3d = (() => {
     const three = mode === '3d' && !!route;
     $('route3d').classList.toggle('hidden', !three);
     $('routeMap').classList.toggle('hidden', three);
+    clearInterval(noteTimer);
     if (!three) { world?.stop(); return; }
-    try { (await ensure()).start(); }
+    showNote(); noteTimer = setInterval(showNote, 500);
+    try { (await ensure()).start(); applyWeather(); }
     catch (e) { routeMsg(`3D view unavailable: ${e.message} Showing the map instead.`, 'bad'); mode = '2d'; show('2d'); }
   }
   function hud() {
@@ -3397,13 +3417,34 @@ const view3d = (() => {
   };
   setCam(cam);
   $('r3dCam').addEventListener('click', () => setCam(CAMS[(CAMS.findIndex(x => x[0] === cam) + 1) % CAMS.length][0]));
-  // Weather: clear, cloudy, rain, fog or snow. Remembered.
-  const WEATHERS = ['clear', 'cloudy', 'rain', 'fog', 'snow'];
+  // Weather: clear, cloudy, rain, fog or snow, or real: the weather at the
+  // route's start right now (Open-Meteo), fetched once per route. Remembered.
+  const WEATHERS = ['clear', 'cloudy', 'rain', 'fog', 'snow', 'real'];
   let weather = 'clear';
+  const realWeather = new WeakMap();
   try { weather = WEATHERS.includes(localStorage.getItem('weather3d')) ? localStorage.getItem('weather3d') : 'clear'; } catch {}
+  async function applyWeather() {
+    const label = t => { $('r3dWeather').textContent = `Weather: ${t}`; };
+    if (weather !== 'real') { label(weather); if (world) world.weather = weather; return; }
+    const r = route;
+    if (!r || !window.IW_PLACES) { label('real'); return; }
+    label('real…');
+    let job = realWeather.get(r);
+    if (!job) realWeather.set(r, (job = IW_PLACES.weather(r.res[0].lat, r.res[0].lon)));
+    try {
+      const now = await job;
+      if (weather !== 'real' || route !== r) return;
+      if (world) world.weather = now.kind;
+      label(`real, ${now.kind} ${Math.round(now.temp)}°C`);
+    } catch (e) {
+      realWeather.delete(r);
+      if (weather !== 'real' || route !== r) return;
+      if (world) world.weather = 'clear';
+      label('real (unavailable)');
+    }
+  }
   const setWeather = w => {
-    weather = w; if (world) world.weather = w;
-    $('r3dWeather').textContent = `Weather: ${w}`;
+    weather = w; applyWeather();
     try { localStorage.setItem('weather3d', w); } catch {}
   };
   setWeather(weather);
