@@ -194,6 +194,27 @@ Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
 while ERG is on, ERG wins. Rides on a route are saved with position and
 elevation as a virtual ride, so Strava shows the map.
 
+### Ride anywhere
+
+**Ride anywhere** in the Route panel opens a map (OpenStreetMap, with a place
+search from Nominatim). Click a road anywhere in the world and **Start here**:
+you start on the nearest road a bike may use and ride where you like. As a
+junction comes up, a box over the 3D view shows each way on as an arrow with
+the road's name; the lit one is where you will go (straight on unless you
+choose). Click another, or use the ← and → keys. **Turn round** (or U) turns
+you round where you are. A dead end turns you round by itself. There is no
+finish line.
+
+`web/roam.js` loads the roads, woods, water, towns and buildings for a 6 km
+square of land at a time from the Overpass API (the next square loads as you
+near the edge of the last), with heights from the same terrain tiles as a
+GPX route; bridges and tunnels run straight across. The road you ride is an
+ordinary route that grows: up to the next junction, and on the way you picked
+once you are 45 m from it. The 3D view builds only the new pieces of road and
+land as it grows, and draws every other road within about 380 m beside it, so
+you can see the junctions coming. Footpaths and bridleways are only used where
+bikes are allowed. It has only been tried with stand-in map data, so far.
+
 ### 3D view
 
 With a route loaded, the Route panel shows it in 3D by default (switch with

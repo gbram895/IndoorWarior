@@ -142,6 +142,13 @@
     return best;
   }
 
+  // The index of the road point nearest a spot within r, or -1.
+  function nearestPoint(g, x, z, r) {
+    let best = -1, bd = r * r;
+    for (const j of nearRoad(g, x, z, r)) { const dx = g.xz[j][0] - x, dz = g.xz[j][1] - z, d = dx * dx + dz * dz; if (d < bd) { bd = d; best = j; } }
+    return best;
+  }
+
   const BUCKET = 100;
   const bucket = (x, z) => Math.floor(x / BUCKET) * 65536 + Math.floor(z / BUCKET);
   // Road point indices within about r of (x, z).
@@ -255,10 +262,13 @@
   // route (about 20 m cells): woods, water and built-up land on one; bare
   // rock, glacier and vineyards on the other. Each is read back smoothly,
   // 0..1, at any spot.
-  function coverOf(g, osm) {
+  // A free ride covers the squares of map loaded (bounds), not the route.
+  function coverOf(g, osm, bounds) {
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const [x, z] of g.xz) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
-    x0 -= 1300; z0 -= 1300; x1 += 1300; z1 += 1300;
+    const corners = bounds ? bounds.flatMap(([s, w, n, e]) => [g.xzOf(s, w), g.xzOf(n, e)]) : g.xz;
+    for (const [x, z] of corners) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    const pad = bounds ? 200 : 1300;
+    x0 -= pad; z0 -= pad; x1 += pad; z1 += pad;
     const cell = Math.max(12, Math.sqrt(((x1 - x0) * (z1 - z0)) / 3e6)), W = Math.ceil((x1 - x0) / cell), H = Math.ceil((z1 - z0) / cell);
     const px = ([lat, lon]) => { const [x, z] = g.xzOf(lat, lon); return [(x - x0) / cell, (z - z0) / cell]; };
     const fill = (cx, shapes, colour) => {
@@ -313,9 +323,9 @@
   // The place a route runs through, from what has loaded so far: heights
   // (near, and far for the distant mountains) and the map (osm), any of
   // which may be missing.
-  function realOf(route, g, data) {
+  function realOf(route, g, data, cover) {
     const lat = route.res[0].lat, lon = route.res[0].lon, osm = data.osm;
-    const R = { dem: g.dem, ele0: g.ele0, cover: osm ? coverOf(g, osm) : null, ...climate(lat) };
+    const R = { dem: g.dem, ele0: g.ele0, cover: osm ? cover || coverOf(g, osm, data.bounds) : null, ...climate(lat) };
     // The satellite photo of the land, where it loaded.
     R.sat = data.sat ? (x, z, out) => { const [la, lo] = g.ll(x, z); return data.sat(la, lo, out); } : null;
     // Sharp aerial photos near the rider, loaded as the land there is painted.
@@ -522,16 +532,23 @@
     if ((h > 950 && R.alps) || c === 'CH' || c === 'AT') return 'alpine';
     return MED.has(c) || (c === 'FR' && lat < 44.6) || (!c && R.med) ? 'med' : 'north';
   }
-  function houses(g, R, osm) {
+  // `range` (a free ride): only the buildings whose nearest road point is
+  // from range[0] up to range[1], so each piece of road builds its own.
+  function houses(g, R, osm, range) {
     if (!osm) return [];
     const cells = new Map(), rand = rng(77);
     for (const bd of osm.buildings) {
+      if (range) { // quick test on one corner before the whole outline
+        const [x, z] = g.xzOf(bd.ring[0][0], bd.ring[0][1]), n = nearestPoint(g, x, z, 280);
+        if (n < range[0] - 2 || n >= range[1] + 2) continue;
+      }
       const ring = bd.ring.map(p => g.xzOf(p[0], p[1]));
       if (ring.length < 4) continue;
       // The building's long axis and size, from its corners.
       let cx = 0, cz = 0;
       for (const [x, z] of ring) { cx += x; cz += z; }
       cx /= ring.length; cz /= ring.length;
+      if (range) { const n = nearestPoint(g, cx, cz, 280); if (n < range[0] || n >= range[1]) continue; }
       let sxx = 0, szz = 0, sxz = 0;
       for (const [x, z] of ring) { sxx += (x - cx) ** 2; szz += (z - cz) ** 2; sxz += (x - cx) * (z - cz); }
       const a = 0.5 * Math.atan2(2 * sxz, sxx - szz), ux = Math.cos(a), uz = Math.sin(a);
@@ -602,6 +619,73 @@
   const houseMats = {};
   const houseMat = style => houseMats[style] || (houseMats[style] = bothSides(new T.MeshLambertMaterial({ vertexColors: true, map: windows(style) })));
   const roofMat = bothSides(new T.MeshLambertMaterial({ vertexColors: true }));
+
+  // ---- The other roads (a free ride): every road on the map near this
+  // piece of the route, as a strip of tarmac (or dirt) lying on the land, so
+  // you see the junctions coming and where each way goes. Each bit of road
+  // belongs to the piece of route nearest it; the bits on the route itself
+  // are left out. Heights follow the land mesh under them (its 20 m grid out
+  // here, the finer strip by the road), so the strip neither floats nor sinks.
+  const SIDE = 380; // m from the route the other roads are drawn out to
+  function sideRoads(g, s, e, roam, M) {
+    const [cx, cz] = g.xz[Math.min(g.n - 1, (s + e) >> 1)], [lat, lon] = g.ll(cx, cz);
+    const ways = roam.roadsNear(lat, lon, CHUNK * STEP * 0.6 + SIDE + 100);
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = s; i <= e; i++) { x0 = Math.min(x0, g.xz[i][0]); x1 = Math.max(x1, g.xz[i][0]); z0 = Math.min(z0, g.xz[i][1]); z1 = Math.max(z1, g.xz[i][1]); }
+    const pos = [[], []], idx = [[], []], uv = [[], []];
+    const meshY = (x, z) => {
+      const near = landAt(g, x, z, nearRoad(g, x, z, 120));
+      if (near && near.d < NEAR) return near.y;
+      // Out on the tiles: the same corners the tile mesh has, mixed as it mixes them.
+      const st = TILE / CELLS, x0 = Math.floor(x / st) * st, z0 = Math.floor(z / st) * st, u = (x - x0) / st, v = (z - z0) / st;
+      const y = (px, pz) => { const p = groundAt(g, px, pz, 300); return p.y - 3 * (1 - smooth(NEAR - 10, NEAR + 8, p.d)); };
+      return u + v < 1 ? y(x0, z0) + (y(x0 + st, z0) - y(x0, z0)) * u + (y(x0, z0 + st) - y(x0, z0)) * v
+        : y(x0 + st, z0 + st) + (y(x0, z0 + st) - y(x0 + st, z0 + st)) * (1 - u) + (y(x0 + st, z0) - y(x0 + st, z0 + st)) * (1 - v);
+    };
+    for (const way of ways) {
+      const half = way.kind.half, k = way.kind.dirt ? 1 : 0;
+      // Points every 5 m along the way, kept where this piece is the nearest route and off the route itself.
+      const pts = way.line.map(p => g.xzOf(p[0], p[1])), run = [];
+      const flush = () => {
+        if (run.length >= 2) {
+          const base = pos[k].length / 3;
+          run.forEach((p, q) => {
+            const a = run[Math.max(0, q - 1)], b = run[Math.min(run.length - 1, q + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
+            const sx = -dz / l * half, sz = dx / l * half;
+            pos[k].push(p[0] + sx, p[2] + 0.06, p[1] + sz, p[0] - sx, p[2] + 0.06, p[1] - sz);
+            uv[k].push(0, p[3] / 4, half / 2, p[3] / 4);
+            if (q) { const i = base + (q - 1) * 2; idx[k].push(i, i + 2, i + 1, i + 1, i + 2, i + 3); }
+          });
+        }
+        run.length = 0;
+      };
+      let walked = 0;
+      for (let q = 0; q + 1 < pts.length; q++) {
+        const [ax, az] = pts[q], [bx, bz] = pts[q + 1], len = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(len / 6));
+        for (let m = q ? 1 : 0; m <= n; m++) {
+          const x = ax + ((bx - ax) * m) / n, z = az + ((bz - az) * m) / n, along = walked + (len * m) / n;
+          if (x < x0 - SIDE || x > x1 + SIDE || z < z0 - SIDE || z > z1 + SIDE) { flush(); continue; }
+          let j = nearestPoint(g, x, z, 120); if (j < 0) j = nearestPoint(g, x, z, SIDE);
+          const mine = j >= s && (j < e || j === g.n - 1); // the last piece also has what lies past the end
+          if (!mine || roadDist(g, x, z) < ROAD_HALF + 0.3) { flush(); continue; }
+          run.push([x, z, meshY(x, z), along]);
+        }
+        walked += len;
+      }
+      flush();
+    }
+    const group = new T.Group();
+    [M.lane, M.dirt].forEach((mat, k) => {
+      if (!idx[k].length) return;
+      const geo = new T.BufferGeometry();
+      geo.setAttribute('position', new T.Float32BufferAttribute(pos[k], 3));
+      geo.setAttribute('uv', new T.Float32BufferAttribute(uv[k], 2));
+      geo.setIndex(idx[k]); geo.computeVertexNormals();
+      const m = new T.Mesh(geo, mat); m.receiveShadow = true;
+      group.add(m);
+    });
+    return group.children.length ? group : null;
+  }
 
   // Lakes and rivers: flat water on the lakes, a ribbon along each river and
   // stream, both lying a little below the banks.
@@ -939,17 +1023,20 @@ void main() {`);
   // The rest of the land: a square grid in 200 m tiles (20 m cells) over
   // everything within 700 m of the route. Close to the road it dips a few
   // metres so it stays hidden under the strip above.
+  // From point `from` on (a free ride's new road), each tile also says how
+  // near that road comes to its middle.
   const TILE = 200, CELLS = 10;
-  function landTiles(g) {
+  function landTiles(g, from = 0) {
     const keys = new Map(), reach = 700 + TILE * 0.71;
-    for (let i = 0; i < g.n; i += 3) {
+    for (let i = from; i < g.n; i += 3) {
       const [x, z] = g.xz[i], tx = Math.floor(x / TILE), tz = Math.floor(z / TILE), k = Math.ceil(reach / TILE);
       for (let a = tx - k; a <= tx + k; a++) for (let b = tz - k; b <= tz + k; b++) {
-        if (Math.hypot((a + 0.5) * TILE - x, (b + 0.5) * TILE - z) < reach) keys.set(a * 65536 + b, [a, b]);
+        const d = Math.hypot((a + 0.5) * TILE - x, (b + 0.5) * TILE - z), key = a * 65536 + b;
+        if (d < reach && !(keys.get(key)?.[2] <= d)) keys.set(key, [a, b, d]);
       }
     }
     const c = new T.Color(), step = TILE / CELLS;
-    return [...keys.values()].map(([a, b]) => ({ x: (a + 0.5) * TILE, z: (b + 0.5) * TILE, build: mat => {
+    return [...keys.values()].map(([a, b, near]) => ({ x: (a + 0.5) * TILE, z: (b + 0.5) * TILE, key: a * 65536 + b, near, build: mat => {
       const x0 = a * TILE, z0 = b * TILE, cx = x0 + TILE / 2, cz = z0 + TILE / 2;
       // Road points that can be nearest to any spot in this tile.
       const dist = j => { const ex = g.xz[j][0] - cx, ez = g.xz[j][1] - cz; return Math.sqrt(ex * ex + ez * ez); };
@@ -1401,7 +1488,7 @@ void main() {`);
       const pos = d => (d < 0 ? total + d : d);
       return { arch: c.arch.map(([d, text]) => [pos(d), text]), flags: c.flags || [], clearings: c.clearings || [] };
     }
-    return { arch: total > 400 ? [[25, 'START'], [total - 25, 'FINISH']] : [[25, 'START']], flags: [], clearings: [] };
+    return { arch: total > 400 && !route.roam ? [[25, 'START'], [total - 25, 'FINISH']] : [[25, 'START']], flags: [], clearings: [] }; // a free ride has no finish
   }
 
   // Clouds: a few clusters of flattened balls high up, drifting slowly. Like
@@ -2090,7 +2177,7 @@ void main() {`);
     let scatter = [], scatterTick = 0; // tree and hedge groups, hidden when far away
     // Land pieces and their painted textures: the job being painted, and the
     // grass grain every land material shares.
-    let pieces = [], paintTick = 0, job = null;
+    let pieces = [], paintTick = 0, job = null, chunks = new Map(), tileOf = new Map(), builtVer = null, builtArea = null;
     const grassPhoto = photo('grass', renderer), grain = grassPhoto ? { photo: true, grass: grassPhoto, soil: photo('dirt', renderer) } : { grass: surface('grass', renderer) };
     const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
@@ -2137,6 +2224,7 @@ void main() {`);
     let realWant = true, builtV = null, farMesh = null, farAt = null, sea = null, bannerTick = 0, bannerText = '', afterRender = null;
     const farMat = new T.MeshBasicMaterial({ vertexColors: true });
     function placesFor(route) {
+      if (route.roam) return route.roam.rec; // a free ride loads its own squares of map (roam.js)
       let rec = placeData.get(route);
       if (rec || !window.IW_PLACES) return rec || null;
       placeData.set(route, (rec = { v: 0 }));
@@ -2182,7 +2270,7 @@ void main() {`);
       const g = geometryOf(route);
       world.userData.g = g;
       // Real land for a GPX route (the built-in course is the made-up world).
-      const rec = realWant && !route.scenery ? placesFor(route) : null;
+      const rec = (realWant || route.roam) && !route.scenery ? placesFor(route) : null; // a free ride is always the real place
       builtV = rec ? rec.v : null; note = noteOf(rec); noteRec = rec;
       if (rec?.near) { useTerrain(g, rec.near); REAL = realOf(route, g, rec); }
       hazeFor();
@@ -2194,47 +2282,121 @@ void main() {`);
       roadMat = asphalt;
       const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
       const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
-      const seed = Math.round(route.total) + route.res.length;
-      scatter = []; pieces = []; job = null;
+      // Side roads (a free ride): tarmac and dirt, drawn over the land.
+      const lane = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x34373c : 0x50545b, map: tarmac || null, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      const dirt = new T.MeshLambertMaterial({ color: 0x8b7b5f, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      world.userData.mats = { asphalt, paint, land, lane, dirt };
+      world.userData.seed = Math.round(route.total) + route.res.length;
+      scatter = []; pieces = []; job = null; chunks = new Map(); tileOf = new Map();
       const sc = sceneryOf(route);
       woodsAt = route.scenery?.woods || [0, 0];
       world.userData.sc = sc;
       if (REAL) for (const c of REAL.cols) sc.flags.push([c.top * STEP - 70, c.top * STEP + 70]); // flags over each col
       if (!sky2 && !photoDome) scene.add((sky2 = clouds())); // the photographed sky has its own
       world.add(props(g, sc));
-      const avoid = (x, z, i) => sc.clearings.some(([a, b]) => i * STEP >= a && i * STEP <= b);
-      for (let s = 0; s < g.n - 1; s += CHUNK) {
-        const e = Math.min(g.n - 1, s + CHUNK);
-        const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; world.add(m); };
-        const fresh = i => !(g.dup[i] && g.dup[i - 1]); // road ridden before is drawn once
-        strip(-ROAD_HALF, ROAD_HALF, 0.02, asphalt, fresh);
-        strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint, fresh);
-        strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint, fresh);
-        strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0 && fresh(i)); // dashed centre line
-        const strip0 = nearLand(g, s, e, land);
-        world.add(strip0); pieces.push(strip0);
-        const t = trees(g, s, e, seed + s, avoid);
-        if (t.length) world.add(...t); scatter.push(...t);
-      }
+      for (let s = 0; s < g.n - 1; s += CHUNK) buildChunk(g, s);
       // The far land is built a few tiles per frame, nearest first, so a long
       // route shows at once instead of freezing the page for a second or two.
       tiles = landTiles(g); tileMat = land; sortedAt = null;
-      world.add(kmSigns(g, route.total));
+      world.userData.km = kmSigns(g, route.total); world.add(world.userData.km);
       if (REAL) {
-        const h = houses(g, REAL, rec.osm);
-        if (h.length) world.add(...h); scatter.push(...h);
+        if (!route.roam) { const h = houses(g, REAL, rec.osm); if (h.length) world.add(...h); scatter.push(...h); }
+        world.userData.water = new T.Group(); world.add(world.userData.water);
         const wt = waters(g, rec.osm);
-        if (wt.length) world.add(...wt);
-        world.add(realSigns(g, REAL));
+        if (wt.length) world.userData.water.add(...wt);
+        world.userData.signs = realSigns(g, REAL); world.add(world.userData.signs);
         if (REAL.sea) { // the sea, a plane at sea level that travels with the camera
           sea = new T.Mesh(new T.PlaneGeometry(2400, 2400), waterMat);
           sea.rotation.x = -Math.PI / 2; sea.position.y = -g.ele0 * LIFT; sea.receiveShadow = true;
           world.add(sea);
         }
       }
+      builtVer = route.ver; builtArea = rec?.area; route.changedFrom = Infinity;
       scene.add(world);
       disp = getState().dist;
       camPos.set(0, 0, 0); camLook.set(0, 0, 0);
+    }
+
+    // One piece of the world: the road from point s to the next CHUNK, its
+    // land strip, its trees, and on a free ride the side roads and houses
+    // nearest it. Kept by s, so a free ride can build it again when the road
+    // past it changes.
+    function buildChunk(g, s) {
+      const e = Math.min(g.n - 1, s + CHUNK), M = world.userData.mats, sc = world.userData.sc, objs = [];
+      const add = o => { world.add(o); objs.push(o); };
+      const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; add(m); };
+      const fresh = i => !(g.dup[i] && g.dup[i - 1]); // road ridden before is drawn once
+      strip(-ROAD_HALF, ROAD_HALF, 0.02, M.asphalt, fresh);
+      strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, M.paint, fresh);
+      strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, M.paint, fresh);
+      strip(-0.07, 0.07, 0.04, M.paint, i => i % 2 === 0 && fresh(i)); // dashed centre line
+      const strip0 = nearLand(g, s, e, M.land);
+      add(strip0); pieces.push(strip0);
+      const avoid = (x, z, i) => sc.clearings.some(([a, b]) => i * STEP >= a && i * STEP <= b);
+      const t = trees(g, s, e, world.userData.seed + s, avoid);
+      for (const o of t) add(o);
+      scatter.push(...t);
+      if (built.roam) {
+        const side = sideRoads(g, s, e, built.roam, M);
+        if (side) add(side);
+        if (REAL) { const h = houses(g, REAL, built.roam.rec.osm, [s, e === g.n - 1 ? e + 1 : e]); for (const o of h) add(o); scatter.push(...h); }
+      }
+      chunks.set(s, objs);
+    }
+    // Take something out of the world for good, keeping the materials other
+    // pieces share.
+    function drop(o) {
+      world.remove(o);
+      o.traverse(q => {
+        if (q.userData.sharedParts) { q.dispose(); return; }
+        if (pieces.includes(q)) { unpaint(q); if (job?.m === q) job = null; }
+        q.geometry?.dispose();
+      });
+      if (pieces.includes(o)) pieces = pieces.filter(m => m !== o);
+      if (scatter.includes(o)) scatter = scatter.filter(m => m !== o);
+    }
+    // A free ride's road grew (or turned round): the pieces from just before
+    // the change are built again for the new road and the land round them
+    // made again; everything before stays as it is, paint and all.
+    function grow(route) {
+      const rec = route.roam.rec, from = Math.max(0, Math.min(route.changedFrom, route.res.length - 1));
+      route.changedFrom = Infinity; builtVer = route.ver;
+      const g = geometryOf(route);
+      world.userData.g = g;
+      if (rec.near) useTerrain(g, rec.near);
+      const newArea = rec.area !== builtArea;
+      builtArea = rec.area;
+      if (REAL) {
+        const was = REAL.cover;
+        REAL = realOf(route, g, rec, newArea ? null : was);
+        if (newArea) { // the next square of map is in: its lakes and rivers
+          for (const o of [...world.userData.water.children]) drop(o);
+          const wt = waters(g, rec.osm);
+          if (wt.length) world.userData.water.add(...wt);
+        }
+      }
+      // Pieces from 80 points before the change (the land and the road's
+      // smoothing reach that far back), built again.
+      const c0 = Math.max(0, Math.floor((from - 80) / CHUNK) * CHUNK);
+      for (const [s0, objs] of [...chunks]) if (s0 >= c0) { for (const o of objs) drop(o); chunks.delete(s0); }
+      for (let s0 = c0; s0 < g.n - 1; s0 += CHUNK) buildChunk(g, s0);
+      // The land tiles round the new road: made again where the road comes
+      // within 400 m, added where there were none.
+      const fresh = landTiles(g, c0);
+      tiles = tiles.filter(t => !fresh.some(f => f.key === t.key));
+      for (const t of fresh) {
+        const old = tileOf.get(t.key);
+        if (old && t.near > 400) continue;
+        if (old) { drop(old); tileOf.delete(t.key); }
+        tiles.push(t);
+      }
+      sortedAt = null;
+      if (Math.floor(route.total / 1000) !== Math.floor((world.userData.kmAt || 0) / 1000)) {
+        drop(world.userData.km); world.userData.km = kmSigns(g, route.total); world.add(world.userData.km);
+      }
+      world.userData.kmAt = route.total;
+      if (REAL) { drop(world.userData.signs); world.userData.signs = realSigns(g, REAL); world.add(world.userData.signs); }
+      grassMade = new Map(); grassAt = null;
     }
 
     // Paint the land near the rider, finer the closer it is; far pieces keep
@@ -2341,7 +2503,8 @@ void main() {`);
       const s = getState();
       const want = s.real !== false;
       if (s.route !== built || want !== realWant) { realWant = want; setRoute(s.route); }
-      else if (built && !built.scenery && realWant && placeData.get(built)?.v !== builtV) setRoute(built); // more of the real place is in
+      else if (built && !built.scenery && (realWant || built.roam) && (built.roam ? built.roam.rec : placeData.get(built))?.v !== builtV) setRoute(built); // more of the real place is in
+      else if (built?.roam && world && (built.ver !== builtVer || built.roam.rec.area !== builtArea)) grow(built); // a free ride's road went on
       if (!built) return;
       if (tiles.length) {
         // Nearest to the rider first; sorted again after he has moved on 300 m (or jumped).
@@ -2351,7 +2514,7 @@ void main() {`);
           for (const t of tiles) t.d = Math.hypot(t.x - here.x, t.z - here.z);
           tiles.sort((p, q) => p.d - q.d);
         }
-        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) { const m = tiles.shift().build(tileMat); world.add(m); pieces.push(m); }
+        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) { const t = tiles.shift(), m = t.build(tileMat); world.add(m); pieces.push(m); tileOf.set(t.key, m); }
       }
       paintGround(dt);
       // Glide between the ride's 4 ticks a second, then ease onto the real distance.
@@ -2401,7 +2564,7 @@ void main() {`);
       if (fall) fall.step(dt, camPos);
       if (REAL) {
         // The distant land, built again round the camera every 700 m.
-        const rec = placeData.get(built);
+        const rec = placesFor(built);
         if (rec?.far && (!farAt || Math.hypot(farAt.x - camPos.x, farAt.z - camPos.z) > 700)) {
           farAt = camPos.clone();
           const geo = farLand(g, REAL, rec.near, rec.far, camPos.x, camPos.z, SUN_DIR, rec.farSat || rec.sat);
