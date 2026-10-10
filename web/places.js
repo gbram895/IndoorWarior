@@ -1,8 +1,10 @@
 // IndoorWarior: the real place a GPX route runs through, for the 3D view.
 // A classic script (window.IW_PLACES), so it also works from a file.
 //
-// Three free sources, fetched straight from the browser when a route opens:
+// Four free sources, fetched straight from the browser when a route opens:
 // - the land's height from AWS Terrain Tiles (Mapzen "terrarium" PNGs, no key);
+// - what the land looks like from above: EOX's Sentinel-2 cloudless mosaic
+//   (Copernicus satellite photos at 10 m, CC BY-NC-SA 4.0, no key);
 // - lakes, rivers, woods, buildings, towns, cols and country borders from
 //   OpenStreetMap through the Overpass API;
 // - the weather there now from Open-Meteo.
@@ -10,6 +12,7 @@
 // its own metres.
 (function () {
   const DEM_URL = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+  const SAT_URL = (z, x, y) => `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/${z}/${y}/${x}.jpg`;
   const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
   const M_PER_DEG = 111320;
 
@@ -75,6 +78,46 @@
       const [px, py] = merc(lat, lon, z), fx = px - 0.5, fy = py - 0.5, ix = Math.floor(fx), iy = Math.floor(fy), u = fx - ix, v = fy - iy;
       const a = at(ix, iy), b = at(ix + 1, iy), c = at(ix, iy + 1), d = at(ix + 1, iy + 1);
       return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+    };
+    fn.zoom = z; fn.tiles = list.length;
+    return fn;
+  }
+
+  // The satellite photo round the points, as terrain() does the heights.
+  // Resolves to a function (lat, lon, out) that fills out with r, g, b
+  // (0 to 1) and returns true, or returns false where there is no photo
+  // (off the tiles, or a black no-data patch).
+  async function imagery(pts, reach, zooms, most) {
+    let z, list;
+    for (z of zooms) { list = tilesNear(pts, reach, z); if (list.length <= most) break; }
+    const tiles = new Map(), canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 256;
+    const cx = canvas.getContext('2d', { willReadFrequently: true });
+    let failed = 0;
+    for (let k = 0; k < list.length; k += 8) {
+      const batch = list.slice(k, k + 8), imgs = await Promise.all(batch.map(([x, y]) => image(SAT_URL(z, x, y))));
+      imgs.forEach((img, m) => {
+        if (!img) { failed++; return; }
+        cx.drawImage(img, 0, 0, 256, 256);
+        const px = cx.getImageData(0, 0, 256, 256).data, c = new Uint8Array(256 * 256 * 3);
+        for (let q = 0; q < 256 * 256; q++) { c[q * 3] = px[q * 4]; c[q * 3 + 1] = px[q * 4 + 1]; c[q * 3 + 2] = px[q * 4 + 2]; }
+        tiles.set(`${batch[m][0]},${batch[m][1]}`, c);
+      });
+    }
+    if (failed >= Math.max(1, list.length * 0.25)) throw new Error(`${failed} of ${list.length} satellite tiles would not load`);
+    const corner = [0, 0, 0, 0].map(() => [0, 0, 0]);
+    const at = (ix, iy, o) => {
+      const c = tiles.get(`${ix >> 8},${iy >> 8}`);
+      if (!c) return false;
+      const q = ((iy & 255) * 256 + (ix & 255)) * 3;
+      o[0] = c[q]; o[1] = c[q + 1]; o[2] = c[q + 2];
+      return o[0] + o[1] + o[2] > 6;
+    };
+    const fn = (lat, lon, out) => {
+      const [px, py] = merc(lat, lon, z), fx = px - 0.5, fy = py - 0.5, ix = Math.floor(fx), iy = Math.floor(fy), u = fx - ix, v = fy - iy;
+      if (!(at(ix, iy, corner[0]) && at(ix + 1, iy, corner[1]) && at(ix, iy + 1, corner[2]) && at(ix + 1, iy + 1, corner[3]))) return false;
+      for (let m = 0; m < 3; m++) out[m] = ((corner[0][m] * (1 - u) + corner[1][m] * u) * (1 - v) + (corner[2][m] * (1 - u) + corner[3][m] * u) * v) / 255;
+      return true;
     };
     fn.zoom = z; fn.tiles = list.length;
     return fn;
@@ -236,5 +279,5 @@ out tags qt;`;
     return { kind: weatherKind(c.weather_code, c.cloud_cover), temp: c.temperature_2m, wind: c.wind_speed_10m, code: c.weather_code };
   }
 
-  window.IW_PLACES = { terrain, osm, weather, merc, weatherKind, sort };
+  window.IW_PLACES = { terrain, imagery, osm, weather, merc, weatherKind, sort };
 })();
