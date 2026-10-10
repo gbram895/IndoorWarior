@@ -207,6 +207,16 @@ the odd sealed crack and patched rectangles. The rider wears a printed jersey,
 a vented helmet and wraparound glasses; the bike has deep carbon rims and a
 bottle.
 
+**Look: video** (top right, on by default) films the view through a camera
+instead of drawing it straight to the screen. The road and the land smear as
+they would at a 1/50 s shutter while the rider stays sharp, bright sky and wet
+road glow, the lens bends and fringes slightly toward its edges and darkens
+its corners, and the picture has a fine grain. The camera drifts and sways a
+little, as one on a following motorbike does, and buzzes with the road at
+speed. **Look: plain** turns all of that off, if a slower laptop needs the
+frames back. Needs WebGL 2; without it the button is hidden and the view is
+plain.
+
 The world shows made-up land until the heights are in, then is built again on
 the real land, and again when the map arrives. A line under the view says
 what is loading or what failed (and falls back to made-up land or made-up
