@@ -316,6 +316,8 @@
   function realOf(route, g, data) {
     const lat = route.res[0].lat, lon = route.res[0].lon, osm = data.osm;
     const R = { dem: g.dem, ele0: g.ele0, cover: osm ? coverOf(g, osm) : null, ...climate(lat) };
+    // The satellite photo of the land, where it loaded.
+    R.sat = data.sat ? (x, z, out) => { const [la, lo] = g.ll(x, z); return data.sat(la, lo, out); } : null;
     const borders = osm ? crossings(g, osm) : [];
     const code = i => { let c = osm?.countries[osm.start]?.code || ''; for (const b of borders) if (b.i <= i) c = b.to.code; return c; };
     Object.assign(R, regionOf(lat, lon, code(0)), { code, borders });
@@ -355,6 +357,7 @@
   // The ground's colour on real land, or false where the heights are missing.
   // out[3] says what it is, for the grass blades: 0 grass, 1 bare (rock,
   // snow, water, paving: no blades), 2 lavender.
+  const SAT = [0, 0, 0];
   function groundReal(x, z, out, d) {
     const R = REAL, h = R.dem(x, z);
     if (!Number.isFinite(h)) return false;
@@ -390,6 +393,14 @@
       }
       const ice = c.glacier(x, z);
       if (ice > 0) { mix(ice, 0.82, 0.88, 0.93); if (ice > 0.5) kind = 1; }
+    }
+    // The satellite photo, where there is one: the real fields, woods, rock
+    // and villages as they look from above. Close to the road it gives way
+    // to the paint, which has the detail a 10 m photo lacks (crop rows,
+    // field margins), and the lavender keeps its rows.
+    if (R.sat && kind !== 2 && R.sat(x, z, SAT)) {
+      const w = 0.5 + 0.4 * smooth(12, 140, d), l = 1.12;
+      mix(w, SAT[0] * l, SAT[1] * l, SAT[2] * l);
     }
     // Snow, lying thinner on steep ground.
     const snow = smooth(R.snowLine, R.snowLine + 280, h + (n1 - 0.5) * 220) * (1 - smooth(0.75, 1.2, sl) * 0.7);
@@ -748,7 +759,7 @@
   // The distant land: the real heights out to 40 km, as rings round the
   // camera (finer close in), coloured by height and slope and lit by the
   // sun once, when built. Drawn first, past the near world (see frame).
-  function farLand(g, R, near, far, cx, cz, sunDir) {
+  function farLand(g, R, near, far, cx, cz, sunDir, sat) {
     const A = 360, rings = [];
     for (let r = 250; r < 42000; r *= 1.06) rings.push(r);
     const n = rings.length, pos = new Float32Array(A * n * 3), hs = new Float32Array(A * n);
@@ -775,8 +786,14 @@
     for (let v = 0; v < A * n; v++) {
       const h = hs[v], ny = nrm.getY(v), sl = Math.sqrt(Math.max(0, 1 - ny * ny)) / Math.max(0.2, ny) / LIFT, x = pos[v * 3], z = pos[v * 3 + 2];
       const nz = noise(x / 900, z / 900);
-      let c;
+      let c, photo = false;
       if (h <= 0.5 || (R.cover && R.cover.water(x, z) > 0.4)) c = [0.2, 0.3, 0.36]; // the sea, and lakes on the map
+      else if (sat && sat(...g.ll(x, z), SAT)) { // the satellite photo, with this month's snow over it
+        photo = true;
+        const alt = h + (nz - 0.5) * 200, patch = noise(x / 350 + 5, z / 350);
+        const snow = smooth(R.snowLine, R.snowLine + 350, alt + (patch - 0.5) * 400) * (1 - smooth(0.8, 1.3, sl) * 0.6);
+        c = SAT.map(q => q * 1.12 + (0.92 - q * 1.12) * snow);
+      }
       else {
         const alt = h + (nz - 0.5) * 200;
         c = alt < R.treeLine - 200 ? [0.17 + 0.06 * nz, 0.26 + 0.05 * nz, 0.15] : [0.36, 0.35, 0.25];
@@ -786,7 +803,8 @@
         const snow = smooth(R.snowLine, R.snowLine + 350, alt + (patch - 0.5) * 400) * (1 - smooth(0.8, 1.3, sl) * 0.6);
         c = c.map(q => q + (0.92 - q) * snow);
       }
-      const lit = 0.55 + 0.45 * Math.max(0, nrm.getX(v) * sunDir.x + nrm.getY(v) * sunDir.y + nrm.getZ(v) * sunDir.z);
+      // A photo already has the real sun's shading in it, so it gets less.
+      const sunlit = Math.max(0, nrm.getX(v) * sunDir.x + nrm.getY(v) * sunDir.y + nrm.getZ(v) * sunDir.z), lit = photo ? 0.8 + 0.25 * sunlit : 0.55 + 0.45 * sunlit;
       col[v * 3] = c[0] * lit; col[v * 3 + 1] = c[1] * lit; col[v * 3 + 2] = c[2] * lit * 1.02;
     }
     geo.setAttribute('color', new T.BufferAttribute(col, 3));
@@ -821,6 +839,43 @@
     geo.setIndex(idx);
     geo.computeVertexNormals();
     return geo;
+  }
+
+  // A road that has been ridden and driven on: darker, smoother tracks where
+  // the wheels run in each lane, dusty edges with cracks along them, black
+  // sealed cracks wandering across, and now and then a rectangle of newer,
+  // darker tar where it was patched. All worked out in the shader from where
+  // the pixel is on the road (the ribbon's uv is metres / 4), so it costs no
+  // texture and never repeats.
+  function worn(mat) {
+    mat.onBeforeCompile = sh => {
+      sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
+  {
+    float across = vUv.x * 4.0, along = vUv.y * 4.0, W = ${(2 * ROAD_HALF).toFixed(1)};
+    float lane = mod(across, W * 0.5);
+    float track = smoothstep(0.35, 0.0, abs(lane - 0.85)) + smoothstep(0.35, 0.0, abs(lane - 2.15));
+    float edge = min(across, W - across);
+    float n1 = wnoise(vec2(along * 0.35, across * 0.8)), n2 = wnoise(vec2(along * 1.7, across * 2.3));
+    float tone = 1.0 - 0.07 * track + 0.05 * (n1 - 0.5);
+    tone += 0.12 * smoothstep(0.45, 0.0, edge) * (0.5 + n2);
+    float crack = smoothstep(0.025, 0.0, abs(wnoise(vec2(along * 0.6, edge * 3.0)) - 0.5)) * smoothstep(0.6, 0.15, edge) * step(0.5, wnoise(vec2(along * 0.08, 9.0)));
+    float snake = smoothstep(0.012, 0.0, abs(wnoise(vec2(along * 0.18 + 17.0, across * 0.3)) - 0.5)) * smoothstep(0.78, 0.84, wnoise(vec2(along * 0.03, 3.0)));
+    float cell = floor(along / 23.0), h = whash(vec2(cell, 7.0));
+    float pa = cell * 23.0 + 23.0 * whash(vec2(cell, 1.0)), pl = 2.0 + 6.0 * whash(vec2(cell, 2.0));
+    float pc = W * whash(vec2(cell, 3.0)), pw = 0.8 + 1.6 * whash(vec2(cell, 4.0));
+    float fix = step(0.72, h) * step(pa, along) * step(along, pa + pl) * step(abs(across - pc), pw);
+    tone *= 1.0 - 0.3 * max(crack, snake);
+    tone = mix(tone, 0.78 + 0.06 * n2, fix);
+    diffuseColor.rgb *= tone;
+  }`).replace('void main() {', `float whash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float wnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(whash(i), whash(i + vec2(1.0, 0.0)), f.x), mix(whash(i + vec2(0.0, 1.0)), whash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+void main() {`);
+    };
+    mat.customProgramCacheKey = () => 'worn';
+    return mat;
   }
 
   // The land close to the road, as a strip that follows it at the road's own
@@ -1608,6 +1663,28 @@
   // two-bone IK (hip fixed on the saddle, foot on the pedal), the arms reach
   // the hoods, and standing up on a climb moves the hips and shoulders forward.
   // The model faces -z; units are metres.
+  // Kit printed on canvases: a jersey with dark side panels, a white chest
+  // band and a zip; a helmet with its vents.
+  function kitTexture(kind) {
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
+    const cx = cv.getContext('2d');
+    if (kind === 'jersey') { // u runs round the body, v from the waist (0) up
+      cx.fillStyle = '#ff7a1a'; cx.fillRect(0, 0, 256, 128);
+      cx.fillStyle = '#1f2329'; cx.fillRect(52, 0, 30, 128); cx.fillRect(174, 0, 30, 128); // side panels
+      cx.fillStyle = '#f4f5f7'; cx.fillRect(0, 34, 256, 9);  // chest band
+      cx.fillStyle = '#d9621a'; cx.fillRect(0, 0, 256, 6);
+      cx.fillStyle = '#2a2d33'; cx.fillRect(126, 0, 3, 128); // zip
+    } else { // helmet: shell with vent slots from front to back
+      cx.fillStyle = '#f4f5f7'; cx.fillRect(0, 0, 256, 128);
+      cx.fillStyle = '#1b1e23';
+      for (const u of [96, 112, 128, 144, 160]) for (const v of [28, 52]) { cx.beginPath(); cx.ellipse(u, v, 4, 9, 0, 0, Math.PI * 2); cx.fill(); }
+      for (const u of [10, 30, 226, 246]) { cx.beginPath(); cx.ellipse(u, 40, 4, 8, 0, 0, Math.PI * 2); cx.fill(); }
+      cx.fillStyle = '#ff7a1a'; cx.fillRect(0, 96, 256, 6); // a stripe round the rim
+    }
+    const t = new T.CanvasTexture(cv); t.anisotropy = 4;
+    return t;
+  }
+
   function rider() {
     const root = new T.Group();
     const mat = c => new T.MeshLambertMaterial({ color: c });
@@ -1615,7 +1692,11 @@
       frame: mat(0x1d2a3a), dark: mat(0x16181c), tyre: mat(0x111214), rim: mat(0x8d949e), steel: mat(0xb8bec7),
       jersey: mat(0xff7a1a), jersey2: mat(0x1f2329), bib: mat(0x15171b), skin: mat(0xd9a882), sock: mat(0xf1f1f1),
       shoe: mat(0x22252b), helmet: mat(0xf4f5f7), visor: mat(0x20242a), saddle: mat(0x111214),
+      carbon: mat(0x1a1c20), bottle: mat(0xe9edf2), cap: mat(0x2a7de1),
+      lens: new T.MeshPhongMaterial({ color: 0x111317, specular: 0x8899aa, shininess: 90 }),
     };
+    M.jerseyKit = new T.MeshLambertMaterial({ map: kitTexture('jersey') });
+    M.helmetKit = new T.MeshLambertMaterial({ map: kitTexture('helmet') });
     // A unit cylinder along +y, centred, that `limb` stretches between two points.
     const unitCyl = (r0, r1, seg = 10) => new T.CylinderGeometry(r1, r0, 1, seg, 1);
     const up = new T.Vector3(0, 1, 0), tmpV = new T.Vector3(), tmpQ = new T.Quaternion();
@@ -1641,6 +1722,8 @@
       const sg = new T.BufferGeometry(); sg.setAttribute('position', new T.Float32BufferAttribute(spokes, 3));
       w.add(new T.LineSegments(sg, new T.LineBasicMaterial({ color: 0x9aa1aa })));
       const hub = new T.Mesh(new T.CylinderGeometry(0.025, 0.025, 0.1, 8), M.steel); hub.rotation.z = Math.PI / 2; w.add(hub);
+      const deep = new T.Mesh(new T.CylinderGeometry(R - 0.03, R - 0.03, 0.022, 40, 1, true), M.carbon); deep.rotation.z = Math.PI / 2; w.add(deep); // aero rim
+      const inner = new T.Mesh(new T.TorusGeometry(R - 0.075, 0.011, 6, 40), M.carbon); inner.rotation.y = Math.PI / 2; w.add(inner);
     }
     const tube = (a, b, r, m = M.frame) => limb(add(unitCyl(r, r, 8), m), a, b);
     tube(BB, SEAT.clone().lerp(BB, 0.1), 0.017);          // seat tube
@@ -1658,6 +1741,10 @@
       tube(V(x, 0.88, -0.47), V(x, 0.84, -0.56), 0.013, M.dark);       // reach to the drops
       tube(V(x, 0.84, -0.56), V(x, 0.74, -0.52), 0.013, M.dark);
     }
+    // A bottle in its cage on the down tube.
+    const bAt = BB.clone().lerp(HEAD_LOW, 0.42), bDir = HEAD_LOW.clone().sub(BB).normalize(), bUp = V(0, 1, 0).addScaledVector(bDir, -bDir.y).normalize();
+    const bottle = add(new T.CylinderGeometry(0.034, 0.034, 0.2, 12), M.bottle); bottle.position.copy(bAt).addScaledVector(bUp, 0.045); bottle.quaternion.setFromUnitVectors(V(0, 1, 0), bDir);
+    const cap = add(new T.CylinderGeometry(0.015, 0.022, 0.035, 10), M.cap); cap.position.copy(bottle.position).addScaledVector(bDir, 0.115); cap.quaternion.copy(bottle.quaternion);
     const saddle = add(new T.BoxGeometry(0.13, 0.04, 0.27), M.saddle); saddle.position.copy(SEAT).add(V(0, 0.02, 0.0));
     tube(SEAT.clone().lerp(BB, 0.1), SEAT, 0.013, M.steel); // seat post
     const ring = add(new T.TorusGeometry(0.1, 0.008, 6, 30), M.steel); ring.rotation.y = Math.PI / 2; ring.position.copy(BB).setX(0.05);
@@ -1675,12 +1762,14 @@
       elbow: add(new T.SphereGeometry(0.043, 8, 6), M.skin), hand: add(new T.SphereGeometry(0.038, 8, 6), M.dark),
     }));
     const pelvis = add(new T.SphereGeometry(0.15, 14, 10), M.bib); pelvis.scale.set(1.15, 0.8, 1);
-    const torso = add(unitCyl(0.15, 0.135, 14), M.jersey);
+    const torso = add(unitCyl(0.15, 0.135, 18), M.jerseyKit);
     const stripe = add(unitCyl(0.152, 0.137, 14), M.jersey2); // dark band round the waist
     const shoulders = add(new T.SphereGeometry(0.12, 12, 8), M.jersey); shoulders.scale.set(1.9, 0.75, 1);
     const neck = add(unitCyl(0.05, 0.05, 8), M.skin);
     const head = add(new T.SphereGeometry(0.105, 16, 12), M.skin); head.scale.set(0.95, 1.05, 1.1);
-    const helmet = add(new T.SphereGeometry(0.135, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), M.helmet); helmet.scale.set(0.95, 0.9, 1.3);
+    const helmet = add(new T.SphereGeometry(0.135, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), M.helmetKit); helmet.scale.set(0.95, 0.9, 1.3);
+    // Wraparound sunglasses: a dark shiny band round the front of the face.
+    const glasses = add(new T.TorusGeometry(0.108, 0.016, 6, 20, Math.PI * 0.8), M.lens); glasses.scale.set(1, 1, 1.12);
     const visor = add(new T.BoxGeometry(0.17, 0.035, 0.06), M.visor);
 
     // Two-bone IK: from a towards b with lengths l1, l2, bending towards `pole`.
@@ -1707,6 +1796,7 @@
       head.position.copy(neckTop).add(V(0, 0.08, -0.06));
       helmet.position.copy(head.position).add(V(0, 0.03, 0.01)); helmet.rotation.x = -0.25;
       visor.position.copy(head.position).add(V(0, 0.07, -0.15));
+      glasses.position.copy(head.position).add(V(0, 0.01, -0.005)); glasses.rotation.set(Math.PI / 2 - 0.12, 0, Math.PI * 0.1 + Math.PI / 2 * 0); glasses.rotation.z = -Math.PI * 0.9;
       [0, 1].forEach(k => {
         const sgn = k ? 1 : -1, a = pedal + (k ? Math.PI : 0);
         // Crank and pedal.
@@ -1793,11 +1883,31 @@
     };
   }
 
+  // A camera-like grade over the whole picture, the sky included so the haze
+  // and the sky still meet: highlights roll off instead of clipping to flat
+  // white, a gentle S-curve gives the land depth, the blacks lift a little
+  // toward blue as a lens does, and mid-tone colour gets slightly richer.
+  // Colours in this app are picked as display colours, so this works on
+  // those rather than on physical light (which would mean re-picking all).
+  T.ShaderChunk.tonemapping_pars_fragment = T.ShaderChunk.tonemapping_pars_fragment.replace(
+    'vec3 CustomToneMapping( vec3 color ) { return color; }',
+    `vec3 CustomToneMapping( vec3 color ) {
+      color *= toneMappingExposure;
+      vec3 hi = 0.78 + 0.22 * (1.0 - exp(-(color - 0.78) / 0.22));
+      color = mix(color, hi, step(0.78, color));
+      color = color + 0.22 * color * (1.0 - color) * (color - 0.42) * 2.2;
+      float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      color = mix(vec3(l), color, 1.0 + 0.16 * smoothstep(0.05, 0.4, l) * (1.0 - smoothstep(0.6, 0.95, l)));
+      color += vec3(0.010, 0.013, 0.020) * (1.0 - l);
+      return clamp(color, 0.0, 1.0);
+    }`);
+
   function mount(container, getState) {
     let renderer;
     try { renderer = new T.WebGLRenderer({ antialias: true }); }
     catch (e) { throw new Error('This browser cannot draw 3D here (WebGL is off).'); }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.toneMapping = T.CustomToneMapping; renderer.toneMappingExposure = 1;
     container.prepend(renderer.domElement);
     const scene = new T.Scene();
     // Two scenes, drawn one over the other each frame: far (the sky and, on
@@ -1811,7 +1921,7 @@
     // Haze that thickens with distance but never quite hides the land, so the
     // far edge of the land and the mountains behind it share one tone.
     scene.fog = new T.FogExp2(haze, 0.0023);
-    const hemi = new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x5d5440, 0.62);
+    const hemi = new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x56603f, 0.62); // ground light picks up the grass
     scene.add(hemi);
     // The sun casts shadows in a 70 m square that travels with the rider:
     // enough for him, the bike and the nearest trees, cheap to draw.
@@ -1893,15 +2003,20 @@
       P.terrain(pts, 1100, [13, 12, 11], 160).then(h => { rec.near = h; }, e => { rec.nearErr = e.message || String(e); }).finally(() => rec.v++);
       P.terrain(pts, 42000, [10, 9, 8], 40).then(h => { rec.far = h; }, () => {});
       P.osm(pts).then(m => { rec.osm = m; }, e => { rec.osmErr = e.message || String(e); }).finally(() => rec.v++);
+      if (P.imagery) {
+        P.imagery(pts, 1100, [14, 13], 220).then(f => { rec.sat = f; }, e => { rec.satErr = e.message || String(e); }).finally(() => rec.v++);
+        P.imagery(pts, 42000, [11, 10], 60).then(f => { rec.farSat = f; }, () => {});
+      }
       return rec;
     }
     function noteOf(rec) {
       if (!rec) return '';
       if (rec.nearErr) return `The real land could not load (${rec.nearErr}), so this is made-up land.`;
       if (!rec.near) return 'Loading the real land…';
-      const credit = 'Heights: AWS Terrain Tiles · Map © OpenStreetMap contributors';
+      const credit = `Heights: AWS Terrain Tiles · ${rec.sat ? 'Imagery: Sentinel-2 cloudless by EOX, Copernicus Sentinel data 2020 · ' : ''}Map © OpenStreetMap contributors`;
       if (rec.osmErr) return `The map could not load (${rec.osmErr}), so the woods are made up and there are no towns. Heights: AWS Terrain Tiles`;
       if (!rec.osm) return `Loading the map (woods, water, towns)… ${credit}`;
+      if (rec.satErr) return `The satellite photos could not load (${rec.satErr}), so the land is painted. ${credit}`;
       return credit;
     }
     let note = '';
@@ -1932,7 +2047,7 @@
       // or past the fog are skipped instead of drawn every frame.
       const tarmac = photo('asphalt', renderer);
       tarmac?.repeat.set(2, 2); // a 2 m tile
-      const asphalt = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x2f3236 : 0x4a4e55, map: tarmac || surface('road', renderer) });
+      const asphalt = worn(new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x2f3236 : 0x4a4e55, map: tarmac || surface('road', renderer) }));
       roadMat = asphalt;
       const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
       const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
@@ -2125,7 +2240,7 @@
         const rec = placeData.get(built);
         if (rec?.far && (!farAt || Math.hypot(farAt.x - camPos.x, farAt.z - camPos.z) > 700)) {
           farAt = camPos.clone();
-          const geo = farLand(g, REAL, rec.near, rec.far, camPos.x, camPos.z, SUN_DIR);
+          const geo = farLand(g, REAL, rec.near, rec.far, camPos.x, camPos.z, SUN_DIR, rec.farSat || rec.sat);
           if (farMesh) { farMesh.geometry.dispose(); farMesh.geometry = geo; }
           else { farMesh = new T.Mesh(geo, farMat); farMesh.frustumCulled = false; farScene.add(farMesh); hazeFor(); }
         }

@@ -189,11 +189,23 @@ browser and free of any key:
 
 - the land's height from [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
   (about 13 m detail within a kilometre of the road, coarser out to 40 km);
+- what the land looks like from above: EOX's
+  [Sentinel-2 cloudless](https://s2maps.eu) satellite mosaic (Copernicus
+  Sentinel data 2020, CC BY-NC-SA 4.0), at 10 m near the road and coarser on
+  the far mountains. Close to the road it blends into the painted fields,
+  which have the crop rows a 10 m photo can't show;
 - lakes, rivers and streams, woods, built-up areas, buildings, vineyards,
   bare rock, glaciers, place names, named cols and country borders from
   [OpenStreetMap](https://www.openstreetmap.org/copyright) through the
   Overpass API (kept in the browser's cache, so a route opened again is
   instant).
+
+The picture goes through a camera-like grade: highlights roll off instead of
+clipping, a gentle S-curve gives the land depth, and the blacks lift slightly.
+The road shows wear: darker wheel tracks in each lane, dusty cracked edges,
+the odd sealed crack and patched rectangles. The rider wears a printed jersey,
+a vented helmet and wraparound glasses; the bike has deep carbon rims and a
+bottle.
 
 The world shows made-up land until the heights are in, then is built again on
 the real land, and again when the map arrives. A line under the view says
