@@ -1902,6 +1902,135 @@ void main() {`);
       return clamp(color, 0.0, 1.0);
     }`);
 
+  // The video look: the frame goes through a camera before it reaches the
+  // screen. Moving things smear as they do at a 1/50 s shutter (the rider,
+  // who moves with the camera, stays sharp), bright sky and wet road glow,
+  // the lens bends and fringes a little toward its edges and darkens its
+  // corners, and the sensor adds a fine grain. The grade that used to be
+  // the renderer's tone mapping happens here instead, after the blur.
+  // Needs WebGL 2 (half-float targets with multisampling); without it the
+  // view is drawn plain, as before.
+  function lens(renderer) {
+    if (!renderer.capabilities.isWebGL2) return null;
+    const half = { type: T.HalfFloatType, minFilter: T.LinearFilter, magFilter: T.LinearFilter, depthBuffer: false };
+    const main = new T.WebGLRenderTarget(1, 1, { type: T.HalfFloatType, samples: 4 });
+    main.depthTexture = new T.DepthTexture(1, 1, T.UnsignedIntType);
+    const mask = new T.WebGLRenderTarget(1, 1, { depthBuffer: true });
+    const glowA = new T.WebGLRenderTarget(1, 1, half), glowB = new T.WebGLRenderTarget(1, 1, half);
+    const quad = new T.Mesh(new T.PlaneGeometry(2, 2)), qScene = new T.Scene(), qCam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    quad.frustumCulled = false; qScene.add(quad);
+    const maskScene = new T.Scene(); maskScene.overrideMaterial = new T.MeshBasicMaterial({ color: 0xffffff });
+    const vert = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+    const pass = (frag, uniforms) => new T.ShaderMaterial({ vertexShader: vert, fragmentShader: frag, uniforms, depthTest: false, depthWrite: false, toneMapped: false });
+    // Glow: what is brighter than white, at a quarter of the size, blurred.
+    const bright = pass(`uniform sampler2D src; uniform vec2 px; varying vec2 vUv;
+      void main() {
+        vec3 c = vec3(0.0);
+        for (int i = 0; i < 4; i++) { vec2 o = vec2(i == 1 || i == 3 ? 1.0 : -1.0, i >= 2 ? 1.0 : -1.0) * px; c += texture2D(src, vUv + o).rgb; }
+        c *= 0.25; float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        gl_FragColor = vec4(c * smoothstep(0.82, 1.25, l), 1.0);
+      }`, { src: { value: null }, px: { value: new T.Vector2() } });
+    const blur = pass(`uniform sampler2D src; uniform vec2 dir; varying vec2 vUv;
+      void main() {
+        vec3 c = texture2D(src, vUv).rgb * 0.227;
+        c += (texture2D(src, vUv + dir * 1.385).rgb + texture2D(src, vUv - dir * 1.385).rgb) * 0.316;
+        c += (texture2D(src, vUv + dir * 3.231).rgb + texture2D(src, vUv - dir * 3.231).rgb) * 0.070;
+        gl_FragColor = vec4(c, 1.0);
+      }`, { src: { value: null }, dir: { value: new T.Vector2() } });
+    const final = pass(`uniform sampler2D src; uniform sampler2D depth; uniform sampler2D rider; uniform sampler2D glow;
+      uniform mat4 invViewProj; uniform mat4 prevViewProj; uniform vec3 eye; uniform float shutter; uniform float seed; uniform vec2 px;
+      varying vec2 vUv;
+      vec3 grade(vec3 color) {
+        vec3 hi = 0.78 + 0.22 * (1.0 - exp(-(color - 0.78) / 0.22));
+        color = mix(color, hi, step(0.78, color));
+        color = clamp(color, 0.0, 1.0);
+        color = color + 0.22 * color * (1.0 - color) * (color - 0.42) * 2.2;
+        float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        color = mix(vec3(l), color, 1.0 + 0.16 * smoothstep(0.05, 0.4, l) * (1.0 - smoothstep(0.6, 0.95, l)));
+        color += vec3(0.010, 0.013, 0.020) * (1.0 - l);
+        return clamp(color, 0.0, 1.0);
+      }
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233)) + seed) * 43758.5453); }
+      void main() {
+        // A slight barrel bend, zoomed in a touch so the corners stay filled.
+        vec2 c = vUv - 0.5; float r2 = dot(c, c);
+        vec2 uv = 0.5 + c * (1.0 + 0.045 * r2) / 1.012;
+        // Where this pixel was a frame ago, from its depth and the camera's
+        // last position: the smear runs between the two. The sky and the far
+        // land (no depth here) move with the camera's turning only.
+        float d = texture2D(depth, uv).x;
+        vec4 w = invViewProj * vec4(uv * 2.0 - 1.0, min(d, 0.99999) * 2.0 - 1.0, 1.0); w /= w.w;
+        if (d >= 1.0) w.xyz = eye + normalize(w.xyz - eye) * 1e5;
+        vec4 p = prevViewProj * vec4(w.xyz, 1.0);
+        vec2 v = (uv - (p.xy / p.w * 0.5 + 0.5)) * shutter;
+        float vl = length(v); if (vl > 0.035) v *= 0.035 / vl;
+        if (texture2D(rider, uv).r > 0.5) v = vec2(0.0);
+        vec3 col = vec3(0.0); float n = 0.0;
+        for (int i = 0; i < 9; i++) {
+          vec2 q = uv + v * (float(i) / 8.0 - 0.5);
+          float k = (i == 4 || texture2D(rider, q).r < 0.5) ? 1.0 : 0.0; // never smear the rider over the road
+          col += texture2D(src, q).rgb * k; n += k;
+        }
+        col /= n;
+        // Colour fringes toward the edges.
+        vec2 ca = c * r2 * 0.012;
+        col.r = mix(col.r, texture2D(src, uv + ca).r, smoothstep(0.04, 0.25, r2));
+        col.b = mix(col.b, texture2D(src, uv - ca).b, smoothstep(0.04, 0.25, r2));
+        col += texture2D(glow, uv).rgb * 0.35;
+        col = grade(col);
+        col *= 1.0 - 0.32 * pow(r2 * 2.0, 1.25);
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col += (hash(vUv / px) - 0.5) * 0.045 * (1.0 - abs(l - 0.45) * 1.4);
+        gl_FragColor = vec4(col, 1.0);
+      }`, {
+      src: { value: main.texture }, depth: { value: main.depthTexture }, rider: { value: mask.texture }, glow: { value: glowA.texture },
+      invViewProj: { value: new T.Matrix4() }, prevViewProj: { value: new T.Matrix4() }, eye: { value: new T.Vector3() },
+      shutter: { value: 0 }, seed: { value: 0 }, px: { value: new T.Vector2() },
+    });
+    const vp = new T.Matrix4(), clear = new T.Color();
+    let w = 0, h = 0, fresh = true;
+    function run(mat, target) { quad.material = mat; renderer.setRenderTarget(target); renderer.render(qScene, qCam); }
+    return {
+      size(W, H) {
+        const pr = renderer.getPixelRatio(); W = Math.round(W * pr); H = Math.round(H * pr);
+        if (W === w && H === h) return;
+        w = W; h = H;
+        main.setSize(w, h); mask.setSize(w >> 1, h >> 1);
+        glowA.setSize(w >> 2, h >> 2); glowB.setSize(w >> 2, h >> 2);
+        final.uniforms.px.value.set(1 / w, 1 / h); bright.uniforms.px.value.set(1 / w, 1 / h);
+      },
+      // draw() renders the scenes into the lens's target; rider is the
+      // object kept sharp; cut skips the smear for one frame (a jump).
+      render(draw, camera, rider, dt, cut) {
+        renderer.setRenderTarget(main);
+        draw();
+        // The rider's outline, so the smear leaves him out.
+        const parent = rider.parent;
+        maskScene.add(rider);
+        renderer.getClearColor(clear); const alpha = renderer.getClearAlpha();
+        renderer.setRenderTarget(mask); renderer.setClearColor(0x000000, 1); renderer.clear(); renderer.render(maskScene, camera);
+        renderer.setClearColor(clear, alpha);
+        parent.add(rider);
+        bright.uniforms.src.value = main.texture; run(bright, glowA);
+        for (let i = 0; i < 2; i++) {
+          blur.uniforms.src.value = glowA.texture; blur.uniforms.dir.value.set(1.6 / (w >> 2), 0); run(blur, glowB);
+          blur.uniforms.src.value = glowB.texture; blur.uniforms.dir.value.set(0, 1.6 / (h >> 2)); run(blur, glowA);
+        }
+        const u = final.uniforms;
+        vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        u.invViewProj.value.copy(vp).invert();
+        u.eye.value.setFromMatrixPosition(camera.matrixWorld);
+        u.shutter.value = fresh || cut ? 0 : Math.min(1, (1 / 50) / Math.max(dt, 1e-3));
+        u.seed.value = (u.seed.value + 7.31) % 1000;
+        run(final, null);
+        u.prevViewProj.value.copy(vp);
+        fresh = false;
+      },
+      reset() { fresh = true; },
+      dispose() { for (const t of [main, mask, glowA, glowB]) t.dispose(); main.depthTexture.dispose(); },
+    };
+  }
+
   function mount(container, getState) {
     let renderer;
     try { renderer = new T.WebGLRenderer({ antialias: true }); }
@@ -1909,6 +2038,8 @@ void main() {`);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.toneMapping = T.CustomToneMapping; renderer.toneMappingExposure = 1;
     container.prepend(renderer.domElement);
+    const post = lens(renderer);
+    let look = !!post;
     const scene = new T.Scene();
     // Two scenes, drawn one over the other each frame: far (the sky and, on
     // real land, the mountains out to 40 km) and then everything near. The
@@ -2163,6 +2294,7 @@ void main() {`);
       renderer.domElement.style.width = '100%'; renderer.domElement.style.height = '100%';
       camera.aspect = w / h; camera.updateProjectionMatrix();
       farCam.aspect = w / h; farCam.updateProjectionMatrix();
+      if (post) post.size(w, h);
     }
     // The name of the place, a col or a border, over the top of the view.
     const banner = document.createElement('div');
@@ -2225,9 +2357,19 @@ void main() {`);
       const back = at(disp - v.back, new T.Vector3()), look = at(disp + v.ahead, new T.Vector3());
       const lookY = back.y + v.look + (look.y - back.y) / 3;
       const wantPos = back.add(right).addScaledVector(right, v.side / KEEP).add(new T.Vector3(0, v.up, 0)), wantLook = look.add(right).setY(lookY);
-      const k = camPos.lengthSq() ? Math.min(1, dt * 4) : 1;
+      const cut = !camPos.lengthSq(), k = cut ? 1 : Math.min(1, dt * 4);
       camPos.lerp(wantPos, k); camLook.lerp(wantLook, k);
-      camera.position.copy(camPos); camera.lookAt(camLook);
+      camera.position.copy(camPos);
+      if (look) {
+        // Filmed, not drawn: the camera drifts and sways a little, as one
+        // held on a following motorbike does, and buzzes with the road
+        // the faster the rider goes.
+        const t = now / 1000, buzz = Math.min(1, s.speed / 10) * 0.003;
+        camera.position.y += (Math.sin(t * 1.3) * 0.6 + Math.sin(t * 2.9 + 1) * 0.4) * 0.03 + (Math.sin(t * 37) + Math.sin(t * 53 + 2)) * buzz;
+        camera.position.x += Math.sin(t * 0.9 + 2) * 0.025 + Math.sin(t * 41 + 1) * buzz;
+        camera.lookAt(camLook);
+        camera.rotateZ((Math.sin(t * 0.7) + Math.sin(t * 1.9 + 1) * 0.5) * 0.003);
+      } else camera.lookAt(camLook);
       const g = world.userData.g;
       if ((scatterTick -= dt) <= 0) {
         scatterTick = 0.3;
@@ -2254,10 +2396,14 @@ void main() {`);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);
       if (sky2) { drift += dt * 1.5; sky2.position.set(camPos.x * 0.9 + drift, hills0.position.y, camPos.z * 0.9); }
       farCam.position.copy(camera.position); farCam.quaternion.copy(camera.quaternion);
-      renderer.clear();
-      renderer.render(farScene, farCam);
-      renderer.clearDepth();
-      renderer.render(scene, camera);
+      const draw = () => {
+        renderer.clear();
+        renderer.render(farScene, farCam);
+        renderer.clearDepth();
+        renderer.render(scene, camera);
+      };
+      if (look) { camera.updateMatrixWorld(); post.render(draw, camera, bike.root, dt, cut); }
+      else draw();
       // The drawing buffer is only readable until this frame is handed over,
       // so screenshots and recordings copy it from here.
       if (afterRender) afterRender(renderer.domElement);
@@ -2277,6 +2423,9 @@ void main() {`);
       get real() { return REAL && { towns: REAL.towns.map(t => [t.name, t.a * STEP, t.b * STEP]), cols: REAL.cols.map(c => [c.name, c.ele, c.start * STEP, c.top * STEP]), borders: REAL.borders.map(b => [b.to.name, b.i * STEP]), region: { med: REAL.med, alps: REAL.alps, lavender: REAL.lavender, snowLine: REAL.snowLine, treeLine: REAL.treeLine, code: REAL.code(0) } }; },
       get banner() { return bannerText; },
       set afterRender(fn) { afterRender = fn || null; },
+      get look() { return look ? 'video' : 'plain'; }, // the video look (null when this browser can't have it)
+      set look(v) { const on = v === 'video' && !!post; if (on !== look) { look = on; if (post) post.reset(); } },
+      get canLook() { return !!post; },
     };
   }
 

@@ -379,7 +379,7 @@
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
       <div id="route3d" class="route3d hidden">
         <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
-        <div class="r3dbtns"><button class="r3dbtn hidden" id="r3dWorld">World: real</button><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
+        <div class="r3dbtns"><button class="r3dbtn hidden" id="r3dWorld">World: real</button><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dLook">Look: video</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
         <div class="r3dbtns r3dshoot"><button class="r3dbtn" id="r3dPhoto">Screenshot</button><button class="r3dbtn" id="r3dRec">Record</button></div>
         <div class="r3dflash" id="r3dFlash"></div>
         <div class="r3dnote" id="r3dNote"></div>
@@ -3467,7 +3467,8 @@ const view3d = (() => {
       return World3D.mount($('route3d'), state);
     })();
     try { world = await loading; } catch (e) { loading = null; throw e; }
-    world.view = cam; applyWeather();
+    world.view = cam; world.look = look; applyWeather();
+    $('r3dLook').classList.toggle('hidden', !world.canLook); // WebGL 1: plain only
     return world;
   }
   // World: for a GPX route, the real land, woods, water and towns where it
@@ -3518,6 +3519,16 @@ const view3d = (() => {
   };
   setCam(cam);
   $('r3dCam').addEventListener('click', () => setCam(CAMS[(CAMS.findIndex(x => x[0] === cam) + 1) % CAMS.length][0]));
+  // Look: video (through a camera lens: smear, glow, grain) or plain. Remembered.
+  let look = 'video';
+  try { look = localStorage.getItem('look3d') === 'plain' ? 'plain' : 'video'; } catch {}
+  const setLook = l => {
+    look = l; if (world) world.look = l;
+    $('r3dLook').textContent = `Look: ${l}`;
+    try { localStorage.setItem('look3d', l); } catch {}
+  };
+  setLook(look);
+  $('r3dLook').addEventListener('click', () => setLook(look === 'video' ? 'plain' : 'video'));
   // Weather: clear, cloudy, rain, fog or snow, or real: the weather at the
   // route's start right now (Open-Meteo), fetched once per route. Remembered.
   const WEATHERS = ['clear', 'cloudy', 'rain', 'fog', 'snow', 'real'];
