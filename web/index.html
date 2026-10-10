@@ -178,6 +178,63 @@
   #rideMsg { color: var(--muted); font-size: 14px; margin-top: 10px; }
   #rideMsg.bad { color: var(--bad); } #rideMsg.ok { color: var(--ok); }
   #savedBox { margin-top: 12px; border-top: 1px solid #2a2f3a; padding-top: 12px; }
+  /* Start card: everything needed for a ride on one card, and the button that goes into it. */
+  .start-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 12px 0; }
+  .start-item { background: #1b1f27; border-radius: 8px; padding: 8px 10px; }
+  .start-item .label { font-size: 12px; color: var(--muted); }
+  .start-item .v { font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+  .start-item .v.off { color: var(--muted); font-weight: 400; }
+  #goBtn { font-size: 20px; padding: 14px 28px; }
+  /* Ride view: the 3D view fills the screen while a ride runs, with the numbers over it. */
+  body.riding { overflow: hidden; }
+  body.riding #route3d { position: fixed; inset: 0; height: auto; z-index: 40; border-radius: 0; }
+  body.riding .hud3d { display: none; }
+  body.riding .r3dnote { bottom: 186px; }
+  body.riding .r3dshoot { bottom: 196px; }
+  .rv { display: none; }
+  body.riding .rv { display: block; }
+  .rv, .rv * { font-variant-numeric: tabular-nums; }
+  .rv-box { position: absolute; background: rgba(12, 14, 18, 0.74); border-radius: 10px; padding: 8px 12px; color: #f2f4f8; pointer-events: none; }
+  .rv-box i { font-style: normal; font-size: 11px; color: #9aa3b2; }
+  .rv-left { left: 12px; top: 12px; min-width: 230px; }
+  .rv-right { right: 12px; top: 54px; min-width: 200px; text-align: right; }
+  .rv-mid { left: 50%; top: 12px; transform: translateX(-50%); text-align: center; min-width: 180px; }
+  .rv-big { display: flex; align-items: baseline; gap: 6px; }
+  .rv-right .rv-big { justify-content: flex-end; }
+  .rv-big b { font-size: 56px; line-height: 1; font-weight: 700; }
+  .rv-zone { margin-left: auto; align-self: center; font-size: 13px; font-weight: 700; color: #111; border-radius: 6px; padding: 2px 8px; background: #7f8aa3; }
+  .rv-row { display: flex; gap: 14px; margin-top: 6px; }
+  .rv-right .rv-row { justify-content: flex-end; }
+  .rv-row span { display: flex; flex-direction: column; }
+  .rv-row b { font-size: 20px; font-weight: 600; line-height: 1.15; }
+  .rv-time { font-size: 30px; font-weight: 700; line-height: 1.1; }
+  .rv-step { margin-top: 4px; font-size: 15px; }
+  .rv-step b { font-size: 22px; }
+  .rv-climb { right: 12px; top: 250px; width: 260px; }
+  .rv-climb .t { font-weight: 700; font-size: 15px; }
+  .rv-climb .s { font-size: 13px; color: #c9cfda; margin-top: 2px; }
+  .rv-climb canvas { display: block; width: 100%; height: 70px; margin-top: 6px; }
+  .rv-climb.soon { border: 2px solid #f5b84b; }
+  .rv-bottom { position: absolute; left: 0; right: 0; bottom: 0; height: 180px; background: linear-gradient(transparent, rgba(8, 10, 14, 0.82) 22%); padding: 22px 12px 8px; box-sizing: border-box; }
+  .rv-elevbar { position: relative; height: 62px; }
+  .rv-bottom canvas { display: block; width: 100%; }
+  #rvElev { height: 62px; cursor: zoom-in; }
+  #rvGraph { height: 84px; margin-top: 4px; }
+  .rv-zoom { position: absolute; left: 0; top: -20px; display: flex; gap: 4px; }
+  .rv-zoom button { background: rgba(12, 14, 18, 0.74); color: #c9cfda; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
+  .rv-zoom button.on { background: #f2f4f8; color: #111; }
+  .rv-ctrl { position: absolute; right: 12px; bottom: 196px; display: flex; gap: 6px; }
+  .rv-ctrl button { background: rgba(12, 14, 18, 0.8); color: #f2f4f8; padding: 8px 12px; font-size: 14px; }
+  .rv-ctrl button.on { background: var(--accent); color: #111; }
+  body.riding .r3dshoot { right: auto; left: 12px; }
+  /* Mode changes (ERG on and off, a new target) show big for a moment, wherever you are on the page. */
+  #modeToast { position: fixed; left: 50%; top: 22%; transform: translate(-50%, -8px); z-index: 60; background: rgba(12, 14, 18, 0.88); color: #f2f4f8; border-radius: 14px; padding: 14px 26px; font-size: 30px; font-weight: 700; text-align: center; opacity: 0; pointer-events: none; transition: opacity 200ms ease-out, transform 200ms ease-out; }
+  #modeToast.on { opacity: 1; transform: translate(-50%, 0); }
+  #modeToast small { display: block; font-size: 15px; font-weight: 500; color: #c9cfda; margin-top: 2px; }
+  #modeToast.erg { border: 2px solid var(--accent); }
+  @media (prefers-reduced-motion: reduce) { #modeToast { transition: none; } }
+  body.riding #route3d.hidden { display: block !important; }
+  .rv-wk { display: block; width: 220px; height: 26px; margin: 6px auto 0; }
 </style>
 </head>
 <body>
@@ -186,12 +243,30 @@
     <h1 style="margin:0">IndoorWarior <span id="simBadge" class="sim-badge hidden">Simulator</span></h1>
     <button id="simToggle" class="link">Test without hardware</button>
   </div>
+  <section class="panel" id="startPanel">
+    <div class="erg-head">
+      <h2 style="margin:0">Ready to ride</h2>
+      <button id="goBtn">Start ride</button>
+    </div>
+    <div class="start-grid">
+      <div class="start-item"><div class="label">Trainer</div><div class="v" id="suTrainer">Not connected</div></div>
+      <div class="start-item"><div class="label">Heart rate</div><div class="v" id="suHr">Not connected</div></div>
+      <div class="start-item"><div class="label">Power meter</div><div class="v" id="suPm">Not connected</div></div>
+      <div class="start-item"><div class="label">Gears</div><div class="v" id="suGear">Not connected</div></div>
+      <div class="start-item"><div class="label">Workout</div><div class="v" id="suWorkout">Free ride</div></div>
+      <div class="start-item"><div class="label">Route</div><div class="v" id="suRoute">IndoorWarior Island</div></div>
+      <div class="start-item"><div class="label">Trainer mode at the start</div><div class="v" id="suMode">Road (ERG off)</div></div>
+      <div class="start-item"><label class="label" for="suWeight">Your weight (for W/kg)</label><div class="v"><input type="number" id="suWeight" min="30" max="180" step="0.5" style="width:5em"> kg</div></div>
+    </div>
+    <p class="muted" style="margin:0">Set things up below, then Start ride goes full screen into the 3D view. Without a route you ride the island course. Esc or Setup brings this page back during the ride.</p>
+  </section>
+
 <section class="panel hidden" id="simPanel">
   <div class="erg-head">
     <h2 style="margin:0">Simulator</h2>
     <div class="row"><button id="simAll" class="sm">Connect everything</button><button id="simOff" class="secondary sm">Leave simulator</button></div>
   </div>
-  <p class="muted" style="margin:8px 0 12px">Nothing real is connected. Every Connect button picks a virtual device: a trainer that copies yours (ERG, gradient, 50–600 W), a power meter, a heart rate strap and a 12-speed Di2. Your Gradient sign-in is real; a finished test ride is not sent to Strava unless you press Upload.</p>
+  <p class="muted" style="margin:8px 0 12px">Nothing real is connected. Every Connect button picks a virtual device: a trainer that copies yours (ERG, gradient, 50–600 W), a power meter, a heart rate strap, a 12-speed Di2 and a Zwift Click. Your Gradient sign-in is real; a finished test ride is not sent to Strava unless you press Upload.</p>
   <div class="sim-grid">
     <label>Cadence <b id="simCadV"></b><input type="range" id="simCad" min="0" max="120" step="1"></label>
     <label>Your power with ERG off <b id="simPowV"></b><input type="range" id="simPow" min="0" max="500" step="5"></label>
@@ -202,6 +277,9 @@
     <span class="muted">Di2</span>
     <button class="secondary sm" id="simDown">Gear −1</button>
     <button class="secondary sm" id="simUp">Gear +1</button>
+    <span class="muted" style="margin-left:12px">Zwift Click</span>
+    <button class="secondary sm" id="simClickMinus">−</button>
+    <button class="secondary sm" id="simClickPlus">+</button>
   </div>
   <div class="row" style="margin-top:10px">
     <span class="muted">Drop out</span>
@@ -209,6 +287,7 @@
     <button class="secondary sm" data-drop="pm">Power meter</button>
     <button class="secondary sm" data-drop="hr">Strap</button>
     <button class="secondary sm" data-drop="di2">Di2</button>
+    <button class="secondary sm" data-drop="click">Click</button>
     <button class="secondary sm" id="simSteal">Another app takes the trainer</button>
   </div>
   <div class="muted" id="simInfo" style="margin-top:10px;font-variant-numeric:tabular-nums"></div>
@@ -229,6 +308,10 @@
       <div class="sensor">
         <div><div class="label">Power meter (power and cadence)</div><div class="sensor-state" id="pmState">Not connected</div></div>
         <button id="pmBtn" class="secondary">Connect</button>
+      </div>
+      <div class="sensor">
+        <div><div class="label">Zwift Click (shift buttons, experimental)</div><div class="sensor-state" id="clickState">Not connected</div></div>
+        <button id="clickBtn" class="secondary">Connect</button>
       </div>
     </div>
   </section>
@@ -341,8 +424,9 @@
       <button id="skipBtn" class="secondary hidden">Skip step</button>
       <button id="finishBtn" class="secondary hidden">Finish</button>
       <button id="pipBtn" class="secondary hidden">Mini window</button>
+      <button id="rideViewBtn" class="hidden">Back to the ride view</button>
     </div>
-    <label class="muted hidden" id="pipRow" style="display:block;margin-top:6px"><input type="checkbox" id="pipToggle"> Open a mini window when I start, to keep the ride live over a show in another tab</label>
+    <label class="muted hidden" id="pipRow" style="display:block;margin-top:6px"><input type="checkbox" id="pipToggle"> Open the mini window when I leave the full-screen ride view, to keep the ride live over a show in another tab</label>
     <div id="rideMsg"></div>
 
     <div id="savedBox" class="hidden">
@@ -383,6 +467,28 @@
         <div class="r3dbtns r3dshoot"><button class="r3dbtn" id="r3dPhoto">Screenshot</button><button class="r3dbtn" id="r3dRec">Record</button></div>
         <div class="r3dflash" id="r3dFlash"></div>
         <div class="r3dnote" id="r3dNote"></div>
+        <div class="rv" id="rv">
+          <div class="rv-box rv-left">
+            <div class="rv-big"><b id="rvW">--</b><i>W</i><span class="rv-zone" id="rvZone">Z1</span></div>
+            <div class="rv-row"><span><b id="rv3s">--</b><i>3s</i></span><span><b id="rvAvg">--</b><i>avg</i></span><span><b id="rvLapP">--</b><i id="rvLapL">lap</i></span><span><b id="rvWkg">--</b><i>W/kg</i></span></div>
+            <div class="rv-row"><span><b id="rvCad">--</b><i>rpm</i></span><span><b id="rvSpd">--</b><i>km/h</i></span><span><b id="rvGear">--</b><i>gear</i></span></div>
+          </div>
+          <div class="rv-box rv-mid"><div class="rv-time" id="rvTime">0:00</div><i id="rvLapT"></i><div class="rv-step" id="rvStep"></div><canvas id="rvWk" class="rv-wk hidden" aria-label="Workout"></canvas></div>
+          <div class="rv-box rv-right">
+            <div class="rv-big"><b id="rvHr">--</b><i>bpm</i></div>
+            <div class="rv-row"><span><b id="rvHrAvg">--</b><i>avg</i></span><span><b id="rvHrMax">--</b><i>max</i></span></div>
+            <div class="rv-row"><span><b id="rvGrade">--</b><i>gradient</i></span><span><b id="rvDist">--</b><i>km</i></span><span><b id="rvUp">--</b><i>m up</i></span></div>
+          </div>
+          <div class="rv-box rv-climb hidden" id="rvClimb"><div class="t" id="rvClimbT"></div><div class="s" id="rvClimbS"></div><canvas id="rvClimbC"></canvas></div>
+          <div class="rv-ctrl">
+            <button id="rvErg" title="ERG on or off (E)">ERG</button><button id="rvMinus" title="Target −5 W (↓)">−5</button><button id="rvPlus" title="Target +5 W (↑)">+5</button>
+            <button id="rvLap" title="New lap (L)">Lap</button><button id="rvPause">Pause</button><button id="rvFinish">Finish</button><button id="rvMini" title="A small window that stays on top">Mini</button><button id="rvExit" title="Back to the setup page (Esc)">Setup</button>
+          </div>
+          <div class="rv-bottom">
+            <div class="rv-elevbar"><div class="rv-zoom" id="rvZoom"><button data-z="0">Route</button><button data-z="20000">20 km</button><button data-z="5000">5 km</button><button data-z="1000">1 km</button></div><canvas id="rvElev" aria-label="Height profile. Scroll to zoom."></canvas></div>
+            <canvas id="rvGraph" aria-label="Power and heart rate, last 10 minutes"></canvas>
+          </div>
+        </div>
       </div>
       <canvas id="routeMap" class="route-map"></canvas>
       <canvas id="routeElev" class="route-elev"></canvas>
@@ -475,6 +581,7 @@
     <div id="dataMsg"></div>
   </section>
 </main>
+<div id="modeToast" role="status" aria-live="polite"></div>
 
 <script>
 // ---- Simulator. With it on, navigator.bluetooth hands out virtual devices
@@ -658,7 +765,27 @@ const SIM = (() => {
     { uuid: u16(0x180a), chars: [characteristic(u16(0x2a29), { read: true }, text('SHIMANO'))] },
   ]);
 
-  const devices = { trainer, pm, hr, di2 };
+  // ---- Zwift Click (v1): answers "RideOn" and sends its two buttons as
+  // protobuf, 0 for pressed and 1 for released, as BikeControl reads them.
+  const zc = n => `0000000${n}-19ca-4651-86e5-fa29dcdd09d1`;
+  const clickAsync = characteristic(zc(2), { notify: true });
+  const clickTx = characteristic(zc(4), { indicate: true });
+  const clickRx = characteristic(zc(3), { write: true });
+  clickRx.writeValue = clickRx.writeValueWithResponse = clickRx.writeValueWithoutResponse = async bytes => {
+    if (!click.gatt.connected) throw new DOMException('GATT Server is disconnected.', 'NetworkError');
+    const a = Array.from(new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength));
+    if (String.fromCharCode(...a) === 'RideOn') setTimeout(() => {
+      clickTx.emit(dv([...'RideOn'].map(c => c.charCodeAt(0)).concat([1, 3])));
+      clickAsync.emit(dv([0x19, 0x08, 76]));
+    }, 40);
+  };
+  const click = device('sim-click', 'Zwift Click', [{ uuid: zc(1), chars: [clickAsync, clickRx, clickTx] }]);
+  const press = plus => {
+    clickAsync.emit(dv([0x37, 0x08, plus ? 0 : 1, 0x10, plus ? 1 : 0]));
+    setTimeout(() => clickAsync.emit(dv([0x37, 0x08, 1, 0x10, 1])), 150);
+  };
+
+  const devices = { trainer, pm, hr, di2, click };
   Object.defineProperty(navigator, 'bluetooth', {
     configurable: true,
     value: {
@@ -667,6 +794,7 @@ const SIM = (() => {
         await sleep(300);
         const wanted = (opts.filters || []).flatMap(f => f.services || []);
         if (opts.acceptAllDevices) return di2;
+        if ((opts.filters || []).some(f => f.manufacturerData || /zwift/i.test(f.namePrefix || ''))) return click;
         if (wanted.includes(0x1826)) return trainer;
         if (wanted.includes(0x180d)) return hr;
         if (wanted.includes(0x1818)) return pm;
@@ -740,6 +868,8 @@ const SIM = (() => {
   };
   $s('simDown').addEventListener('click', () => shift(-1));
   $s('simUp').addEventListener('click', () => shift(1));
+  $s('simClickPlus').addEventListener('click', () => press(true));
+  $s('simClickMinus').addEventListener('click', () => press(false));
   document.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => devices[b.dataset.drop].gatt.disconnect()));
   $s('simSteal').addEventListener('click', () => {
     world.controlled = false;
@@ -1526,11 +1656,30 @@ $('calCancel').addEventListener('click', () => calibration.cancel());
 
 function ergStatus(text, cls = '') { $('ergStatus').textContent = text; $('ergStatus').className = cls; }
 
+// Mode changes show big for a moment wherever you are: ERG on or off, with
+// a short beep, each new ERG target, and a new virtual gear.
+const ergSeen = { on: null, target: null };
+let toastTimer = 0;
+function showToast(big, small, erg) {
+  const t = $('modeToast');
+  t.textContent = big;
+  if (small) { const el = document.createElement('small'); el.textContent = small; t.append(el); }
+  t.classList.toggle('erg', !!erg);
+  t.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('on'), 1600);
+}
+
 function renderErg() {
   $('ergToggle').checked = ERG.on;
   $('targetWatts').textContent = ERG.target;
   $('targetRange').value = ERG.target;
   $('ergPanel').classList.toggle('ergOff', !ERG.on);
+  if (ergSeen.on != null && ERG.on !== ergSeen.on) {
+    showToast(ERG.on ? `ERG on · ${ERG.target} W` : 'ERG off', ERG.on ? 'The trainer holds the watts' : route ? 'Road: the trainer follows the gradient' : 'The trainer rides like a flat road', ERG.on);
+    countdown.beep(ERG.on ? 990 : 660, 180);
+  } else if (ERG.on && ergSeen.target != null && ERG.target !== ergSeen.target) showToast(`${ERG.target} W`, 'ERG target', true);
+  ergSeen.on = ERG.on; ergSeen.target = ERG.target;
 }
 
 $('ergToggle').addEventListener('change', e => { ERG.setOn(e.target.checked); renderErg(); });
@@ -2368,6 +2517,7 @@ window.addEventListener('resize', drawLive);
 // ---- Workout and player.
 let workout = null; // { name, ftp, steps: [{ sec, fraction }] }
 let intensity = 1;
+let rideViewReady = false; // the ride view (further down) is set up
 const ride = { status: 'idle', step: 0, stepElapsed: 0, workoutDone: true, samples: [], events: [], name: null, lastTick: performance.now() };
 
 function loadWorkout(name, segments, ftp) {
@@ -2547,35 +2697,43 @@ function saveUnsaved() {
 }
 
 // ---- Mini window: a small always-on-top window (Document Picture-in-Picture,
-// Chrome and Edge 116+) with power, heart rate, cadence and the step. Besides
+// Chrome and Edge 116+) with the ride view's numbers and what comes next. Besides
 // being handy over a show, a page with a mini window open stays a visible page
 // to the browser, so it is not treated as a background tab while you ride.
 const pip = (() => {
   const supported = 'documentPictureInPicture' in window;
   let win = null;
-  const CSS = `body{margin:0;background:#0f1115;color:#f2f4f8;font:14px/1.3 "Segoe UI",system-ui,sans-serif;padding:10px 12px;user-select:none}
-    .big{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}.big small{font-size:14px;color:#8b93a7;margin-left:4px}
-    .row{display:flex;gap:14px;margin-top:8px}.row div{display:flex;flex-direction:column}.row b{font-size:18px;font-variant-numeric:tabular-nums}
-    .row i{font-style:normal;font-size:11px;color:#8b93a7}.foot{display:flex;justify-content:space-between;margin-top:8px;color:#8b93a7;font-variant-numeric:tabular-nums}`;
+  const CSS = `body{margin:0;background:#0f1115;color:#f2f4f8;font:14px/1.3 "Segoe UI",system-ui,sans-serif;padding:10px 12px;user-select:none;font-variant-numeric:tabular-nums}
+    .top{display:flex;align-items:center;gap:10px}.big{font-size:44px;font-weight:700;line-height:1}.big small,.hr small{font-size:14px;font-weight:400;color:#8b93a7;margin-left:4px}
+    .z{font-size:13px;font-weight:700;color:#111;border-radius:6px;padding:2px 8px;background:#7f8aa3}.hr{margin-left:auto;font-size:30px;font-weight:700;color:#ff8b8b}
+    .row{display:flex;gap:14px;margin-top:8px}.row div{display:flex;flex-direction:column;min-width:52px}.row b{font-size:18px}
+    .row i{font-style:normal;font-size:11px;color:#8b93a7}.foot{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:#c9cfda}`;
   async function open() {
     if (!supported || win) return;
-    try { win = await documentPictureInPicture.requestWindow({ width: 320, height: 160 }); }
+    try { win = await documentPictureInPicture.requestWindow({ width: 380, height: 250 }); }
     catch (e) { rideMsg(`Could not open the mini window: ${e.message}`, 'bad'); return; }
     const d = win.document;
     d.title = 'IndoorWarior';
     const st = d.createElement('style'); st.textContent = CSS; d.head.append(st);
-    d.body.innerHTML = `<div class="big"><span id="pW">--</span><small>W</small></div>
-      <div class="row"><div><b id="pHr">--</b><i>Heart rate</i></div><div><b id="pCad">--</b><i>Cadence</i></div><div><b id="pT">--</b><i id="pStep">Target</i></div></div>
-      <div class="foot"><span id="pLeft"></span><span id="pTime"></span></div>`;
+    d.body.innerHTML = `<div class="top"><div class="big"><span id="pW">--</span><small>W</small></div><span class="z" id="pZ">Z1</span><div class="hr"><span id="pHr">--</span><small>bpm</small></div></div>
+      <div class="row"><div><b id="p3">--</b><i>3s</i></div><div><b id="pAvg">--</b><i>avg</i></div><div><b id="pLap">--</b><i id="pLapL">lap</i></div><div><b id="pWkg">--</b><i>W/kg</i></div><div><b id="pCad">--</b><i>rpm</i></div></div>
+      <div class="row"><div><b id="pHrAvg">--</b><i>avg bpm</i></div><div><b id="pSpd">--</b><i>km/h</i></div><div><b id="pGrade">--</b><i>gradient</i></div><div><b id="pGear">--</b><i>gear</i></div></div>
+      <div class="foot"><span id="pNext"></span><span id="pTime"></span></div>`;
     win.addEventListener('pagehide', () => { win = null; render(); });
     update(); render();
   }
   function update() {
     if (!win) return;
-    const d = win.document, t = id => $(id).textContent, set = (id, v) => { const el = d.getElementById(id); if (el.textContent !== v) el.textContent = v; };
-    set('pW', t('watts')); set('pHr', t('hr')); set('pCad', t('cadence'));
-    set('pT', workout ? t('stepTarget') : '--'); set('pStep', workout ? t('stepLabel') : 'Target');
-    set('pLeft', workout ? t('stepLeft').trim() : ''); set('pTime', t('rideTimer'));
+    const d = win.document, x = rideView.stats(), set = (id, v) => { const el = d.getElementById(id); if (el.textContent !== v) el.textContent = v; };
+    const n = (v, dp = 0) => (v == null || !Number.isFinite(v) ? '--' : v.toFixed(dp));
+    set('pW', String(Math.round(x.w))); set('pZ', `Z${x.zone}`); d.getElementById('pZ').style.background = x.zoneColor;
+    set('pHr', n(x.hr)); set('p3', n(x.p3)); set('pAvg', n(x.avg)); set('pLap', n(x.lap)); set('pLapL', x.lapLabel); set('pWkg', x.wkg); set('pCad', n(x.cad));
+    set('pHrAvg', n(x.hrAvg)); set('pSpd', n(x.speed, 1)); set('pGrade', x.grade == null ? '--' : fmtGrade(x.grade)); set('pGear', x.gear || '--');
+    // What comes next: the workout step, else the climb ahead or the one you are on.
+    const s = x.step, c = x.climb, nw = s?.next ? stepWatts(s.next) : null;
+    set('pNext', s ? `${s.w == null ? 'Free' : `${s.w} W`} · ${fmtTime(s.left)} left · then ${s.next ? (nw == null ? 'free' : `${nw} W`) : 'done'}`
+      : c ? (c.on ? `Climb: ${((c.top - c.start - c.at) / 1000).toFixed(1)} km to the top` : `Climb in ${(c.ahead / 1000).toFixed(1)} km: ${(c.len / 1000).toFixed(1)} km at ${c.avg.toFixed(1)}%`) : '');
+    set('pTime', fmtTime(x.time));
   }
   function render() {
     $('pipBtn').classList.toggle('hidden', !supported || !!win || !(ride.status === 'riding' || ride.status === 'paused'));
@@ -2586,7 +2744,7 @@ const pip = (() => {
   $('pipToggle').checked = pref;
   $('pipToggle').addEventListener('change', e => { try { localStorage.setItem('pip', e.target.checked ? 'on' : 'off'); } catch {} });
   $('pipBtn').addEventListener('click', open);
-  return { open, update, render, get isOpen() { return !!win; }, get wanted() { return supported && $('pipToggle').checked; } };
+  return { open, update, render, supported, get isOpen() { return !!win; }, get wanted() { return supported && $('pipToggle').checked; } };
 })();
 
 function tick() {
@@ -2633,6 +2791,7 @@ function renderRide() {
   $('finishBtn').classList.toggle('hidden', !active);
   pip.render();
   $('skipBtn').classList.toggle('hidden', !(active && workout && !ride.workoutDone));
+  if (rideViewReady) rideView.update();
   $('intensity').textContent = `${Math.round(intensity * 100)}%`;
 
   if (workout) {
@@ -2831,7 +2990,7 @@ const countdown = (() => {
     const w = next ? stepWatts(next) : null;
     $('cdNext').textContent = !next ? 'Then the workout is done' : w != null ? `Next: ${w} W` : 'Next: free riding';
   }
-  return { unlock, update };
+  return { unlock, update, beep };
 })();
 
 // ---- How hard it felt, asked under the finished ride and saved on the
@@ -3106,7 +3265,7 @@ $('libChips').addEventListener('click', e => {
 });
 $('libList').addEventListener('click', e => { const b = e.target.closest('.lib-item'); if (b) pickLibrary(Number(b.dataset.i)); });
 $('signOutBtn').addEventListener('click', () => { gradient.token = null; store.set('gradient', gradient); renderGradient(); });
-$('startBtn').addEventListener('click', () => { if (pip.wanted) pip.open(); startRide(); });
+$('startBtn').addEventListener('click', () => rideView.begin());
 $('pauseBtn').addEventListener('click', pauseRide);
 $('resumeBtn').addEventListener('click', resumeRide);
 $('skipBtn').addEventListener('click', () => { nextStep(); renderRide(); });
@@ -3141,6 +3300,9 @@ const routeState = { dist: 0, lap: 0, speed: 0, lastGrade: null, lastGradeAt: 0,
 // Distance ridden on this route so far, over all laps of a loop.
 const routeRidden = () => (route ? routeState.lap * route.total + routeState.dist : 0);
 const routeCfg = Object.assign({ mass: 84, difficulty: 0.5 }, store.get('routeCfg', {}));
+// Virtual gear, shifted with a Zwift Click or the + and − keys: each gear
+// from 12 adds (or takes off) half a percent of gradient at the trainer.
+const vgear = { n: 12, max: 24 };
 
 function haversine(a, b) {
   const R = 6371000, toRad = Math.PI / 180;
@@ -3275,7 +3437,7 @@ function routeTick(dt) {
 // Grade goes to the trainer only while ERG is off (ERG wins when it is on).
 function sendGrade(gradePct, force = false) {
   if (!ERG.connected || ERG.on || routeState.gradeBusy) return;
-  const g = Math.max(-10, Math.min(20, gradePct * routeCfg.difficulty));
+  const g = Math.max(-10, Math.min(20, gradePct * routeCfg.difficulty + (vgear.n - 12) * 0.5));
   const now = Date.now();
   if (!force && routeState.lastGrade !== null && Math.abs(g - routeState.lastGrade) < 0.2 && now - routeState.lastGradeAt < 5000) return;
   routeState.gradeBusy = true;
@@ -3561,8 +3723,10 @@ const view3d = (() => {
   };
   setWeather(weather);
   $('r3dWeather').addEventListener('click', () => setWeather(WEATHERS[(WEATHERS.indexOf(weather) + 1) % WEATHERS.length]));
+  // In the ride view the whole page goes full screen, so its numbers come along.
+  let riding = false;
   $('r3dFull').addEventListener('click', () => {
-    if (document.fullscreenElement) document.exitFullscreen(); else $('route3d').requestFullscreen?.().catch(() => {});
+    if (document.fullscreenElement) document.exitFullscreen(); else (riding ? document.documentElement : $('route3d')).requestFullscreen?.().catch(() => {});
   });
   document.addEventListener('fullscreenchange', () => { $('r3dFull').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen'; });
   // Screenshot and Record: the 3D view with the ride's numbers and the place
@@ -3636,8 +3800,9 @@ const view3d = (() => {
   })();
   stopRec = shot.stopRec;
 
-  return { show, hud, stopRec: () => stopRec(), refresh: () => show(mode), get mode() { return mode; }, get info() { return world?.info; }, get scenery() { return world?.scenery; } };
+  return { show, hud, stopRec: () => stopRec(), refresh: () => show(mode), riding: v => { riding = v; }, get mode() { return mode; }, get info() { return world?.info; }, get scenery() { return world?.scenery; }, get real() { return world?.real; } };
 })();
+
 
 $('connectBtn').addEventListener('click', connect);
 // ---- Di2 explorer. Shimano's Bluetooth services use their own UUID base,
@@ -3798,11 +3963,490 @@ if (!navigator.bluetooth) {
   setStatus('This browser has no Web Bluetooth. Open this page in Chrome or Edge on Windows.', true);
 }
 
+// ---- Zwift Click: two buttons that shift. With ERG on they move the target
+// by 10 W; otherwise they change a virtual gear, which makes the gradient
+// sent to the trainer steeper or flatter (gear 12 rides the road as it is).
+// The protocol is as BikeControl (formerly SwiftControl) reads it: subscribe,
+// write "RideOn" in the clear (no key, so nothing is encrypted), and the
+// buttons arrive as protobuf on the async characteristic. Experimental: only
+// tried against the simulator. A Click v2 talks to other apps only for about a
+// day after the Zwift app last connected to it.
+function shiftBy(d, ergStep = 10) {
+  if (ERG.on) { ERG.setTarget(ERG.target + d * ergStep); return; }
+  const n = Math.max(1, Math.min(vgear.max, vgear.n + d));
+  if (n === vgear.n) return;
+  vgear.n = n;
+  routeState.lastGrade = null; // send the new feel now
+  showToast(`Gear ${n}`, n === 12 ? 'The road as it is' : `${n > 12 ? 'Harder' : 'Easier'} than the road`, false);
+  if (rideViewReady) rideView.update();
+}
+
+const zclick = (() => {
+  const SERVICES = ['0000fc82-0000-1000-8000-00805f9b34fb', '00000001-19ca-4651-86e5-fa29dcdd09d1'];
+  const ASYNC = '00000002-19ca-4651-86e5-fa29dcdd09d1', SYNC_RX = '00000003-19ca-4651-86e5-fa29dcdd09d1', SYNC_TX = '00000004-19ca-4651-86e5-fa29dcdd09d1';
+  let dev = null, manual = false, ready = false, version = '', battery = null;
+  const held = { plus: false, minus: false };
+  const msg = (text, cls = '') => sensorState('click', text, cls);
+  const label = () => `${dev?.name || 'Zwift Click'}${version ? ` (${version})` : ''}${battery != null ? ` · battery ${battery}%` : ''}`;
+
+  // The varint fields of a protobuf message, as field number → value.
+  function fields(b, i) {
+    const out = {};
+    const varint = () => { let v = 0, m = 1, x; do { x = b[i++]; v += (x & 0x7f) * m; m *= 128; } while (x & 0x80 && i < b.length); return v; };
+    while (i < b.length) {
+      const key = varint(), wt = key % 8, f = Math.floor(key / 8);
+      if (wt === 0) out[f] = varint();
+      else if (wt === 2) i += varint();
+      else if (wt === 5) i += 4;
+      else if (wt === 1) i += 8;
+      else break;
+    }
+    return out;
+  }
+  function onAsync(e) {
+    const v = e.target.value, b = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    let plus, minus;
+    if (b[0] === 0x37) { // Click v1: field 1 plus, field 2 minus; 0 (or left out) is pressed, 1 released
+      const f = fields(b, 1); plus = f[1] !== 1; minus = f[2] !== 1;
+    } else if (b[0] === 0x23) { // Click v2: a button map where a cleared bit is a pressed button
+      const f = fields(b, 1), m = f[1] == null ? 0xffffffff : f[1] >>> 0;
+      plus = !(m & 0x1000); minus = !(m & 0x0100) || !(m & 0x20); // B on the right puck shifts down too
+    } else if (b[0] === 0x19 && b.length > 2) { battery = b[2]; msg(label(), 'ok'); return; }
+    else return;
+    if (plus && !held.plus) shiftBy(1);
+    if (minus && !held.minus) shiftBy(-1);
+    held.plus = plus; held.minus = minus;
+  }
+  function onSync(e) {
+    const v = e.target.value, b = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    if (String.fromCharCode(...b.slice(0, 6)) === 'RideOn') { version = b[6] === 2 ? 'v2' : 'v1'; msg(label(), 'ok'); }
+  }
+  async function attach() {
+    msg('Connecting…');
+    const server = await dev.gatt.connect();
+    let svc = null;
+    for (const u of SERVICES) { try { svc = await server.getPrimaryService(u); break; } catch { /* try the other */ } }
+    if (!svc) throw new Error('it does not show its button service. A Click v2 hides it until the Zwift app has connected to it: open Zwift, pair the Click, close Zwift, then connect here within a day');
+    const asyncC = await svc.getCharacteristic(ASYNC), rx = await svc.getCharacteristic(SYNC_RX);
+    asyncC.addEventListener('characteristicvaluechanged', onAsync); // same function: never added twice
+    await asyncC.startNotifications();
+    try {
+      const tx = await svc.getCharacteristic(SYNC_TX);
+      tx.addEventListener('characteristicvaluechanged', onSync);
+      await tx.startNotifications();
+    } catch { /* the reply only names the version */ }
+    const hello = new TextEncoder().encode('RideOn');
+    try { await rx.writeValueWithoutResponse(hello); } catch { await rx.writeValue(hello); }
+    ready = true;
+    msg(label(), 'ok');
+  }
+  function forget() { dev = null; ready = false; version = ''; battery = null; held.plus = held.minus = false; $('clickBtn').textContent = 'Connect'; }
+  async function lost(which) {
+    if (dev !== which) return;
+    ready = false;
+    if (manual) { forget(); msg('Not connected'); return; }
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      msg(`Connection lost. Reconnecting (${attempt} of 3)… Press a button to wake it.`, 'bad');
+      await new Promise(r => setTimeout(r, 2000 * attempt));
+      if (dev !== which || manual) return;
+      try { await attach(); return; } catch { /* next attempt */ }
+    }
+    forget();
+    msg('Connection lost. Press Connect to try again.', 'bad');
+  }
+  async function toggle() {
+    if (dev) { manual = true; dev.gatt.disconnect(); return; }
+    if (!navigator.bluetooth) return msg('This browser has no Web Bluetooth. Use Chrome or Edge.', 'bad');
+    try {
+      msg('Press a button on the Click so it shows up, then pick it in the pop-up…');
+      const picked = await navigator.bluetooth.requestDevice({
+        filters: [{ manufacturerData: [{ companyIdentifier: 0x094a }] }, { namePrefix: 'Zwift Click' }],
+        optionalServices: SERVICES,
+      });
+      dev = picked; manual = false;
+      $('clickBtn').textContent = 'Disconnect';
+      picked.addEventListener('gattserverdisconnected', () => lost(picked));
+      await attach();
+    } catch (e) {
+      if (e.name === 'NotFoundError' && !dev) msg('Not connected');
+      else { msg(`Could not connect: ${e.message}`, 'bad'); if (dev) { manual = true; dev.gatt.disconnect(); forget(); } }
+    }
+  }
+  $('clickBtn').addEventListener('click', toggle);
+  return { toggle, get connected() { return !!dev && ready; } };
+})();
+
+
+// ---- Ride view. Start ride goes full screen into the 3D world, with the
+// numbers Zwift shows laid over it: power with its zone, 3 s, average and lap
+// power, W/kg, heart rate, cadence, speed, gear, time, gradient, distance and
+// climbing. Along the bottom, a zoomable height profile and the last 10
+// minutes of power and heart rate on the power zones. A card warns of the
+// climb ahead and stays up, with your place on it, while you ride it.
+const rideView = (() => {
+  const L = { lapStart: 0, lapNo: 1, step: null, routeLap: 0 };
+  const acc = { n: 0, p: 0, hrN: 0, hr: 0, hrMax: 0 }, lapAcc = { n: 0, from: 0, p: 0 };
+  let ftp = null;
+  const active = () => ride.status === 'riding' || ride.status === 'paused';
+  const on = () => document.body.classList.contains('riding');
+
+  // FTP for zones: the workout's, else Gradient's, else the one set in the builder.
+  function loadFtp() {
+    ftp = workout?.ftp || Number(store.get('ftp', 200)) || 200;
+    if (!workout && gradient.token) gradientApi('/api/settings/thresholds').then(t => { if (t?.ftpWatts && !workout) ftp = t.ftpWatts; }).catch(() => {});
+  }
+  const ftpNow = () => workout?.ftp || ftp || 200;
+  // Zones as Zwift and Coggan cut them; 6 and 7 share a colour.
+  const zoneOf = f => (f < 0.56 ? 1 : f < 0.76 ? 2 : f < 0.91 ? 3 : f < 1.06 ? 4 : f < 1.21 ? 5 : f < 1.5 ? 6 : 7);
+
+  // Weight for W/kg. Gradient keeps none, so it is set here; the bike's share
+  // of "rider + bike" on the route stays as it was.
+  const weight = () => routeCfg.rider || Math.max(40, routeCfg.mass - 9);
+  $('suWeight').value = weight();
+  $('suWeight').addEventListener('change', e => {
+    const v = Math.max(30, Math.min(180, Number(e.target.value) || weight()));
+    const bike = Math.max(5, routeCfg.mass - weight());
+    routeCfg.rider = v;
+    routeCfg.mass = Math.min(200, Math.round(v + bike));
+    $('rMass').value = routeCfg.mass;
+    e.target.value = v;
+    store.set('routeCfg', routeCfg);
+  });
+
+  // ---- Laps: a new one at each workout step, each time round a loop, or on
+  // the Lap button (L). They are for the screen; the .fit laps stay per step.
+  function newLap() {
+    L.lapStart = ride.samples.length; L.lapNo++;
+    Object.assign(lapAcc, { n: 0, from: L.lapStart, p: 0 });
+  }
+  function resetLaps() {
+    Object.assign(L, { lapStart: 0, lapNo: 1, step: workout && !ride.workoutDone ? ride.step : null, routeLap: routeState.lap });
+    Object.assign(acc, { n: 0, p: 0, hrN: 0, hr: 0, hrMax: 0 });
+    Object.assign(lapAcc, { n: 0, from: 0, p: 0 });
+  }
+  function watchLaps() {
+    const step = workout && !ride.workoutDone ? ride.step : null;
+    if (step !== L.step) { L.step = step; newLap(); }
+    if (route && routeState.lap !== L.routeLap) { L.routeLap = routeState.lap; if (step == null) newLap(); }
+  }
+
+  // Everything both the ride view and the mini window show, from one place.
+  function stats() {
+    const S = ride.samples;
+    if (S.length < acc.n) resetLaps();
+    for (; acc.n < S.length; acc.n++) {
+      const s = S[acc.n];
+      acc.p += s.p || 0;
+      if (s.hr) { acc.hrN++; acc.hr += s.hr; acc.hrMax = Math.max(acc.hrMax, s.hr); }
+    }
+    if (lapAcc.from !== L.lapStart) Object.assign(lapAcc, { n: 0, from: L.lapStart, p: 0 });
+    for (; lapAcc.from + lapAcc.n < S.length; lapAcc.n++) lapAcc.p += S[lapAcc.from + lapAcc.n].p || 0;
+    const f = ftpNow(), w = currentPower();
+    const last3 = S.slice(-3), p3 = last3.length ? Math.round(last3.reduce((a, s) => a + (s.p || 0), 0) / last3.length) : null;
+    const live = state.live, hr = hrFresh() ? ext.hr.value : isFresh(live.at) && live.hr ? live.hr : null;
+    const cad = parseInt($('cadence').textContent, 10);
+    const st = currentStep(), d = routeState.dist;
+    const g = di2.gear && isFresh(di2.gear.at + 7000) ? di2.gear : null; // Di2 repeats its state every few seconds
+    const gear = zclick.connected ? `v${vgear.n}` : g ? (g.front ? `${g.front}·${g.rear}` : `${g.rear}/${g.rearCount}`) : null;
+    return {
+      w, zone: zoneOf(w / f), zoneColor: zoneColor(w / f), p3,
+      avg: S.length ? Math.round(acc.p / S.length) : null,
+      lap: lapAcc.n ? Math.round(lapAcc.p / lapAcc.n) : null,
+      lapLabel: L.step != null ? `step ${L.step + 1}` : `lap ${L.lapNo}`,
+      lapTime: S.length - L.lapStart,
+      wkg: (w / weight()).toFixed(1),
+      hr, hrAvg: acc.hrN ? Math.round(acc.hr / acc.hrN) : null, hrMax: acc.hrMax || null,
+      cad: Number.isFinite(cad) ? cad : null,
+      speed: route ? routeState.speed * 3.6 : isFresh(live.at) ? live.speed : null,
+      gear, time: S.length,
+      grade: route ? gradeBetween(d - 25, d + 25) : null,
+      dist: route ? routeRidden() : null,
+      up: route ? routeState.lap * route.climb[route.climb.length - 1] + route.climb[Math.min(route.climb.length - 1, Math.floor(d / ROUTE_STEP))] : null,
+      step: st ? { n: ride.step + 1, of: workout.steps.length, w: stepWatts(st), left: st.sec - ride.stepElapsed, next: workout.steps[ride.step + 1] } : null,
+      climb: climbNow(),
+    };
+  }
+
+  // ---- Climbs: at least 500 m at 3% or more on average, found once per
+  // route in 100 m pieces. One starts at the first piece of 2% or more and
+  // ends at its top: where the road drops 10 m (or a tenth of the climb's
+  // height) below its highest point, or goes 500 m without getting higher.
+  const climbCache = new WeakMap();
+  function climbs() {
+    if (!route) return [];
+    if (climbCache.has(route)) return climbCache.get(route);
+    const B = 100, n = Math.floor(route.total / B), out = [], ele = d => routeAt(Math.min(route.total, d)).ele;
+    let i = 0;
+    while (i < n) {
+      if (gradeBetween(i * B, (i + 1) * B) < 2) { i++; continue; }
+      const s = i * B, e0 = ele(s);
+      let top = s, max = e0, j = i;
+      for (; j < n; j++) {
+        const d = (j + 1) * B, e = ele(d);
+        if (e > max) { max = e; top = d; } else if (max - e > Math.max(10, 0.1 * (max - e0)) || d - top > 500) break;
+      }
+      while (top - s > B && gradeBetween(top - B, top) < 2) top -= B; // no false flat at the top
+      max = ele(top);
+      const len = top - s, gain = max - e0;
+      if (len >= 500 && gain / len >= 0.03) out.push({ start: s, top, len, gain, avg: (gain / len) * 100 });
+      i = Math.max(i + 1, Math.round(top / B));
+    }
+    climbCache.set(route, out);
+    return out;
+  }
+  // A climb's name: the named col (from the real map) whose top is within 600 m of it.
+  function climbName(c) {
+    const col = (view3d.real?.cols || []).find(x => Math.abs(x[3] - c.top) < 600);
+    return col ? col[0] : null;
+  }
+  // The climb you are on, or the next one within 1 km. A loop looks across the line.
+  function climbNow() {
+    if (!route) return null;
+    const d = routeState.dist, offs = route.loop ? [0, route.total] : [0];
+    for (const c of climbs()) for (const o of offs) {
+      const s = c.start + o, t = c.top + o;
+      if (d >= s && d < t) return { ...c, on: true, at: d - s };
+      if (s - d > 0 && s - d <= 1000) return { ...c, on: false, ahead: s - d };
+    }
+    return null;
+  }
+
+  // ---- Drawing.
+  const ZONE_CUTS = [0, 0.56, 0.76, 0.91, 1.06, 1.21, 1.5];
+  function drawGraph() {
+    const { ctx, w, h } = setupCanvas($('rvGraph'));
+    const S = ride.samples.slice(-600), f = ftpNow();
+    const maxP = Math.max(f * 1.5, ...S.map(s => s.p || 0)) * 1.05;
+    const Y = p => h - (p / maxP) * h, X = i => w - ((S.length - 1 - i) / 599) * w;
+    // The power zones, shaded behind.
+    ZONE_CUTS.forEach((c, k) => {
+      const lo = c * f, hi = (ZONE_CUTS[k + 1] ?? 9) * f;
+      ctx.fillStyle = zoneColor(c + 0.01); ctx.globalAlpha = 0.13;
+      ctx.fillRect(0, Y(Math.min(hi, maxP)), w, Y(lo) - Y(Math.min(hi, maxP)));
+    });
+    ctx.globalAlpha = 1;
+    if (S.length < 2) return;
+    // ERG target, dashed.
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = '#c9cfda'; ctx.lineWidth = 1; ctx.beginPath();
+    let pen = false;
+    S.forEach((s, i) => { if (s.tg == null) { pen = false; return; } pen ? ctx.lineTo(X(i), Y(s.tg)) : ctx.moveTo(X(i), Y(s.tg)); pen = true; });
+    ctx.stroke(); ctx.setLineDash([]);
+    // Heart rate on its own scale, then power (3 s smoothed) coloured by zone.
+    const hrs = S.filter(s => s.hr).map(s => s.hr);
+    if (hrs.length) {
+      const lo = Math.min(60, ...hrs), hi = Math.max(190, ...hrs), YH = v => h - ((v - lo) / (hi - lo)) * h;
+      ctx.strokeStyle = '#ff5d5d'; ctx.lineWidth = 1.5; ctx.beginPath(); pen = false;
+      S.forEach((s, i) => { if (!s.hr) { pen = false; return; } pen ? ctx.lineTo(X(i), YH(s.hr)) : ctx.moveTo(X(i), YH(s.hr)); pen = true; });
+      ctx.stroke();
+    }
+    const sm = S.map((_, i) => { const a = S.slice(Math.max(0, i - 2), i + 1); return a.reduce((t, s) => t + (s.p || 0), 0) / a.length; });
+    ctx.lineWidth = 2;
+    for (let i = 1; i < S.length; i++) {
+      ctx.strokeStyle = zoneColor(sm[i] / f);
+      ctx.beginPath(); ctx.moveTo(X(i - 1), Y(sm[i - 1])); ctx.lineTo(X(i), Y(sm[i])); ctx.stroke();
+    }
+    ctx.fillStyle = '#9aa3b2'; ctx.font = '11px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('10 min', 4, 12); ctx.fillText(`FTP ${f} W`, 4, Y(f) - 3);
+  }
+
+  // Height profile: the whole route, or a window of 20, 5 or 1 km around you
+  // (a little behind, mostly ahead). Scroll on it to zoom.
+  const ZOOMS = [0, 20000, 5000, 1000];
+  let zoom = ZOOMS.includes(store.get('elevZoom', 5000)) ? store.get('elevZoom', 5000) : 5000;
+  function setZoom(z) {
+    zoom = z; store.set('elevZoom', z);
+    document.querySelectorAll('#rvZoom button').forEach(b => b.classList.toggle('on', Number(b.dataset.z) === z));
+    if (on()) drawElev();
+  }
+  function drawElev() {
+    if (!route) return;
+    const { ctx, w, h } = setupCanvas($('rvElev'));
+    const T = route.total, whole = !zoom || zoom >= T, here = route.loop && !whole ? routeRidden() : routeState.dist;
+    let a = 0, b = T;
+    if (!whole) {
+      a = here - zoom * 0.15; b = a + zoom;
+      if (!route.loop) { if (a < 0) { b -= a; a = 0; } if (b > T) { a -= b - T; b = T; } }
+    }
+    const wrap = d => (route.loop ? ((d % T) + T) % T : Math.max(0, Math.min(T, d)));
+    const N = Math.max(20, Math.min(400, Math.floor(w / 3))), step = (b - a) / N;
+    const eles = []; for (let k = 0; k <= N; k++) eles.push(routeAt(wrap(a + k * step)).ele);
+    const lo = Math.min(...eles), hi = Math.max(...eles), span = Math.max(hi - lo, zoom && zoom <= 1000 ? 15 : 30);
+    const top = 12, bottom = h - 2, Y = e => bottom - ((e - lo) / span) * (bottom - top), X = d => ((d - a) / (b - a)) * w;
+    for (let k = 0; k < N; k++) {
+      const d = a + k * step, g = gradeBetween(d, d + Math.max(step, 20));
+      ctx.fillStyle = gradeColor(g); ctx.globalAlpha = d < here ? 0.95 : 0.6;
+      const e = (eles[k] + eles[k + 1]) / 2;
+      ctx.fillRect(X(d), Y(e), w / N + 0.6, bottom - Y(e));
+    }
+    ctx.globalAlpha = 1;
+    ctx.beginPath(); eles.forEach((e, k) => (k ? ctx.lineTo(X(a + k * step), Y(e)) : ctx.moveTo(X(a), Y(e))));
+    ctx.strokeStyle = '#f2f4f8'; ctx.lineWidth = 1.5; ctx.stroke();
+    const mx = X(here), my = Y(routeAt(wrap(here)).ele);
+    ctx.fillStyle = '#fff'; ctx.fillRect(mx - 1, 0, 2, h);
+    ctx.beginPath(); ctx.arc(mx, my, 4.5, 0, 7); ctx.fill(); ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#c9cfda'; ctx.font = '11px "Segoe UI", system-ui, sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(`${Math.round(hi)} m`, w - 4, 11); ctx.fillText(`${fmtKm(Math.max(0, b))} km`, w - 4, h - 4);
+    ctx.textAlign = 'left';
+  }
+
+  function drawClimb(c) {
+    const { ctx, w, h } = setupCanvas($('rvClimbC'));
+    const s = c.start, len = c.top - c.start, n = Math.max(5, Math.round(len / 50)), seg = len / n;
+    const e0 = routeAt(s).ele, Y = e => h - 2 - ((e - e0) / Math.max(c.gain, 10)) * (h - 14), X = d => ((d - s) / len) * w;
+    for (let k = 0; k < n; k++) {
+      const d = s + k * seg, e = routeAt(Math.min(route.total, d + seg / 2)).ele;
+      ctx.fillStyle = gradeColor(gradeBetween(d, d + seg));
+      ctx.globalAlpha = c.on && d < s + c.at ? 1 : 0.75;
+      ctx.fillRect(X(d), Y(e), w / n + 0.5, h - Y(e));
+    }
+    ctx.globalAlpha = 1;
+    if (c.on) {
+      const x = X(s + c.at), e = routeAt(s + c.at).ele;
+      ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
+      ctx.beginPath(); ctx.arc(x, Y(e), 4, 0, 7); ctx.fill();
+    }
+  }
+
+  // The workout's steps, small, under the clock, with where you are in it.
+  function drawWorkout() {
+    const c = $('rvWk');
+    c.classList.toggle('hidden', !workout);
+    if (!workout) return;
+    const { ctx, w, h } = setupCanvas(c);
+    const total = workout.steps.reduce((a, s) => a + s.sec, 0), maxF = Math.max(1.2, ...workout.steps.map(s => s.fraction ?? 0));
+    let x = 0;
+    for (const s of workout.steps) {
+      const sw = (s.sec / total) * w, sh = ((s.fraction ?? 0.4) / maxF) * h;
+      ctx.fillStyle = zoneColor(s.fraction); ctx.fillRect(x, h - sh, Math.max(sw - 0.6, 0.5), sh);
+      x += sw;
+    }
+    const done = ride.workoutDone ? total : workout.steps.slice(0, ride.step).reduce((a, s) => a + s.sec, 0) + ride.stepElapsed;
+    ctx.fillStyle = '#fff'; ctx.fillRect(Math.min(w - 2, (done / total) * w), 0, 2, h);
+  }
+
+  const put = (id, v) => { const el = $(id); if (el.textContent !== v) el.textContent = v; };
+  const num = (v, dp = 0) => (v == null || !Number.isFinite(v) ? '--' : v.toFixed(dp));
+
+  function update() {
+    if (ride.status === 'riding') watchLaps();
+    $('rideViewBtn').classList.toggle('hidden', !active() || on());
+    if (!on()) return;
+    const x = stats();
+    put('rvW', String(Math.round(x.w)));
+    put('rvZone', `Z${x.zone}`); $('rvZone').style.background = x.zoneColor;
+    put('rv3s', num(x.p3)); put('rvAvg', num(x.avg)); put('rvLapP', num(x.lap)); put('rvLapL', x.lapLabel); put('rvWkg', x.wkg);
+    put('rvCad', num(x.cad)); put('rvSpd', num(x.speed, 1)); put('rvGear', x.gear || '--');
+    put('rvHr', num(x.hr)); put('rvHrAvg', num(x.hrAvg)); put('rvHrMax', num(x.hrMax));
+    put('rvGrade', x.grade == null ? '--' : fmtGrade(x.grade)); put('rvDist', x.dist == null ? '--' : fmtKm(x.dist)); put('rvUp', num(x.up));
+    put('rvTime', fmtTime(x.time)); put('rvLapT', `${x.lapLabel} ${fmtTime(x.lapTime)}`);
+    put('rvStep', x.step ? `${x.step.w == null ? 'Free' : `${x.step.w} W`} · ${fmtTime(x.step.left)} left` : workout ? 'Workout done' : '');
+    put('rvPause', ride.status === 'paused' ? 'Resume' : 'Pause');
+    $('rvErg').classList.toggle('on', ERG.on); $('rvErg').disabled = !ERG.connected;
+    put('rvMinus', ERG.on ? '−5 W' : 'Easier'); put('rvPlus', ERG.on ? '+5 W' : 'Harder');
+    $('rvMinus').title = ERG.on ? 'Target −5 W (↓)' : 'Virtual gear down (−)';
+    $('rvPlus').title = ERG.on ? 'Target +5 W (↑)' : 'Virtual gear up (+)';
+    $('rvMini').classList.toggle('hidden', !pip.supported || pip.isOpen);
+    const c = x.climb;
+    $('rvClimb').classList.toggle('hidden', !c);
+    $('rvClimb').classList.toggle('soon', !!c && !c.on);
+    if (c) {
+      const name = climbName(c);
+      put('rvClimbT', c.on ? name || 'On the climb' : `Climb in ${(c.ahead / 1000).toFixed(1)} km${name ? `: ${name}` : ''}`);
+      put('rvClimbS', c.on
+        ? `${((c.top - c.start - c.at) / 1000).toFixed(1)} km to the top · ${Math.max(0, Math.round(c.gain - (routeAt(c.start + c.at).ele - routeAt(c.start).ele)))} m to go`
+        : `${(c.len / 1000).toFixed(1)} km · ${c.avg.toFixed(1)}% average · ${Math.round(c.gain)} m up`);
+      drawClimb(c);
+    }
+    drawWorkout(); drawGraph(); drawElev();
+  }
+
+  // ---- In and out.
+  function enter() {
+    document.body.classList.add('riding');
+    view3d.riding(true);
+    update();
+  }
+  function leave() {
+    if (!on()) return;
+    document.body.classList.remove('riding');
+    view3d.riding(false);
+    if (document.fullscreenElement === document.documentElement) document.exitFullscreen().catch(() => {});
+    if (active() && pip.wanted) pip.open(); // a click on Setup is allowed to open it
+    update();
+  }
+  async function begin() {
+    const was = active();
+    // Full screen has to be asked for straight from the click, before anything is awaited.
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+    countdown.unlock();
+    if (!was) {
+      if (!route) await loadCourse('island'); // no route: ride the island
+      if (!route) { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); return; }
+      loadFtp();
+    }
+    if (view3d.mode !== '3d') view3d.show('3d');
+    enter();
+    if (was) return;
+    await startRide();
+    if (ride.status !== 'riding') { leave(); return; }
+    resetLaps();
+    update();
+  }
+
+  $('goBtn').addEventListener('click', begin);
+  $('rideViewBtn').addEventListener('click', begin);
+  $('rvExit').addEventListener('click', leave);
+  $('rvLap').addEventListener('click', () => { if (ride.status === 'riding') { newLap(); update(); } });
+  $('rvPause').addEventListener('click', () => (ride.status === 'paused' ? resumeRide() : ride.status === 'riding' && pauseRide()));
+  $('rvFinish').addEventListener('click', () => { if (confirm('Finish this ride?')) { finishRide(); leave(); } });
+  $('rvErg').addEventListener('click', () => { if (ERG.connected) { ERG.setOn(!ERG.on); renderErg(); update(); } });
+  $('rvMinus').addEventListener('click', () => shiftBy(-1, 5));
+  $('rvPlus').addEventListener('click', () => shiftBy(1, 5));
+  $('rvMini').addEventListener('click', () => pip.open());
+  $('rvZoom').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setZoom(Number(b.dataset.z)); });
+  $('rvElev').addEventListener('wheel', e => {
+    e.preventDefault();
+    const i = ZOOMS.indexOf(zoom) + (e.deltaY < 0 ? 1 : -1);
+    setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, i))]);
+  }, { passive: false });
+  document.addEventListener('keydown', e => {
+    const typing = (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'checkbox') || e.target.isContentEditable;
+    if (e.ctrlKey || e.metaKey || e.altKey || typing) return;
+    if (e.key === 'Escape' && on()) leave();
+    else if ((e.key === 'l' || e.key === 'L') && on() && ride.status === 'riding') { newLap(); update(); }
+    else if (e.key === '+' || e.key === '=') shiftBy(1);
+    else if (e.key === '-' || e.key === '_') shiftBy(-1);
+  });
+  window.addEventListener('resize', () => { if (on()) update(); });
+  setZoom(zoom);
+
+  // ---- The start card: what is connected and what the ride will be.
+  function setup() {
+    const say = (id, text, off) => { put(id, text); $(id).classList.toggle('off', !!off); };
+    const tr = device?.gatt?.connected;
+    say('suTrainer', tr ? `${device.name || 'Trainer'}${ERG.connected ? '' : ' (no control)'}` : 'Not connected', !tr);
+    say('suHr', ext.hr.device ? `${ext.hr.device.name || 'Strap'}${hrFresh() ? ` · ${ext.hr.value} bpm` : ''}` : 'Not connected', !ext.hr.device);
+    say('suPm', ext.pm.device ? ext.pm.device.name || 'Power meter' : 'Not connected', !ext.pm.device);
+    const g = [di2.device && `Di2${di2.gear ? ` ${di2.gear.rear}/${di2.gear.rearCount}` : ''}`, zclick.connected && `Zwift Click · gear ${vgear.n}`].filter(Boolean).join(', ');
+    say('suGear', g || 'Not connected', !g);
+    say('suWorkout', workout ? workout.name : 'Free ride');
+    say('suRoute', route ? route.name : 'IndoorWarior Island (loads at the start)');
+    const first = workout?.steps[0], w = first ? stepWatts(first) : null;
+    say('suMode', !ERG.connected ? 'No trainer control yet' : w != null ? `ERG, the workout sets ${w} W` : ERG.on ? `ERG ${ERG.target} W` : 'Road: the trainer follows the gradient');
+    put('goBtn', active() ? 'Back to the ride' : 'Start ride');
+  }
+  setInterval(setup, 1000); setup();
+
+  return { update, begin, leave, stats, climbs, get on() { return on(); } };
+})();
+rideViewReady = true;
+
 // Simulator: connect the trainer, power meter, strap and Di2 in one go.
 async function simConnectAll() {
   if (!device) await connect();
   for (const kind of ['pm', 'hr']) if (!ext[kind].device) await toggleSensor(kind);
   if (!di2.device) await connectDi2();
+  if (!zclick.connected) await zclick.toggle();
 }
 if (SIM) $('simAll').addEventListener('click', simConnectAll);
 

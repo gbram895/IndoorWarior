@@ -42,6 +42,61 @@ it is done or failed, and remembers when you last calibrated. ERG is switched
 off for it, and it is not available during a ride. Best done warm, after
 about 10 minutes of riding.
 
+## Start screen and ride view
+
+The **Ready to ride** card at the top shows what is connected (trainer, strap,
+power meter, Di2 or Zwift Click), the workout, the route and the mode the
+trainer starts in, plus your weight for W/kg. Gradient keeps no body weight,
+so it is set here; changing it keeps the bike's share of "rider + bike" on the
+route. **Start ride** goes full screen into the 3D view. Without a route it
+loads IndoorWarior Island.
+
+The ride view lays out what Zwift shows:
+
+- top left: power with its zone (Z1-Z7 on your FTP: the workout's, else
+  Gradient's, else the builder's), 3 s, average and lap power, W/kg, cadence,
+  speed and gear;
+- top middle: ride time, lap time and the workout step with its target, time
+  left and a small chart of the workout;
+- top right: heart rate with its average and maximum, gradient, distance and
+  metres climbed;
+- along the bottom: the height profile, coloured by gradient, over the whole
+  route or 20, 5 or 1 km around you (scroll on it to zoom), and the last 10
+  minutes of power (coloured by zone, on the zone bands) and heart rate, with
+  the ERG target dashed.
+
+A lap starts at each workout step, each time round a loop, and on **Lap** (or
+L). Laps on screen are for you; the .fit file still saves one lap per step.
+
+**Climbs** are found once per route: at least 500 m at 3% or more on average.
+One kilometre before a climb a card shows its length, average gradient,
+height gain, name (the col from the real map, where there is one) and a
+profile coloured by gradient. On the climb the card stays up with your place
+on it and the distance and height left to the top.
+
+ERG on or off shows big in the middle of the screen with a short beep (the
+same beeps setting as the step countdown); a new ERG target or virtual gear
+shows without one. The buttons on the right toggle ERG, change the target by
+5 W (or the virtual gear with ERG off), start a lap, pause, finish, open the
+mini window, and **Setup** (or Esc) goes back to this page with the ride
+still running; **Back to the ride view** returns.
+
+## Zwift Click (experimental)
+
+**Connect** next to Zwift Click pairs a Click by Zwift's Bluetooth company
+id. With ERG on, + and − change the target by 10 W. With ERG off they shift a
+virtual gear (1-24, starting at 12): each gear adds or takes off half a percent
+of gradient at the trainer. The + and − keys do the same.
+
+The protocol follows BikeControl (formerly SwiftControl): subscribe to the
+async and sync characteristics, write `RideOn` without a key so nothing is
+encrypted, and read button states as protobuf (Click v1: message 0x37, field 1
+plus and field 2 minus, 0 is pressed; Click v2: message 0x23, an active-low
+button map, plus 0x1000 and minus 0x0100). It has only been tried against the
+simulator. A Click v2 answers other apps only for about a day after the Zwift
+app last connected to it; before that it may hide its service or stop sending
+after a minute.
+
 ## Riding today's plan
 
 The Ride panel signs in to Gradient once (only the token is stored, in the
@@ -302,9 +357,12 @@ reach it in bunches a few seconds apart. Two things keep a ride live:
   match, recording) also beats from a small worker, whose timers are not
   slowed.
 - **Mini window**: a small always-on-top window (Chrome or Edge 116+) with
-  power, heart rate, cadence, the step target and time left. It opens when
-  you press Start ride (untick "Open a mini window when I start" to stop
-  that) or from the Mini window button mid-ride. While it is open the page
+  power and its zone, heart rate, 3 s, average and lap power, W/kg, cadence,
+  average heart rate, speed, gradient, gear, ride time and what comes next
+  (the workout step, or the climb ahead). It opens when you leave the
+  full-screen ride view with Setup (untick the setting to stop that), or from
+  the Mini button mid-ride. Start ride itself goes full screen, which a
+  browser will not combine with opening a window in the same click. While it is open the page
   counts as visible, so it is not treated as a background tab.
 
 If heart rate still goes missing, the line under the live chart says why
@@ -348,8 +406,8 @@ the real ones, so the whole page runs unchanged:
   targets, 50-600 W, power and speed only) that answers ERG, gradient and
   reset commands on the control point,
 - a power meter with crank cadence, a heart rate strap whose heart rate
-  follows power with a lag, and a 12-speed Di2 broadcasting gear the way an
-  RD-RX827 does.
+  follows power with a lag, a 12-speed Di2 broadcasting gear the way an
+  RD-RX827 does, and a Zwift Click v1 with + and − buttons in the panel.
 
 The Simulator panel sets cadence, the rider's power while ERG is off, how far
 the trainer reads above or below the power meter (to exercise power match),
@@ -357,7 +415,7 @@ and heart rate fitness. The virtual trainer also answers a spin-down
 (20-30 km/h), and the virtual rider sprints and coasts as told. It can shift the Di2, drop any device to test
 reconnects, and have "another app" take the trainer. Gradient sign-in stays
 real; a finished simulator ride is not uploaded to Strava unless Upload is
-pressed. **Connect everything** connects all four virtual devices at once, and
+pressed. **Connect everything** connects all five virtual devices at once, and
 a ride started in the simulator with nothing connected does that by itself.
 **Leave simulator** switches back.
 
