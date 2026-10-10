@@ -50,6 +50,7 @@
     // 8% looks almost flat; this makes it read like the climb it feels like.
     // Only the picture: gradient, speed and the trainer use the real figures.
     const y = res.map(p => (p.ele - res[0].ele) * LIFT);
+    const dup = sameRoad(xz, y, !!route.loop);
     // Right-hand side of the direction of travel, flat.
     const side = xz.map((_, i) => {
       // A loop's ends share one direction, so the road closes without a crack at the line.
@@ -82,7 +83,56 @@
     // Road points in 100 m buckets, to find the road near any spot quickly.
     const hash = new Map();
     xz.forEach(([x, z], i) => { const k = bucket(x, z); hash.get(k)?.push(i) || hash.set(k, [i]); });
-    return { n, xz, y, side, base, tilt, bend, hash, loop: !!route.loop };
+    return { n, xz, y, side, base, tilt, bend, hash, dup, loop: !!route.loop };
+  }
+
+  // Out and back, or any road ridden twice: where the route runs along road
+  // it has already used (the same line either way, within 15 m), its points
+  // are moved onto that road, height and all, instead of making a second road
+  // a few metres off that fights the first. Close in (6 m) they sit exactly
+  // on it; out to 15 m they ease across, so joining it is a smooth bend.
+  // Returns dup[i] = 1 where point i is on road already drawn, so neither the
+  // road nor the scenery beside it is built twice. A road merely crossing
+  // another is left alone (it is not running the same way), and so are the
+  // last few hundred metres of a loop meeting its own start.
+  function sameRoad(xz, y, loop) {
+    const n = xz.length, dup = new Uint8Array(n), seen = new Map(), CELL = 20, BEHIND = 30;
+    const key = (cx, cz) => cx * 65536 + cz;
+    const dir = i => { const a = xz[Math.max(0, i - 1)], b = xz[Math.min(n - 1, i + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1; return [dx / l, dz / l]; };
+    for (let i = 0; i < n; i++) {
+      const r = i - BEHIND; // only road well behind counts as road already there
+      if (r >= 0 && r < n - 1) { const k = key(Math.floor(xz[r][0] / CELL), Math.floor(xz[r][1] / CELL)); seen.get(k)?.push(r) || seen.set(k, [r]); }
+      const [x, z] = xz[i], cx = Math.floor(x / CELL), cz = Math.floor(z / CELL), di = dir(i);
+      let best = null;
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const j of seen.get(key(cx + a, cz + b)) || []) {
+        if (loop && n - 1 - i + j < BEHIND) continue; // a loop closing on its start
+        const ax = xz[j][0], az = xz[j][1], dx = xz[j + 1][0] - ax, dz = xz[j + 1][1] - az, l2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)), px = ax + dx * t, pz = az + dz * t, d = Math.hypot(x - px, z - pz);
+        if (d >= 15 || (best && d >= best.d)) continue;
+        const dj = dir(j);
+        if (Math.abs(di[0] * dj[0] + di[1] * dj[1]) < 0.85) continue; // crossing, not running along
+        best = { d, px, pz, py: y[j] + (y[j + 1] - y[j]) * t };
+      }
+      if (!best) continue;
+      const w = 1 - smooth(6, 15, best.d);
+      xz[i] = [x + (best.px - x) * w, z + (best.pz - z) * w];
+      y[i] += (best.py - y[i]) * w;
+      if (w > 0.99) dup[i] = 1;
+    }
+    return dup;
+  }
+
+  // How far (x, z) is from the road, anywhere on the route: the stretch it was
+  // placed beside, or another part of the route passing close by.
+  function roadDist(g, x, z) {
+    let best = Infinity;
+    for (const j of nearRoad(g, x, z, 30)) {
+      if (j >= g.n - 1) continue;
+      const ax = g.xz[j][0], az = g.xz[j][1], dx = g.xz[j + 1][0] - ax, dz = g.xz[j + 1][1] - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      best = Math.min(best, Math.hypot(x - ax - dx * t, z - az - dz * t));
+    }
+    return best;
   }
 
   const BUCKET = 100;
@@ -197,7 +247,7 @@
         landColour(c, x, z, p.y, p.road, Math.abs(o));
         col.push(c.r, c.g, c.b);
       }
-      if (r) {
+      if (r && !(g.dup[rowsAt[r - 1]] && g.dup[i])) { // land beside road ridden before is already there
         const w = OFF.length, a = (r - 1) * w, b = r * w;
         for (let j = 0; j < w - 1; j++) idx.push(a + j, a + j + 1, b + j, a + j + 1, b + j + 1, b + j);
       }
@@ -528,13 +578,9 @@
   // `avoid(x, z, i)` is true where nothing may stand (an open summit).
   function trees(g, s, e, seed, avoid) {
     const kit = treeKinds(), rand = rng(seed), spruce = [[], []], leafy = [[], []], hedges = [], posts = [], tufts = [];
-    const clearOfRoad = (x, z, i, gap) => {
-      for (let j = Math.max(0, i - 40); j <= Math.min(g.n - 1, i + 40); j++) {
-        const dx = g.xz[j][0] - x, dz = g.xz[j][1] - z;
-        if (dx * dx + dz * dz < gap * gap) return false;
-      }
-      return true;
-    };
+    // Clear of every road, not just this stretch: on an out and back, a
+    // hairpin or a road passing close by, trees used to stand on the other one.
+    const clearOfRoad = (x, z, gap) => roadDist(g, x, z) >= gap;
     // Only trees near the road cast shadows (the sun's shadow covers a 70 m
     // square round the rider); drawing the rest into the shadow map is waste.
     const tree = (x, z, i, scale, kind, o) => {
@@ -542,6 +588,7 @@
       (kind ? spruce : leafy)[o < 45 ? 0 : 1].push([x, y, z, scale, rand() * 6.3, (rand() - 0.5) * 0.35, 0.85 + rand() * 0.3]);
     };
     for (let i = s; i < e; i++) {
+      if (g.dup[i]) continue; // this road's scenery was built the first time along it
       for (const sg of [-1, 1]) {
         for (let o = 7 + rand() * 4; o < 330; o += 6 + o * 0.07 + rand() * 5) {
           const a = (rand() - 0.5) * STEP, ii = Math.min(g.n - 2, i);
@@ -549,7 +596,7 @@
           const x = g.xz[i][0] + g.side[i][0] * o * sg + (fx / fl) * a, z = g.xz[i][1] + g.side[i][1] * o * sg + (fz / fl) * a;
           const w = woods(x, z);
           if (w < WOOD - 0.01 && !(rand() < 0.004)) continue; // a lone tree in the fields now and then
-          if (avoid(x, z, i) || !clearOfRoad(x, z, i, ROAD_HALF + 4)) continue;
+          if (avoid(x, z, i) || !clearOfRoad(x, z, ROAD_HALF + 4)) continue;
           const pine = noise(x / 240 + 11, z / 240) > 0.48;
           tree(x, z, i, (0.75 + rand() * 0.5) * (w < WOOD ? 1.1 : 1), w > WOOD && pine, o);
         }
@@ -589,10 +636,11 @@
     // The odd bush along the verge, more where it is wooded (the grass itself
     // is blades, near the rider: see grassTuft).
     for (let i = s; i < e; i++) {
+      if (g.dup[i]) continue;
       for (const sg of [-1, 1]) for (let k = 0; k < 4; k++) {
         const o = sg * (ROAD_HALF + 0.9 + rand() ** 1.5 * 9), a = rand() * STEP;
         const x = g.xz[i][0] + g.side[i][0] * o + (g.xz[Math.min(g.n - 1, i + 1)][0] - g.xz[i][0]) * (a / STEP), z = g.xz[i][1] + g.side[i][1] * o + (g.xz[Math.min(g.n - 1, i + 1)][1] - g.xz[i][1]) * (a / STEP);
-        if (!clearOfRoad(x, z, i, ROAD_HALF + 0.6)) continue;
+        if (!clearOfRoad(x, z, ROAD_HALF + 0.6)) continue;
         const big = rand() < (woods(x, z) > WOOD ? 0.15 : 0.03);
         if (!big) continue;
         tufts.push([x, groundAt(g, x, z, 40).y - 0.05, z, big ? 1 + rand() * 0.6 : 0.4 + rand() * 0.5, rand() * 6.3, (rand() - 0.5) * 0.4, big ? 1.3 : 0.6 + rand() * 0.5]);
@@ -601,7 +649,8 @@
     // Marker posts every 50 m on both sides.
     for (let i = s - (s % 5); i < e; i += 5) {
       if (i < s) continue;
-      for (const sg of [-1, 1]) { const p = groundY(g, i, sg * (ROAD_HALF + 0.9)); posts.push([p.x, p.y, p.z, 1, 0, 0, 1]); }
+      if (g.dup[i]) continue;
+      for (const sg of [-1, 1]) { const p = groundY(g, i, sg * (ROAD_HALF + 0.9)); if (clearOfRoad(p.x, p.z, ROAD_HALF + 0.5)) posts.push([p.x, p.y, p.z, 1, 0, 0, 1]); }
     }
     // Grouped in 250 m squares, so the squares out of sight or past the haze
     // are skipped as a whole (see `scatter` in mount).
@@ -656,9 +705,7 @@
     for (let k = 0; k < 340; k++) {
       const sg = rand() < 0.5 ? -1 : 1, o = ROAD_HALF + 0.3 + rand() ** 1.4 * 14, a = rand() * STEP;
       const x = g.xz[j][0] + g.side[j][0] * o * sg + (fx / fl) * a, z = g.xz[j][1] + g.side[j][1] * o * sg + (fz / fl) * a;
-      let near = Infinity; // on a bend the far side of the next stretch may be the road
-      for (let q = Math.max(0, j - 4); q <= Math.min(g.n - 1, j + 5); q++) near = Math.min(near, Math.hypot(g.xz[q][0] - x, g.xz[q][1] - z));
-      if (near < ROAD_HALF + 0.25) continue;
+      if (roadDist(g, x, z) < ROAD_HALF + 0.25) continue; // on a bend, or another part of the route
       ground(x, z, rgb, o);
       if (rgb[0] - rgb[1] > 0.04) continue; // ploughed land
       const tint = 0.85 + rand() * 0.4, s = 0.7 + rand() * 0.7;
@@ -1144,10 +1191,11 @@
       for (let s = 0; s < g.n - 1; s += CHUNK) {
         const e = Math.min(g.n - 1, s + CHUNK);
         const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; world.add(m); };
-        strip(-ROAD_HALF, ROAD_HALF, 0.02, asphalt);
-        strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint);
-        strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint);
-        strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0); // dashed centre line
+        const fresh = i => !(g.dup[i] && g.dup[i - 1]); // road ridden before is drawn once
+        strip(-ROAD_HALF, ROAD_HALF, 0.02, asphalt, fresh);
+        strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, paint, fresh);
+        strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, paint, fresh);
+        strip(-0.07, 0.07, 0.04, paint, i => i % 2 === 0 && fresh(i)); // dashed centre line
         const strip0 = nearLand(g, s, e, land);
         world.add(strip0); pieces.push(strip0);
         const t = trees(g, s, e, seed + s, avoid);
