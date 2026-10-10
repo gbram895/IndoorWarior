@@ -4,7 +4,9 @@
 // Four free sources, fetched straight from the browser when a route opens:
 // - the land's height from AWS Terrain Tiles (Mapzen "terrarium" PNGs, no key);
 // - what the land looks like from above: EOX's Sentinel-2 cloudless mosaic
-//   (Copernicus satellite photos at 10 m, CC BY-NC-SA 4.0, no key);
+//   (Copernicus satellite photos at 10 m, CC BY-NC-SA 4.0, no key), and
+//   near the rider sharp aerial photos from national mapping agencies or
+//   Esri (see aerial);
 // - lakes, rivers, woods, buildings, towns, cols and country borders from
 //   OpenStreetMap through the Overpass API;
 // - the weather there now from Open-Meteo.
@@ -121,6 +123,97 @@
     };
     fn.zoom = z; fn.tiles = list.length;
     return fn;
+  }
+
+  // ---- Sharp aerial photos (about 0.3-1 m a pixel) for the land near the
+  // rider, where the 10 m satellite photo looks smeared. Switzerland, Austria,
+  // France and Spain publish theirs free with no key; Esri World Imagery
+  // covers everywhere with a (free) ArcGIS key. A tile is asked of each
+  // source whose country box it falls in, then of Esri, and the first real
+  // photo wins: a source that fails, or answers outside its country with a
+  // blank tile, is passed over. Tiles load round the rider as the land there
+  // is painted (ensure), not for the whole route, and the last few hundred
+  // are kept.
+  const AERIAL = [
+    { credit: 'SWISSIMAGE © swisstopo', box: [45.8, 5.9, 47.9, 10.6],
+      url: (z, x, y) => `https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/${z}/${x}/${y}.jpeg` },
+    { credit: 'Orthofoto © basemap.at', box: [46.3, 9.4, 49.1, 17.2],
+      url: (z, x, y) => `https://mapsneu.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/${z}/${y}/${x}.jpeg` },
+    { credit: 'Orthophotos © IGN', box: [41.3, -5.3, 51.2, 9.7],
+      url: (z, x, y) => `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/jpeg` },
+    { credit: 'PNOA © scne.es', box: [35.9, -9.5, 43.9, 4.4],
+      url: (z, x, y) => `https://www.ign.es/wmts/pnoa-ma?service=WMTS&request=GetTile&version=1.0.0&format=image/jpeg&layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&tilematrix=${z}&tilerow=${y}&tilecol=${x}` },
+  ];
+  const ESRI = { credit: 'Imagery: Esri, Maxar, Earthstar Geographics',
+    url: (z, x, y, key) => `https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}?token=${encodeURIComponent(key)}` };
+  function aerial(key, zoom = 17) {
+    const tiles = new Map(), used = new Set(), canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 256;
+    const cx = canvas.getContext('2d', { willReadFrequently: true });
+    const n = 2 ** zoom;
+    const centre = (x, y) => [(Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / n))) * 180) / Math.PI, ((x + 0.5) / n) * 360 - 180];
+    // The pixels of a loaded photo, or null when it is not a photo: blank,
+    // one flat colour (outside the source's coverage), or not readable.
+    function pixels(img) {
+      try {
+        cx.clearRect(0, 0, 256, 256); cx.drawImage(img, 0, 0, 256, 256);
+        const px = cx.getImageData(0, 0, 256, 256).data, c = new Uint8Array(256 * 256 * 3);
+        let sum = 0, sq = 0, clear = 0;
+        for (let q = 0; q < 256 * 256; q++) {
+          const r = px[q * 4], g = px[q * 4 + 1], b = px[q * 4 + 2];
+          c[q * 3] = r; c[q * 3 + 1] = g; c[q * 3 + 2] = b;
+          if (px[q * 4 + 3] < 200) clear++;
+          const l = r + g + b; sum += l; sq += l * l;
+        }
+        const N = 256 * 256, mean = sum / N, sd = Math.sqrt(Math.max(0, sq / N - mean * mean));
+        return clear > N * 0.2 || sd < 6 || mean > 740 ? null : c;
+      } catch { return null; } // a source without CORS: the picture cannot be read
+    }
+    async function load(x, y) {
+      const [lat, lon] = centre(x, y);
+      const order = AERIAL.filter(s => lat >= s.box[0] && lat <= s.box[2] && lon >= s.box[1] && lon <= s.box[3]);
+      if (key) order.push(ESRI);
+      for (const s of order) {
+        const img = await image(s.url(zoom, x, y, key));
+        const c = img && pixels(img);
+        if (c) { used.add(s.credit); return c; }
+      }
+      return null;
+    }
+    const get = (x, y) => {
+      const k = `${x},${y}`;
+      let t = tiles.get(k);
+      if (t) { tiles.delete(k); tiles.set(k, t); return t; } // most recent last
+      t = { data: null, job: load(x, y).then(c => { t.data = c; }) };
+      tiles.set(k, t);
+      if (tiles.size > 300) tiles.delete(tiles.keys().next().value);
+      return t;
+    };
+    // Load the tiles within r metres of a point; resolves when they are in
+    // (or failed). Nothing to ask (no source covers it) resolves at once.
+    function ensure(lat, lon, r) {
+      if (!key && !AERIAL.some(s => lat >= s.box[0] - 0.1 && lat <= s.box[2] + 0.1 && lon >= s.box[1] - 0.1 && lon <= s.box[3] + 0.1)) return Promise.resolve();
+      const k = Math.cos((lat * Math.PI) / 180), [ax, ay] = merc(lat + r / 110540, lon - r / (M_PER_DEG * k), zoom), [bx, by] = merc(lat - r / 110540, lon + r / (M_PER_DEG * k), zoom);
+      const jobs = [];
+      for (let x = Math.floor(ax / 256); x <= Math.floor(bx / 256); x++) for (let y = Math.floor(ay / 256); y <= Math.floor(by / 256); y++) jobs.push(get(x, y).job);
+      return Promise.all(jobs);
+    }
+    const corner = [0, 0, 0, 0].map(() => [0, 0, 0]);
+    const at = (ix, iy, o) => {
+      const t = tiles.get(`${ix >> 8},${iy >> 8}`), c = t && t.data;
+      if (!c) return false;
+      const q = ((iy & 255) * 256 + (ix & 255)) * 3;
+      o[0] = c[q]; o[1] = c[q + 1]; o[2] = c[q + 2];
+      return true;
+    };
+    // Like imagery(): fills out with r, g, b (0 to 1), or false where no sharp photo is loaded.
+    function sample(lat, lon, out) {
+      const [px, py] = merc(lat, lon, zoom), fx = px - 0.5, fy = py - 0.5, ix = Math.floor(fx), iy = Math.floor(fy), u = fx - ix, v = fy - iy;
+      if (!(at(ix, iy, corner[0]) && at(ix + 1, iy, corner[1]) && at(ix, iy + 1, corner[2]) && at(ix + 1, iy + 1, corner[3]))) return false;
+      for (let m = 0; m < 3; m++) out[m] = ((corner[0][m] * (1 - u) + corner[1][m] * u) * (1 - v) + (corner[2][m] * (1 - u) + corner[3][m] * u) * v) / 255;
+      return true;
+    }
+    return { ensure, sample, zoom, get credits() { return [...used]; } };
   }
 
   // ---- OpenStreetMap. One Overpass query for everything along the route.
@@ -279,5 +372,5 @@ out tags qt;`;
     return { kind: weatherKind(c.weather_code, c.cloud_cover), temp: c.temperature_2m, wind: c.wind_speed_10m, code: c.weather_code };
   }
 
-  window.IW_PLACES = { terrain, imagery, osm, weather, merc, weatherKind, sort };
+  window.IW_PLACES = { terrain, imagery, aerial, osm, weather, merc, weatherKind, sort };
 })();
