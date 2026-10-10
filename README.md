@@ -249,6 +249,16 @@ browser and free of any key:
   Sentinel data 2020, CC BY-NC-SA 4.0), at 10 m near the road and coarser on
   the far mountains. Close to the road it blends into the painted fields,
   which have the crop rows a 10 m photo can't show;
+- near the rider, sharp aerial photos (under a metre a pixel), loaded round
+  you as the land there is painted: free from swisstopo (SWISSIMAGE),
+  basemap.at (Austria), IGN (France) and IGN/PNOA (Spain), and everywhere
+  else from Esri World Imagery once an Esri key is set under the route (a
+  free [ArcGIS Location Platform](https://location.arcgis.com/sign-up/) API
+  key with the Basemaps privilege). Each tile is asked of the sources whose
+  country it may be in, then Esri; a failed or blank answer passes to the
+  next, and without any the land keeps the Sentinel-2 photo. None of these
+  hosts can be reached from the sessions that build this app, so they have
+  only been tried against stand-in tiles;
 - lakes, rivers and streams, woods, built-up areas, buildings, vineyards,
   bare rock, glaciers, place names, named cols and country borders from
   [OpenStreetMap](https://www.openstreetmap.org/copyright) through the

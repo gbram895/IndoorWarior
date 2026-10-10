@@ -318,6 +318,10 @@
     const R = { dem: g.dem, ele0: g.ele0, cover: osm ? coverOf(g, osm) : null, ...climate(lat) };
     // The satellite photo of the land, where it loaded.
     R.sat = data.sat ? (x, z, out) => { const [la, lo] = g.ll(x, z); return data.sat(la, lo, out); } : null;
+    // Sharp aerial photos near the rider, loaded as the land there is painted.
+    const A = data.aerial;
+    R.hi = A ? (x, z, out) => { const [la, lo] = g.ll(x, z); return A.sample(la, lo, out); } : null;
+    R.hiEnsure = A ? (x, z, r) => { const [la, lo] = g.ll(x, z); return A.ensure(la, lo, r); } : null;
     const borders = osm ? crossings(g, osm) : [];
     const code = i => { let c = osm?.countries[osm.start]?.code || ''; for (const b of borders) if (b.i <= i) c = b.to.code; return c; };
     Object.assign(R, regionOf(lat, lon, code(0)), { code, borders });
@@ -398,7 +402,12 @@
     // and villages as they look from above. Close to the road it gives way
     // to the paint, which has the detail a 10 m photo lacks (crop rows,
     // field margins), and the lavender keeps its rows.
-    if (R.sat && kind !== 2 && R.sat(x, z, SAT)) {
+    // A sharp aerial photo (under a metre a pixel) has that detail itself, so
+    // it covers nearly everything, and only the verge keeps some paint.
+    if (kind !== 2 && R.hi && R.hi(x, z, SAT)) {
+      const w = 0.78 + 0.18 * smooth(6, 40, d), l = 1.04;
+      mix(w, SAT[0] * l, SAT[1] * l, SAT[2] * l);
+    } else if (R.sat && kind !== 2 && R.sat(x, z, SAT)) {
       const w = 0.5 + 0.4 * smooth(12, 140, d), l = 1.12;
       mix(w, SAT[0] * l, SAT[1] * l, SAT[2] * l);
     }
@@ -760,8 +769,8 @@
   // camera (finer close in), coloured by height and slope and lit by the
   // sun once, when built. Drawn first, past the near world (see frame).
   function farLand(g, R, near, far, cx, cz, sunDir, sat) {
-    const A = 360, rings = [];
-    for (let r = 250; r < 42000; r *= 1.06) rings.push(r);
+    const A = 540, rings = []; // finer than it was, so far ridges keep their shape
+    for (let r = 250; r < 42000; r *= 1.045) rings.push(r);
     const n = rings.length, pos = new Float32Array(A * n * 3), hs = new Float32Array(A * n);
     for (let k = 0; k < n; k++) for (let a = 0; a < A; a++) {
       const t = (a / A) * Math.PI * 2, x = cx + Math.cos(t) * rings[k], z = cz + Math.sin(t) * rings[k];
@@ -1260,7 +1269,7 @@ void main() {`);
     for (let i = s; i < e; i++) {
       if (g.dup[i]) continue; // this road's scenery was built the first time along it
       for (const sg of [-1, 1]) {
-        for (let o = 7 + rand() * 4; o < 330; o += 6 + o * 0.07 + rand() * 5) {
+        for (let o = 6 + rand() * 4; o < 520; o += 4.5 + o * 0.05 + rand() * 4) { // woods close-set, and deep enough to fill a hillside
           const a = (rand() - 0.5) * STEP, ii = Math.min(g.n - 2, i);
           const fx = g.xz[ii + 1][0] - g.xz[ii][0], fz = g.xz[ii + 1][1] - g.xz[ii][1], fl = Math.hypot(fx, fz) || 1;
           const x = g.xz[i][0] + g.side[i][0] * o * sg + (fx / fl) * a, z = g.xz[i][1] + g.side[i][1] * o * sg + (fz / fl) * a;
@@ -1836,7 +1845,7 @@ void main() {`);
   const WEATHER = {
     // On real land in clear or cloudy weather the near haze is thin (realFog)
     // and the distant mountains show, fading out over `far` metres.
-    clear: { sky: 1, sun: 1.1, hemi: 0.62, fog: 0.0023, haze: null, shadow: true, realFog: 0.00025, far: 45000 },
+    clear: { sky: 1, sun: 1.1, hemi: 0.62, fog: 0.0023, haze: null, shadow: true, realFog: 0.00025, far: 65000 },
     cloudy: { sky: 0.35, sun: 0.35, hemi: 0.95, fog: 0.003, haze: 0xa3a8b0, shadow: false, realFog: 0.0005, far: 22000 },
     rain: { sky: 0.15, sun: 0.2, hemi: 0.8, fog: 0.0065, haze: 0x868c94, shadow: false, fall: 'rain', wet: true },
     fog: { sky: 0, sun: 0.2, hemi: 1, fog: 0.02, haze: 0xbcc0c4, shadow: false },
@@ -2116,6 +2125,7 @@ void main() {`);
       const W = WEATHER[weather], far = REAL && W.far;
       scene.fog.density = far ? W.realFog : W.fog;
       farScene.fog.far = far || 1;
+      farScene.fog.near = far ? 2000 : 0; // clear air: the first kilometres of mountains stay sharp
       if (farMesh) farMesh.visible = !!far;
       hills0.visible = weather === 'clear' && !REAL; // their foot is painted into the clear-sky haze
     }
@@ -2132,29 +2142,31 @@ void main() {`);
       placeData.set(route, (rec = { v: 0 }));
       const P = window.IW_PLACES, pts = route.res.filter((_, i) => i % 3 === 0).map(p => [p.lat, p.lon]);
       P.terrain(pts, 1100, [13, 12, 11], 160).then(h => { rec.near = h; }, e => { rec.nearErr = e.message || String(e); }).finally(() => rec.v++);
-      P.terrain(pts, 42000, [10, 9, 8], 40).then(h => { rec.far = h; }, () => {});
+      P.terrain(pts, 42000, [11, 10, 9, 8], 80).then(h => { rec.far = h; }, () => {});
       P.osm(pts).then(m => { rec.osm = m; }, e => { rec.osmErr = e.message || String(e); }).finally(() => rec.v++);
       if (P.imagery) {
         P.imagery(pts, 1100, [14, 13], 220).then(f => { rec.sat = f; }, e => { rec.satErr = e.message || String(e); }).finally(() => rec.v++);
-        P.imagery(pts, 42000, [11, 10], 60).then(f => { rec.farSat = f; }, () => {});
+        P.imagery(pts, 42000, [12, 11, 10], 140).then(f => { rec.farSat = f; }, () => {});
       }
+      if (P.aerial) rec.aerial = P.aerial(window.IW_ESRI_KEY || '');
       return rec;
     }
     function noteOf(rec) {
       if (!rec) return '';
       if (rec.nearErr) return `The real land could not load (${rec.nearErr}), so this is made-up land.`;
       if (!rec.near) return 'Loading the real land…';
-      const credit = `Heights: AWS Terrain Tiles · ${rec.sat ? 'Imagery: Sentinel-2 cloudless by EOX, Copernicus Sentinel data 2020 · ' : ''}Map © OpenStreetMap contributors`;
+      const hi = rec.aerial?.credits.join(' · ');
+      const credit = `Heights: AWS Terrain Tiles · ${hi ? `${hi} · ` : ''}${rec.sat ? 'Imagery: Sentinel-2 cloudless by EOX, Copernicus Sentinel data 2020 · ' : ''}Map © OpenStreetMap contributors`;
       if (rec.osmErr) return `The map could not load (${rec.osmErr}), so the woods are made up and there are no towns. Heights: AWS Terrain Tiles`;
       if (!rec.osm) return `Loading the map (woods, water, towns)… ${credit}`;
       if (rec.satErr) return `The satellite photos could not load (${rec.satErr}), so the land is painted. ${credit}`;
       return credit;
     }
-    let note = '';
+    let note = '', noteRec = null;
 
     function setRoute(route) {
       if (farMesh) { farScene.remove(farMesh); farMesh.geometry.dispose(); farMesh = null; farAt = null; }
-      sea = null; REAL = null; builtV = null; note = ''; showBanner(null);
+      sea = null; REAL = null; builtV = null; note = ''; noteRec = null; showBanner(null);
       if (world) {
         scene.remove(world);
         world.traverse(o => {
@@ -2171,7 +2183,7 @@ void main() {`);
       world.userData.g = g;
       // Real land for a GPX route (the built-in course is the made-up world).
       const rec = realWant && !route.scenery ? placesFor(route) : null;
-      builtV = rec ? rec.v : null; note = noteOf(rec);
+      builtV = rec ? rec.v : null; note = noteOf(rec); noteRec = rec;
       if (rec?.near) { useTerrain(g, rec.near); REAL = realOf(route, g, rec); }
       hazeFor();
       // Built in pieces of CHUNK points (600 m) so the ones behind the rider
@@ -2238,10 +2250,19 @@ void main() {`);
           if (!u.c) { m.geometry.computeBoundingSphere(); u.c = m.geometry.boundingSphere.center; u.mpp = 0; }
           const d = Math.max(0, Math.hypot(u.c.x - here.x, u.c.z - here.z) - (u.paint.strip ? 250 : 100));
           const want = d < 250 ? 1 : d < 700 ? 2.5 : 0;
-          if (!want) { if (u.mpp) unpaint(m); continue; }
-          if ((!u.mpp || want < u.mpp) && (!best || d < best.d) && job?.m !== m) best = { m, d, want };
+          if (!want) { if (u.mpp) unpaint(m); u.hi = null; u.hiDone = false; continue; }
+          // Sharp photos for the close pieces: ask for them, and paint (or
+          // paint again) once they are in or known missing. Until then a
+          // piece keeps what it has, and the road right ahead waits.
+          let again = false;
+          if (want === 1 && REAL?.hiEnsure) {
+            if (!u.hi) { const r = REAL; u.hi = 'loading'; r.hiEnsure(u.c.x, u.c.z, m.geometry.boundingSphere.radius + 20).then(() => { if (REAL === r) { u.hi = 'in'; paintTick = 0; } }); }
+            if (u.hi === 'loading' && (u.mpp || d < 120)) continue;
+            again = u.hi === 'in' && !u.hiDone && u.mpp === 1;
+          }
+          if ((!u.mpp || want < u.mpp || again) && (!best || d < best.d) && job?.m !== m) best = { m, d, want };
         }
-        if (best && (!job || best.d < job.d - 100)) job = { ...best, gen: paintLand(world.userData.g, best.m, best.want) };
+        if (best && (!job || best.d < job.d - 100)) job = { ...best, hi: best.m.userData.hi, gen: paintLand(world.userData.g, best.m, best.want) };
       }
       for (const t0 = performance.now(); job && performance.now() - t0 < 4;) {
         const r = job.gen.next();
@@ -2251,6 +2272,7 @@ void main() {`);
         unpaint(m);
         m.material = grained(new T.MeshLambertMaterial({ map: tex }), grain);
         m.userData.mpp = job.want;
+        m.userData.hiDone = job.hi === 'in'; // the photos were all in when this paint began
         job = null; paintTick = 0; // straight on to the next
       }
     }
@@ -2419,7 +2441,7 @@ void main() {`);
       set weather(w) { if (WEATHER[w]) setWeather(w); },
       get info() { return renderer.info.render; },
       get scenery() { return built && world.userData.sc; }, // where the gantries and flags went
-      get note() { return note; }, // what has loaded of the real place, and its credits
+      get note() { return noteRec ? noteOf(noteRec) : note; }, // what has loaded of the real place, and its credits (live, as photo tiles arrive)
       get real() { return REAL && { towns: REAL.towns.map(t => [t.name, t.a * STEP, t.b * STEP]), cols: REAL.cols.map(c => [c.name, c.ele, c.start * STEP, c.top * STEP]), borders: REAL.borders.map(b => [b.to.name, b.i * STEP]), region: { med: REAL.med, alps: REAL.alps, lavender: REAL.lavender, snowLine: REAL.snowLine, treeLine: REAL.treeLine, code: REAL.code(0) } }; },
       get banner() { return bannerText; },
       set afterRender(fn) { afterRender = fn || null; },

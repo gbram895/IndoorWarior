@@ -504,6 +504,10 @@
         <label>Trainer difficulty <input type="range" id="rDifficulty" min="0" max="100" step="5"> <span id="rDifficultyLabel"></span></label>
         <button id="routeClear" class="link">Remove route</button>
       </div>
+      <div class="row route-settings">
+        <label>Esri key for sharp photos <input type="password" id="rEsri" autocomplete="off" spellcheck="false" placeholder="optional" style="width:16em"></label>
+        <span class="muted" style="font-size:13px">Sharp aerial photos come free from Switzerland, Austria, France and Spain. Elsewhere they need a free key from <a href="https://location.arcgis.com/sign-up/" target="_blank" rel="noopener" style="color:var(--accent)">ArcGIS Location Platform</a> (an API key with the Basemaps privilege). It applies the next time a route opens.</span>
+      </div>
     </div>
     <div id="routeMsg" class="muted" style="margin-top:8px"></div>
   </section>
@@ -3594,6 +3598,10 @@ $('routePanel').addEventListener('dragover', e => e.preventDefault());
 $('routePanel').addEventListener('drop', e => { e.preventDefault(); loadGpxFile(e.dataTransfer.files[0]); });
 $('routeClear').addEventListener('click', clearRoute);
 $('rMass').value = routeCfg.mass;
+// Esri key for the sharp aerial photos outside the countries that publish theirs free.
+window.IW_ESRI_KEY = store.get('esriKey', '');
+$('rEsri').value = window.IW_ESRI_KEY;
+$('rEsri').addEventListener('change', e => { window.IW_ESRI_KEY = e.target.value.trim(); store.set('esriKey', window.IW_ESRI_KEY); });
 $('rDifficulty').value = Math.round(routeCfg.difficulty * 100);
 $('rMass').addEventListener('change', e => { routeCfg.mass = Math.max(40, Math.min(200, Number(e.target.value) || 84)); e.target.value = routeCfg.mass; store.set('routeCfg', routeCfg); });
 $('rDifficulty').addEventListener('input', e => {
