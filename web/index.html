@@ -3821,8 +3821,9 @@ const view3d = (() => {
     $('h3Dist').textContent = fmtKm(routeRidden());
   }
   $('routeViewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.view); });
-  // Camera: behind (default), close behind, or from the roadside. Remembered.
-  const CAMS = [['chase', 'behind'], ['close', 'close'], ['side', 'side']];
+  // Camera: behind (default), close behind, from the roadside, or free (drag
+  // round the rider, wheel or pinch to zoom). Remembered.
+  const CAMS = [['chase', 'behind'], ['close', 'close'], ['side', 'side'], ['free', 'free (drag, zoom)']];
   let cam = 'chase';
   try { cam = CAMS.some(c => c[0] === localStorage.getItem('camera3d')) ? localStorage.getItem('camera3d') : 'chase'; } catch {}
   const setCam = c => {

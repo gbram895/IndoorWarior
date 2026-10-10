@@ -235,7 +235,9 @@ from a chase camera; gradient, speed and the trainer use the real figures.
 The rider and bike are built in code. The legs follow the pedals at your
 cadence (two-bone IK from the hip to the pedal), the arms reach the hoods,
 and on a real gradient above 6% the rider gets out of the saddle and rocks
-the bike. **Camera** switches between behind, close behind and the roadside;
+the bike. **Camera** switches between behind, close behind, the roadside and
+free: drag to go round the rider, the mouse wheel or two fingers to zoom
+(from 2.5 m to 450 m away), double-click to put it back behind him;
 **Weather** between clear, cloudy, rain (falling rain, a wet road), fog and
 snow (falling snow, snow lying on the land), or **real**: the weather at the
 route's start right now, from [Open-Meteo](https://open-meteo.com);

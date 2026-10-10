@@ -1925,6 +1925,7 @@ void main() {`);
     chase: { back: 7, ahead: 14, up: 2.6, look: 1.1, side: 0 },
     close: { back: 3.2, ahead: 6, up: 1.55, look: 1.0, side: 0 },
     side: { back: -0.6, ahead: 0.4, up: 1.0, look: 0.9, side: 3.6 },
+    free: { back: 7, ahead: 14, up: 2.6, look: 1.1, side: 0 }, // moved by hand (see orbit in mount)
   };
 
   // Weather presets: how much of the photographed sky shows, the sun and
@@ -2182,6 +2183,39 @@ void main() {`);
     const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
+    // The free camera: drag to go round the rider (and up and down), the
+    // wheel or two fingers to come closer or go further out, double-click
+    // to put it back behind him.
+    const ORBIT0 = { yaw: 0, pitch: 0.32, dist: 9 }, orbit = { ...ORBIT0 }, touches = new Map();
+    let pinch = 0;
+    const canvas = renderer.domElement;
+    canvas.addEventListener('pointerdown', e => {
+      if (view !== 'free') return;
+      touches.set(e.pointerId, [e.clientX, e.clientY]); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing';
+      if (touches.size === 2) { const [a, b] = [...touches.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); }
+    });
+    canvas.addEventListener('pointermove', e => {
+      const p = touches.get(e.pointerId);
+      if (view !== 'free' || !p) return;
+      if (touches.size === 1) {
+        orbit.yaw -= (e.clientX - p[0]) * 0.006;
+        orbit.pitch = Math.max(0.02, Math.min(1.45, orbit.pitch + (e.clientY - p[1]) * 0.005));
+      }
+      touches.set(e.pointerId, [e.clientX, e.clientY]);
+      if (touches.size === 2) {
+        const [a, b] = [...touches.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+        if (pinch) orbit.dist = Math.max(2.5, Math.min(450, orbit.dist * (pinch / d)));
+        pinch = d;
+      }
+    });
+    const lift = e => { touches.delete(e.pointerId); pinch = 0; if (view === 'free') canvas.style.cursor = 'grab'; };
+    canvas.addEventListener('pointerup', lift); canvas.addEventListener('pointercancel', lift);
+    canvas.addEventListener('wheel', e => {
+      if (view !== 'free') return;
+      e.preventDefault();
+      orbit.dist = Math.max(2.5, Math.min(450, orbit.dist * Math.exp(e.deltaY * 0.0015)));
+    }, { passive: false });
+    canvas.addEventListener('dblclick', () => { if (view === 'free') Object.assign(orbit, ORBIT0); });
 
     // Weather. Clear is the photographed sky as it is; the others fade the sky
     // into a heavier haze, dim the sun (no hard shadows under cloud), thicken
@@ -2539,13 +2573,22 @@ void main() {`);
       // the rider (and a descent drops away) instead of the horizon tilting with it.
       // Other views: close behind the rider, or from the roadside next to him.
       const v = VIEWS[view];
-      const back = at(disp - v.back, new T.Vector3()), look = at(disp + v.ahead, new T.Vector3());
-      const lookY = back.y + v.look + (look.y - back.y) / 3;
-      const wantPos = back.add(right).addScaledVector(right, v.side / KEEP).add(new T.Vector3(0, v.up, 0)), wantLook = look.add(right).setY(lookY);
-      const cut = !camPos.lengthSq(), k = cut ? 1 : Math.min(1, dt * 4);
+      const back = at(disp - v.back, new T.Vector3()), front = at(disp + v.ahead, new T.Vector3());
+      const lookY = back.y + v.look + (front.y - back.y) / 3;
+      let wantPos = back.add(right).addScaledVector(right, v.side / KEEP).add(new T.Vector3(0, v.up, 0)), wantLook = front.add(right).setY(lookY);
+      if (view === 'free') {
+        // Round the rider at the angle and distance set by hand, turning
+        // with the road so "behind" stays behind; never under the ground.
+        wantLook = pos.clone().add(right).setY(pos.y + 1.1);
+        const yaw = heading + orbit.yaw, cp = Math.cos(orbit.pitch);
+        wantPos = wantLook.clone().add(new T.Vector3(Math.sin(yaw) * cp, Math.sin(orbit.pitch), Math.cos(yaw) * cp).multiplyScalar(orbit.dist));
+        const floor = groundAt(world.userData.g, wantPos.x, wantPos.z, 300).y + 1.2;
+        if (wantPos.y < floor) wantPos.y = floor;
+      }
+      const cut = !camPos.lengthSq(), k = cut ? 1 : Math.min(1, dt * (view === 'free' ? 10 : 4));
       camPos.lerp(wantPos, k); camLook.lerp(wantLook, k);
       camera.position.copy(camPos);
-      if (look) {
+      if (look && view !== 'free') {
         // Filmed, not drawn: the camera drifts and sways a little, as one
         // held on a following motorbike does, and buzzes with the road
         // the faster the rider goes.
@@ -2599,7 +2642,7 @@ void main() {`);
       stop() { running = false; if (raf) cancelAnimationFrame(raf); raf = 0; },
       get canvas() { return renderer.domElement; },
       get view() { return view; },
-      set view(v) { if (VIEWS[v] && v !== view) { view = v; camPos.set(0, 0, 0); } },
+      set view(v) { if (VIEWS[v] && v !== view) { view = v; camPos.set(0, 0, 0); renderer.domElement.style.touchAction = v === 'free' ? 'none' : ''; renderer.domElement.style.cursor = v === 'free' ? 'grab' : ''; } },
       get weather() { return weather; },
       set weather(w) { if (WEATHER[w]) setWeather(w); },
       get info() { return renderer.info.render; },
