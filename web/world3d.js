@@ -830,18 +830,24 @@
   // With the photographs (detail.photo) that grain is real grass, and real
   // soil wherever the painted colour is brown (ploughed land, stubble, wood
   // floor), each at two sizes so the repeat does not show. The photographs
-  // are evened out to mid grey, so the paint keeps its colour.
+  // are evened out to mid grey, so the paint keeps its colour (applied after
+  // the vertex colours, so it sees the land's real colour either way).
+  // snowCover: snow lying on the land, 0 none, 1 white over; shared by all.
+  const snowCover = { value: 0 };
   function grained(mat, detail) {
     mat.onBeforeCompile = sh => {
+      sh.uniforms.snowCover = snowCover;
       sh.uniforms.grassMap = { value: detail.grass };
       sh.uniforms.soilMap = { value: detail.soil };
       sh.vertexShader = 'varying vec2 vDetail;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vDetail = position.xz;');
-      sh.fragmentShader = 'uniform sampler2D grassMap;\nuniform sampler2D soilMap;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <map_fragment>', detail.photo
-        ? `#include <map_fragment>
+      sh.fragmentShader = 'uniform sampler2D grassMap;\nuniform sampler2D soilMap;\nuniform float snowCover;\nvarying vec2 vDetail;\n' + sh.fragmentShader.replace('#include <color_fragment>', (detail.photo
+        ? `#include <color_fragment>
   vec3 grassD = texture2D(grassMap, vDetail / 1.7).rgb * 0.65 + texture2D(grassMap, vDetail / 9.0 + 0.37).rgb * 0.35;
   vec3 soilD = texture2D(soilMap, vDetail / 2.5).rgb * 0.6 + texture2D(soilMap, vDetail / 12.0 + 0.21).rgb * 0.4;
   diffuseColor.rgb *= 2.0 * mix(grassD, soilD, smoothstep(0.0, 0.07, diffuseColor.r - diffuseColor.g));`
-        : '#include <map_fragment>\n  float grain = texture2D(grassMap, vDetail / 3.0).r * 0.6 + texture2D(grassMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;');
+        : '#include <color_fragment>\n  float grain = texture2D(grassMap, vDetail / 3.0).r * 0.6 + texture2D(grassMap, vDetail / 19.0).r * 0.4;\n  diffuseColor.rgb *= 0.5 + 0.7 * grain;')
+        // Snow: white with the grass showing through in patches.
+        + '\n  float drift = texture2D(grassMap, vDetail / 23.0).g;\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.92, 0.96) * (0.9 + 0.2 * drift), snowCover * smoothstep(0.25, 0.6, drift + snowCover * 0.5));');
     };
     mat.customProgramCacheKey = () => detail.photo ? 'grained-photo' : 'grained';
     return mat;
@@ -938,6 +944,14 @@
     const geo = new T.SphereGeometry(680, 48, 24, 0, Math.PI * 2, 0, (P.skyRows * Math.PI) / 180);
     const m = new T.Mesh(geo, new T.MeshBasicMaterial({ map: tex, side: T.BackSide, fog: false, depthWrite: false, depthTest: false }));
     m.scale.x = -1; // seen from inside, unmirrored
+    // A veil over the photo for cloud, rain and fog: mixed toward a colour by
+    // an amount, so the dome stays opaque and is still drawn first.
+    const veil = { value: new T.Vector4(1, 1, 1, 0) };
+    m.material.onBeforeCompile = sh => {
+      sh.uniforms.veil = veil;
+      sh.fragmentShader = 'uniform vec4 veil;\n' + sh.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, veil.rgb, veil.a);');
+    };
+    m.userData.veil = veil.value;
     m.renderOrder = -3; m.frustumCulled = false;
     // Where the sun is in the picture, so the shadows fall the way it shines.
     const phi = P.sun[0] * Math.PI * 2, th = ((90 - P.sun[1]) * Math.PI) / 180;
@@ -1112,6 +1126,56 @@
     side: { back: -0.6, ahead: 0.4, up: 1.0, look: 0.9, side: 3.6 },
   };
 
+  // Weather presets: how much of the photographed sky shows, the sun and
+  // sky light, fog density and its colour (null: the photo's own haze).
+  const WEATHER = {
+    clear: { sky: 1, sun: 1.1, hemi: 0.62, fog: 0.0023, haze: null, shadow: true },
+    cloudy: { sky: 0.35, sun: 0.35, hemi: 0.95, fog: 0.003, haze: 0xa3a8b0, shadow: false },
+    rain: { sky: 0.15, sun: 0.2, hemi: 0.8, fog: 0.0065, haze: 0x868c94, shadow: false, fall: 'rain', wet: true },
+    fog: { sky: 0, sun: 0.2, hemi: 1, fog: 0.02, haze: 0xbcc0c4, shadow: false },
+    snow: { sky: 0.1, sun: 0.3, hemi: 1, fog: 0.009, haze: 0xc6cbd2, shadow: false, fall: 'snow', cover: 0.8 },
+  };
+  // Rain streaks or snowflakes in a 50 m box that travels with the camera:
+  // each drop falls, drifts, and when it leaves the box comes back in at the
+  // other side, so the box always looks full wherever the rider is.
+  function flake() { // a soft round dot
+    const cv = document.createElement('canvas'); cv.width = cv.height = 32;
+    const cx = cv.getContext('2d'), g = cx.createRadialGradient(16, 16, 0, 16, 16, 16);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.5, 'rgba(255,255,255,0.8)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    cx.fillStyle = g; cx.fillRect(0, 0, 32, 32);
+    return new T.CanvasTexture(cv);
+  }
+  function falling(kind) {
+    const rain = kind === 'rain', N = rain ? 3500 : 4000, B = 50, H = 24, rand = rng(rain ? 71 : 73);
+    const p = new Float32Array(N * 3), speed = new Float32Array(N);
+    for (let k = 0; k < N; k++) { p[k * 3] = rand() * B; p[k * 3 + 1] = rand() * H; p[k * 3 + 2] = rand() * B; speed[k] = rain ? 9 + rand() * 3 : 0.8 + rand() * 0.6; }
+    const geo = new T.BufferGeometry(), pos = new T.Float32BufferAttribute(new Float32Array(N * (rain ? 6 : 3)), 3);
+    geo.setAttribute('position', pos);
+    const obj = rain
+      ? new T.LineSegments(geo, new T.LineBasicMaterial({ color: 0xc8d0da, transparent: true, opacity: 0.45, fog: false }))
+      : new T.Points(geo, new T.PointsMaterial({ color: 0xffffff, size: 0.13, map: flake(), transparent: true, depthWrite: false, fog: false }));
+    obj.frustumCulled = false;
+    let t = 0;
+    const wrap = (v, lo) => lo + ((((v - lo) % B) + B) % B);
+    return {
+      obj,
+      step(dt, cam) {
+        t += dt;
+        const x0 = cam.x - B / 2, z0 = cam.z - B / 2, y0 = cam.y - H / 2, a = pos.array;
+        for (let k = 0; k < N; k++) {
+          const i = k * 3;
+          p[i + 1] -= speed[k] * dt;
+          if (!rain) { p[i] += Math.sin(t * 0.9 + k) * 0.3 * dt; p[i + 2] += Math.cos(t * 0.7 + k * 1.3) * 0.3 * dt; }
+          if (p[i + 1] < 0) p[i + 1] += H;
+          const x = wrap(p[i], x0), y = y0 + p[i + 1], z = wrap(p[i + 2], z0);
+          if (rain) { const j = k * 6; a[j] = x; a[j + 1] = y; a[j + 2] = z; a[j + 3] = x + 0.05; a[j + 4] = y + 0.55; a[j + 5] = z + 0.02; }
+          else { a[i] = x; a[i + 1] = y; a[i + 2] = z; }
+        }
+        pos.needsUpdate = true;
+      },
+    };
+  }
+
   function mount(container, getState) {
     let renderer;
     try { renderer = new T.WebGLRenderer({ antialias: true }); }
@@ -1124,7 +1188,8 @@
     // Haze that thickens with distance but never quite hides the land, so the
     // far edge of the land and the mountains behind it share one tone.
     scene.fog = new T.FogExp2(haze, 0.0023);
-    scene.add(new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x5d5440, 0.62));
+    const hemi = new T.HemisphereLight(photoDome ? 0xc9d3e2 : 0xd3e3f5, 0x5d5440, 0.62);
+    scene.add(hemi);
     // The sun casts shadows in a 70 m square that travels with the rider:
     // enough for him, the bike and the nearest trees, cheap to draw.
     renderer.shadowMap.enabled = true;
@@ -1158,6 +1223,29 @@
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
 
+    // Weather. Clear is the photographed sky as it is; the others fade the sky
+    // into a heavier haze, dim the sun (no hard shadows under cloud), thicken
+    // the fog and, for rain and snow, let it fall round the camera. Rain also
+    // darkens the road, as wet tarmac does.
+    let weather = 'clear', fall = null, roadMat = null;
+    const clearHaze = haze.clone();
+    function setWeather(w) {
+      weather = w;
+      const W = WEATHER[w];
+      haze.set(W.haze ?? clearHaze);
+      scene.fog.color.copy(haze); scene.fog.density = W.fog;
+      if (photoDome) scene.background = haze; else scene.background.set(W.haze ?? SKY);
+      dome.userData.veil?.set(haze.r, haze.g, haze.b, 1 - W.sky);
+      hills0.visible = w === 'clear'; // their foot is painted into the clear-sky haze
+      sun.intensity = W.sun; sun.castShadow = W.shadow;
+      hemi.intensity = W.hemi;
+      roadMat?.color.set(W.wet ? 0x2f3236 : 0x4a4e55);
+      snowCover.value = W.cover || 0;
+      grass.visible = !W.cover; // buried
+      if (fall) { scene.remove(fall.obj); fall.obj.geometry.dispose(); fall.obj.material.map?.dispose(); fall.obj.material.dispose(); fall = null; }
+      if (W.fall) { fall = falling(W.fall); scene.add(fall.obj); }
+    }
+
     function setRoute(route) {
       if (world) {
         scene.remove(world);
@@ -1177,7 +1265,8 @@
       // or past the fog are skipped instead of drawn every frame.
       const tarmac = photo('asphalt', renderer);
       tarmac?.repeat.set(2, 2); // a 2 m tile
-      const asphalt = new T.MeshLambertMaterial({ color: 0x4a4e55, map: tarmac || surface('road', renderer) });
+      const asphalt = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x2f3236 : 0x4a4e55, map: tarmac || surface('road', renderer) });
+      roadMat = asphalt;
       const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
       const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
       const seed = Math.round(route.total) + route.res.length;
@@ -1331,7 +1420,8 @@
         scatterTick = 0.3;
         for (const m of scatter) { const c = m.geometry.boundingSphere.center; m.visible = Math.hypot(c.x - camPos.x, c.z - camPos.z) < FAR - 50 + m.geometry.boundingSphere.radius * 0.6; }
       }
-      tuft.wind.value += dt;
+      tuft.wind.value += dt * (WEATHER[weather].fall ? 1.8 : 1); // gustier in rain and snow
+      if (fall) fall.step(dt, camPos);
       const gi = Math.floor(disp / STEP);
       if (gi !== grassAt) { grassAt = gi; plantGrass(g, gi); }
       dome.position.copy(camPos);
@@ -1347,6 +1437,8 @@
       get canvas() { return renderer.domElement; },
       get view() { return view; },
       set view(v) { if (VIEWS[v] && v !== view) { view = v; camPos.set(0, 0, 0); } },
+      get weather() { return weather; },
+      set weather(w) { if (WEATHER[w]) setWeather(w); },
       get info() { return renderer.info.render; },
       get scenery() { return built && world.userData.sc; }, // where the gantries and flags went
     };

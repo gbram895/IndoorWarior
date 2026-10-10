@@ -373,7 +373,7 @@
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
       <div id="route3d" class="route3d hidden">
         <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
-        <div class="r3dbtns"><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
+        <div class="r3dbtns"><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
       </div>
       <canvas id="routeMap" class="route-map"></canvas>
       <canvas id="routeElev" class="route-elev"></canvas>
@@ -3363,7 +3363,7 @@ const view3d = (() => {
       return World3D.mount($('route3d'), state);
     })();
     try { world = await loading; } catch (e) { loading = null; throw e; }
-    world.view = cam;
+    world.view = cam; world.weather = weather;
     return world;
   }
   async function show(next) {
@@ -3397,6 +3397,17 @@ const view3d = (() => {
   };
   setCam(cam);
   $('r3dCam').addEventListener('click', () => setCam(CAMS[(CAMS.findIndex(x => x[0] === cam) + 1) % CAMS.length][0]));
+  // Weather: clear, cloudy, rain, fog or snow. Remembered.
+  const WEATHERS = ['clear', 'cloudy', 'rain', 'fog', 'snow'];
+  let weather = 'clear';
+  try { weather = WEATHERS.includes(localStorage.getItem('weather3d')) ? localStorage.getItem('weather3d') : 'clear'; } catch {}
+  const setWeather = w => {
+    weather = w; if (world) world.weather = w;
+    $('r3dWeather').textContent = `Weather: ${w}`;
+    try { localStorage.setItem('weather3d', w); } catch {}
+  };
+  setWeather(weather);
+  $('r3dWeather').addEventListener('click', () => setWeather(WEATHERS[(WEATHERS.indexOf(weather) + 1) % WEATHERS.length]));
   $('r3dFull').addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen(); else $('route3d').requestFullscreen?.().catch(() => {});
   });

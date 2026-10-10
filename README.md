@@ -160,6 +160,8 @@ The rider and bike are built in code. The legs follow the pedals at your
 cadence (two-bone IK from the hip to the pedal), the arms reach the hoods,
 and on a real gradient above 6% the rider gets out of the saddle and rocks
 the bike. **Camera** switches between behind, close behind and the roadside;
+**Weather** between clear, cloudy, rain (falling rain, a wet road), fog and
+snow (falling snow, snow lying on the land);
 **Full screen** fills the screen with the view, power, speed, gradient and
 distance on top.
 
