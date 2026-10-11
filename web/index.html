@@ -266,6 +266,9 @@
   .roampick { position: fixed; inset: 0; z-index: 70; background: rgba(6, 8, 12, 0.72); display: flex; align-items: center; justify-content: center; padding: 16px; }
   .roampick-card { background: var(--panel); border-radius: 14px; padding: 16px; width: min(920px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: auto; }
   .roampick input[type=search] { font: inherit; background: #10131a; color: var(--text); border: 1px solid #2a2f3a; border-radius: 8px; padding: 9px 12px; min-width: 0; }
+  .maplook { display: flex; background: #10131acc; border: 1px solid #2a2f3a; border-radius: 8px; padding: 2px; }
+  .maplook button { font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  .maplook button.on { background: #2a2f3a; }
   .roammap { height: min(62vh, 580px); min-height: 260px; border-radius: 10px; margin-top: 10px; background: #1b1f27; }
   .roamhits { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
   .roamhits:empty { display: none; }
@@ -4172,6 +4175,57 @@ function ghostGap() {
 // follows real roads, routed by BRouter (brouter.de, OpenStreetMap data,
 // with heights): its fastbike profile for road, gravel for gravel, or
 // straight lines. Saved to Your routes and ridden like any GPX.
+// Map / Hybrid switch for the Leaflet maps (route builder, Ride anywhere).
+// Hybrid is Google's satellite with roads and names on top, through the Map
+// Tiles API on the same key as Google 3D; without a key, or if Google says no,
+// it falls back to EOX's free cloudless satellite with CARTO's labels.
+function mapLooks(map, credit = '', say = () => {}) {
+  const OSM = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+  const tail = credit ? ' · ' + credit : '';
+  const plain = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM + tail });
+  let hybrid = null, note = '';
+  const key = () => { try { return localStorage.getItem('gmapsKey') || ''; } catch { return ''; } };
+  async function makeHybrid() {
+    const k = key();
+    if (k) {
+      try {
+        const r = await fetch('https://tile.googleapis.com/v1/createSession?key=' + encodeURIComponent(k), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mapType: 'satellite', layerTypes: ['layerRoadmap'], language: (navigator.language || 'en').split('@')[0], region: 'BE' }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.session) return L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${j.session}&key=${encodeURIComponent(k)}`, { maxZoom: 21, maxNativeZoom: 20, attribution: 'Map data © Google' + tail });
+        note = `Google said no (${j.error?.message || r.status}), so this is free satellite instead. Turn on the Map Tiles API for your key in Google Cloud.`;
+      } catch { note = 'Could not reach Google, so this is free satellite instead.'; }
+    }
+    return L.layerGroup([
+      L.tileLayer('https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg', { maxZoom: 19, maxNativeZoom: 15, attribution: 'Sentinel-2 cloudless by <a href="https://s2maps.eu" target="_blank" rel="noopener">EOX</a> · labels © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>, ' + OSM + tail }),
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }),
+    ]);
+  }
+  let look = store.get('mapLook', 'map');
+  const ctl = L.control({ position: 'topright' });
+  ctl.onAdd = () => {
+    const box = L.DomUtil.create('div', 'maplook');
+    box.innerHTML = '<button type="button" data-look="map">Map</button><button type="button" data-look="hybrid">Hybrid</button>';
+    L.DomEvent.disableClickPropagation(box);
+    box.addEventListener('click', e => { const b = e.target.closest('button'); if (b) set(b.dataset.look); });
+    return box;
+  };
+  ctl.addTo(map);
+  async function set(l) {
+    look = l; store.set('mapLook', l);
+    ctl.getContainer().querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.look === l));
+    if (l === 'hybrid') {
+      if (!hybrid) hybrid = await makeHybrid();
+      if (look !== 'hybrid') return; // switched back while Google answered
+      map.removeLayer(plain); hybrid.addTo(map);
+      if (note) { say(note); note = ''; }
+    } else { if (hybrid) map.removeLayer(hybrid); plain.addTo(map); }
+  }
+  set(look);
+}
+
 const routeBuilder = (() => {
   const BROUTER = 'https://brouter.de/brouter';
   let map = null, line = null, mode = store.get('buildMode', 'road');
@@ -4258,7 +4312,7 @@ const routeBuilder = (() => {
     if (!map) {
       const last = store.get('roamAt', null);
       map = L.map('rbMap', { zoomControl: true, doubleClickZoom: false }).setView(last ? [last.lat, last.lon] : [50.85, 4.35], last ? 12 : 8);
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors · routing <a href="https://brouter.de" target="_blank" rel="noopener">BRouter</a>' }).addTo(map);
+      mapLooks(map, 'routing <a href="https://brouter.de" target="_blank" rel="noopener">BRouter</a>', t => msg(t, 'bad'));
       map.on('click', e => add(e.latlng.lat, e.latlng.lng));
     }
     $('rbSeg').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
@@ -4339,7 +4393,7 @@ const roamUi = (() => {
     if (!map) {
       const last = store.get('roamAt', null);
       map = L.map('roamMap', { zoomControl: true }).setView(last ? [last.lat, last.lon] : [50.85, 4.35], last ? 13 : 8);
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(map);
+      mapLooks(map, '', t => { $('roamMsg').textContent = t; });
       map.on('click', e => choose(e.latlng.lat, e.latlng.lng));
       if (last) choose(last.lat, last.lon);
     }
