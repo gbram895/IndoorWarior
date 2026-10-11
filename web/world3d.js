@@ -2177,7 +2177,7 @@ void main() {`);
 
   function mount(container, getState) {
     let renderer;
-    try { renderer = new T.WebGLRenderer({ antialias: true }); }
+    try { renderer = new T.WebGLRenderer({ antialias: true, alpha: true }); } // see-through where Google 3D shows behind
     catch (e) { throw new Error('This browser cannot draw 3D here (WebGL is off).'); }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.toneMapping = T.CustomToneMapping; renderer.toneMappingExposure = 1;
@@ -2266,30 +2266,41 @@ void main() {`);
     }
     bindOrbit(renderer.domElement);
 
-    // ---- World: Google 3D. Google's photoreal world is drawn by Google's own
-    // map element (its tiles can't be taken into three.js from Europe), under
-    // a see-through canvas where only the rider is drawn. Every frame the
-    // map's camera is set to the one the rider view would use, so the two
-    // line up: ours looks at the same point from the same place.
+    // ---- World: Google 3D. A hybrid: Google's photoreal world is drawn by
+    // Google's own map element (its tiles can't be taken into three.js from
+    // Europe) behind our canvas, and our own world is drawn over it as usual,
+    // fading out from GFADE[0] to GFADE[1] metres. So up close it is our road,
+    // trees and houses with him on them, always at the right height; beyond,
+    // it is Google's land, towns and mountains, and the sky. Every frame the
+    // map's camera is set to ours, so the far land lines up with the near.
+    const GFADE = [160, 430];
     let gl3 = null, glFail = '';
     function googleOn(key) {
       const box = document.createElement('div');
       box.style.cssText = 'position:absolute;inset:0;background:#9aa7b4';
-      const r = new T.WebGLRenderer({ antialias: true, alpha: true });
-      r.setPixelRatio(renderer.getPixelRatio()); r.setClearColor(0x000000, 0);
-      r.shadowMap.enabled = true; r.shadowMap.type = T.PCFSoftShadowMap;
-      r.domElement.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
-      container.prepend(box, r.domElement);
-      bindOrbit(r.domElement);
-      const sc = new T.Scene();
-      const sunG = sun.clone(); // its own shadow and target
-      sc.add(hemi.clone(), sunG, sunG.target);
-      // His shadow on Google's ground: a sheet that is clear except for it.
-      const catcher = new T.Mesh(new T.PlaneGeometry(14, 14), new T.ShadowMaterial({ opacity: 0.32 }));
-      catcher.rotation.x = -Math.PI / 2; catcher.receiveShadow = true; sc.add(catcher);
-      sc.add(bike.root);
-      renderer.domElement.style.visibility = 'hidden';
-      const L = { box, r, sc, sun: sunG, catcher, map: null };
+      container.prepend(box);
+      renderer.domElement.style.position = 'relative'; // over the map
+      const rt = new T.WebGLRenderTarget(1, 1, { type: T.HalfFloatType, samples: renderer.capabilities.isWebGL2 ? 4 : 0 });
+      rt.depthTexture = new T.DepthTexture(1, 1, T.UnsignedIntType);
+      // Our picture onto the canvas, graded as the renderer would, and clear
+      // with distance (and wherever nothing of ours was drawn).
+      const fade = new T.ShaderMaterial({
+        vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        fragmentShader: `uniform sampler2D src; uniform sampler2D depth; uniform float near; uniform float far; uniform vec2 fade; varying vec2 vUv;
+          void main() {
+            vec4 c = texture2D(src, vUv);
+            float z = texture2D(depth, vUv).x * 2.0 - 1.0;
+            float d = 2.0 * near * far / (far + near - z * (far - near));
+            float a = c.a * (1.0 - smoothstep(fade.x, fade.y, d));
+            gl_FragColor = vec4(CustomToneMapping(c.rgb) * a, a);
+          }`,
+        uniforms: { src: { value: rt.texture }, depth: { value: rt.depthTexture }, near: { value: 0 }, far: { value: 0 }, fade: { value: new T.Vector2(...GFADE) }, toneMappingExposure: { value: 1 } },
+        depthTest: false, depthWrite: false, toneMapped: false, transparent: false,
+      });
+      fade.fragmentShader = T.ShaderChunk.tonemapping_pars_fragment + fade.fragmentShader; // CustomToneMapping, the renderer's grade
+      const quad = new T.Mesh(new T.PlaneGeometry(2, 2), fade), qs = new T.Scene(), qc = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      quad.frustumCulled = false; qs.add(quad);
+      const L = { box, rt, fade, quad, qs, qc, map: null };
       loadGoogle(key).then(async () => {
         const { Map3DElement } = await google.maps.importLibrary('maps3d');
         if (gl3 !== L) return;
@@ -2303,9 +2314,25 @@ void main() {`);
     function googleOff() {
       if (!gl3) return;
       const L = gl3; gl3 = null;
-      scene.add(bike.root);
-      L.box.remove(); L.r.domElement.remove(); L.r.dispose(); L.catcher.geometry.dispose();
-      renderer.domElement.style.visibility = '';
+      L.box.remove(); L.rt.dispose(); L.rt.depthTexture.dispose(); L.fade.dispose(); L.quad.geometry.dispose();
+      renderer.domElement.style.position = '';
+    }
+    // Our world into the target, then faded onto the canvas over the map.
+    // No sky, clouds or painted mountains of ours: Google's are there.
+    function googleDraw(L) {
+      const w = renderer.domElement.width, h = renderer.domElement.height;
+      if (L.rt.width !== w || L.rt.height !== h) L.rt.setSize(w, h);
+      const dens = scene.fog.density, cc = new T.Color(), ca = renderer.getClearAlpha();
+      renderer.getClearColor(cc);
+      scene.fog.density = dens * 0.35; hills0.visible = false; if (sky2) sky2.visible = false;
+      renderer.setRenderTarget(L.rt); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(scene, camera);
+      scene.fog.density = dens; hills0.visible = true; if (sky2) sky2.visible = true;
+      // Measured from the camera, plus however far it has been pulled back
+      // from him, so a free camera out at 300 m still sees him and his road.
+      const u = L.fade.uniforms, back = camera.position.distanceTo(camLook), end = Math.min(GFADE[1] + back, camera.far - 20);
+      u.near.value = camera.near; u.far.value = camera.far; u.fade.value.set(Math.min(GFADE[0] + back, end - 150), end);
+      renderer.setRenderTarget(null); renderer.clear(); renderer.render(L.qs, L.qc);
+      renderer.setClearColor(cc, ca);
     }
     function googleFail(m) { glFail = m; googleOff(); }
     window.__iwGoogleFail = googleFail;
@@ -2324,7 +2351,7 @@ void main() {`);
       m.heading = ((Math.atan2(-d.x, d.z) * 180) / Math.PI + 360) % 360; // looking along -d: east -d.x, north +d.z (z is south)
       if (m.fov !== camera.fov) m.fov = camera.fov;
     }
-    let googleLift = 0; // m, if his wheels sit in or above Google's road
+    let googleLift = 0; // m, to raise or lower Google's land against ours
 
     // Weather. Clear is the photographed sky as it is; the others fade the sky
     // into a heavier haze, dim the sun (no hard shadows under cloud), thicken
@@ -2670,7 +2697,7 @@ void main() {`);
       if (s.google && !gl3 && !glFail) gl3 = googleOn(s.google);
       else if (!s.google && gl3) googleOff();
       if (!s.google) glFail = '';
-      if (tiles.length && !gl3) {
+      if (tiles.length) {
         // Nearest to the rider first; sorted again after he has moved on 300 m (or jumped).
         const here = at(disp, new T.Vector3());
         if (!sortedAt || sortedAt.distanceTo(here) > 300) {
@@ -2688,7 +2715,7 @@ void main() {`);
           world.add(m); pieces.push(m); tileOf.set(t.key, m);
         }
       }
-      if (!gl3) paintGround(dt);
+      paintGround(dt);
       // Glide between the ride's 4 ticks a second, then ease onto the real distance.
       disp += s.speed * dt;
       disp += (s.dist - disp) * Math.min(1, dt * 2.5);
@@ -2762,14 +2789,10 @@ void main() {`);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);
       if (sky2) { drift += dt * 1.5; sky2.position.set(camPos.x * 0.9 + drift, hills0.position.y, camPos.z * 0.9); }
       farCam.position.copy(camera.position); farCam.quaternion.copy(camera.quaternion);
-      if (gl3) { // Google draws the world; we draw him over it
+      if (gl3) { // Google draws the far world and the sky; we draw the near world over it
         camera.updateMatrixWorld();
         if (gl3.map) googleCamera(gl3, g, pos);
-        gl3.catcher.position.set(pos.x, pos.y + 0.02, pos.z);
-        gl3.sun.target.position.copy(pos); gl3.sun.position.copy(pos).addScaledVector(SUN_DIR, 200);
-        const w = container.clientWidth, h = container.clientHeight;
-        if (w && h && (gl3.w !== w || gl3.h !== h)) { gl3.w = w; gl3.h = h; gl3.r.setSize(w, h, false); }
-        gl3.r.render(gl3.sc, camera);
+        googleDraw(gl3);
         return;
       }
       const draw = () => {
