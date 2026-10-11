@@ -1785,20 +1785,30 @@ void main() {`);
 
   // The rider and bike, posed every frame. Joints are placed by hand-written
   // geometry rather than a loaded model: the legs follow the pedals by
-  // two-bone IK (hip fixed on the saddle, foot on the pedal), the arms reach
-  // the hoods, and standing up on a climb moves the hips and shoulders forward.
+  // two-bone IK (hip fixed on the saddle, ankle above a foot that tips with
+  // the stroke), the arms reach the hoods, and standing up on a climb moves
+  // the hips and shoulders forward. Body parts are lofted from measured
+  // cross-sections (calf, quad, a rounded back, glutes) rather than
+  // cylinders, so the shapes read as a person from the chase camera.
   // The model faces -z; units are metres.
-  // Kit printed on canvases: a jersey with dark side panels, a white chest
-  // band and a zip; a helmet with its vents.
+  // Kit printed on canvases. The jersey's u runs round the body from his
+  // left side (0) over the chest (0.25, the zip) and right side (0.5) to the
+  // middle of the back (0.75); v runs from the bib shorts (0) up to the
+  // collar (1). The helmet: shell with vent slots.
   function kitTexture(kind) {
     const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
     const cx = cv.getContext('2d');
-    if (kind === 'jersey') { // u runs round the body, v from the waist (0) up
+    if (kind === 'jersey') {
       cx.fillStyle = '#ff7a1a'; cx.fillRect(0, 0, 256, 128);
-      cx.fillStyle = '#1f2329'; cx.fillRect(52, 0, 30, 128); cx.fillRect(174, 0, 30, 128); // side panels
-      cx.fillStyle = '#f4f5f7'; cx.fillRect(0, 34, 256, 9);  // chest band
-      cx.fillStyle = '#d9621a'; cx.fillRect(0, 0, 256, 6);
-      cx.fillStyle = '#2a2d33'; cx.fillRect(126, 0, 3, 128); // zip
+      cx.fillStyle = '#1f2329'; cx.fillRect(116, 0, 24, 128); cx.fillRect(244, 0, 12, 128); cx.fillRect(0, 0, 12, 128); // side panels
+      cx.fillStyle = '#2a2d33'; cx.fillRect(0, 0, 256, 12); // dark yoke over the shoulders
+      cx.fillStyle = '#f4f5f7'; cx.fillRect(0, 34, 256, 7); // chest band
+      cx.fillStyle = '#d9621a'; // three back pockets, a shade darker, with their seams
+      cx.fillRect(160, 80, 64, 20);
+      cx.fillStyle = '#b4500f'; for (const u of [160, 181, 202, 223]) cx.fillRect(u, 80, 1.5, 20); cx.fillRect(160, 80, 64, 1.5);
+      cx.fillStyle = '#c85a14'; cx.fillRect(0, 98, 256, 4); // hem gripper
+      cx.fillStyle = '#15171b'; cx.fillRect(0, 102, 256, 26); // bib shorts below the hem
+      cx.fillStyle = '#2a2d33'; cx.fillRect(63, 12, 2, 86); // zip
     } else { // helmet: shell with vent slots from front to back
       cx.fillStyle = '#f4f5f7'; cx.fillRect(0, 0, 256, 128);
       cx.fillStyle = '#1b1e23';
@@ -1810,92 +1820,206 @@ void main() {`);
     return t;
   }
 
+  // A closed tube along local y, from -0.5 to 0.5 so `orient` can stretch it
+  // between two joints. Each ring is [t, half-width, half-depth, forward
+  // offset]: t from 0 at the first joint to 1 at the second (a little past
+  // either end rounds it off), "forward" being the side `orient` is told.
+  function loft(rings, seg = 18) {
+    const pos = [], uv = [], idx = [], n = rings.length, t0 = rings[0][0], t1 = rings[n - 1][0];
+    for (const [t, rx, rz, cz = 0] of rings) {
+      for (let j = 0; j <= seg; j++) {
+        const a = (j / seg) * Math.PI * 2;
+        pos.push(rx * Math.cos(a), t - 0.5, cz + rz * Math.sin(a));
+        uv.push(j / seg, (t - t0) / (t1 - t0));
+      }
+    }
+    for (let i = 0; i < n - 1; i++) for (let j = 0; j < seg; j++) {
+      const a = i * (seg + 1) + j, b = a + seg + 1;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+    const g = new T.BufferGeometry();
+    g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx); g.computeVertexNormals();
+    const nr = g.attributes.normal; // the seam: both copies of each ring's first point share one normal
+    for (let i = 0; i < n; i++) {
+      const a = i * (seg + 1), b = a + seg;
+      for (let c = 0; c < 3; c++) { const m = (nr.array[a * 3 + c] + nr.array[b * 3 + c]) / 2; nr.array[a * 3 + c] = nr.array[b * 3 + c] = m; }
+    }
+    return g;
+  }
+
   function rider() {
     const root = new T.Group();
-    const mat = c => new T.MeshLambertMaterial({ color: c });
+    const mat = (c, rough = 0.7, metal = 0) => new T.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal });
     const M = {
-      frame: mat(0x1d2a3a), dark: mat(0x16181c), tyre: mat(0x111214), rim: mat(0x8d949e), steel: mat(0xb8bec7),
-      jersey: mat(0xff7a1a), jersey2: mat(0x1f2329), bib: mat(0x15171b), skin: mat(0xd9a882), sock: mat(0xf1f1f1),
-      shoe: mat(0x22252b), helmet: mat(0xf4f5f7), visor: mat(0x20242a), saddle: mat(0x111214),
-      carbon: mat(0x1a1c20), bottle: mat(0xe9edf2), cap: mat(0x2a7de1),
+      frame: mat(0x1d2a3a, 0.32, 0.25), dark: mat(0x16181c, 0.6), tyre: mat(0x141517, 0.85), rim: mat(0x8d949e, 0.4, 0.5), steel: mat(0xb8bec7, 0.3, 0.8),
+      jersey: mat(0xff7a1a, 0.7), jersey2: mat(0x1f2329, 0.7), bib: mat(0x15171b, 0.55), skin: mat(0xd29a76, 0.62), sock: mat(0xf1f1f1, 0.85),
+      shoe: mat(0xf2f3f5, 0.35), sole: mat(0x1c1e22, 0.5), glove: mat(0x1b1d21, 0.75), helmet: mat(0xf4f5f7, 0.3), visor: mat(0x20242a, 0.4),
+      saddle: mat(0x111214, 0.45), carbon: mat(0x1a1c20, 0.35, 0.15), bottle: mat(0xe9edf2, 0.5), cap: mat(0x2a7de1, 0.5), hair: mat(0x3a2a1e, 0.9),
+      chain: mat(0x6b7078, 0.45, 0.7), tape: mat(0x202226, 0.9), cuff: mat(0xf4f5f7, 0.7),
       lens: new T.MeshPhongMaterial({ color: 0x111317, specular: 0x8899aa, shininess: 90 }),
     };
-    M.jerseyKit = new T.MeshLambertMaterial({ map: kitTexture('jersey') });
-    M.helmetKit = new T.MeshLambertMaterial({ map: kitTexture('helmet') });
+    M.jerseyKit = new T.MeshStandardMaterial({ map: kitTexture('jersey'), roughness: 0.7 });
+    M.helmetKit = new T.MeshStandardMaterial({ map: kitTexture('helmet'), roughness: 0.32 });
     // A unit cylinder along +y, centred, that `limb` stretches between two points.
     const unitCyl = (r0, r1, seg = 10) => new T.CylinderGeometry(r1, r0, 1, seg, 1);
-    const up = new T.Vector3(0, 1, 0), tmpV = new T.Vector3(), tmpQ = new T.Quaternion();
+    const up = new T.Vector3(0, 1, 0), tmpV = new T.Vector3(), tmpQ = new T.Quaternion(), basis = new T.Matrix4();
+    const bx = new T.Vector3(), by = new T.Vector3(), bz = new T.Vector3();
     function limb(mesh, a, b) {
       tmpV.subVectors(b, a); const len = tmpV.length() || 1e-6;
       mesh.position.copy(a).addScaledVector(tmpV, 0.5);
       mesh.quaternion.copy(tmpQ.setFromUnitVectors(up, tmpV.divideScalar(len)));
       mesh.scale.set(1, len, 1);
     }
+    // As limb, for a lofted part: its y runs from a to b and its forward
+    // side (+z) turns towards `fwd`, so a calf sits at the back of the shin.
+    function orient(mesh, a, b, fwd) {
+      by.subVectors(b, a); const len = by.length() || 1e-6; by.divideScalar(len);
+      bz.copy(fwd).addScaledVector(by, -fwd.dot(by)).normalize();
+      bx.crossVectors(by, bz);
+      mesh.quaternion.setFromRotationMatrix(basis.makeBasis(bx, by, bz));
+      mesh.position.copy(a).addScaledVector(by, len * 0.5);
+      mesh.scale.set(1, len, 1);
+    }
     const add = (geo, m) => { const o = new T.Mesh(geo, m); root.add(o); return o; };
     const V = (x, y, z) => new T.Vector3(x, y, z);
+    const grow = (rings, d) => rings.map(([t, rx, rz, cz]) => [t, rx + d, rz + d, cz]);
 
-    // ---- Bike. Rear axle z +0.5, front -0.5, wheels 0.34 m.
+    // ---- Bike. Rear axle z +0.5, front -0.5, wheels 0.34 m. His right is +x.
     const R = 0.34, BB = V(0, 0.27, 0.09), REAR = V(0, R, 0.5), FRONT = V(0, R, -0.5);
     const SEAT = V(0, 0.93, 0.29), HEAD_TOP = V(0, 0.84, -0.36), HEAD_LOW = V(0, 0.68, -0.40), BAR = V(0, 0.88, -0.47);
     const wheels = [];
     for (const c of [REAR, FRONT]) {
       const w = new T.Group(); w.position.copy(c); root.add(w); wheels.push(w);
-      const tyre = new T.Mesh(new T.TorusGeometry(R - 0.014, 0.014, 8, 40), M.tyre); tyre.rotation.y = Math.PI / 2; w.add(tyre);
-      const rim = new T.Mesh(new T.TorusGeometry(R - 0.04, 0.012, 6, 40), M.rim); rim.rotation.y = Math.PI / 2; w.add(rim);
+      const tyre = new T.Mesh(new T.TorusGeometry(R - 0.0125, 0.0125, 10, 48), M.tyre); tyre.rotation.y = Math.PI / 2; w.add(tyre);
+      const rim = new T.Mesh(new T.TorusGeometry(R - 0.03, 0.009, 6, 48), M.rim); rim.rotation.y = Math.PI / 2; w.add(rim);
       const spokes = [];
-      for (let k = 0; k < 18; k++) { const a = (k / 18) * Math.PI * 2; spokes.push(0, 0, 0, 0, Math.cos(a) * (R - 0.05), Math.sin(a) * (R - 0.05)); }
+      for (let k = 0; k < 24; k++) { // laced from both hub flanges to the rim
+        const a = (k / 24) * Math.PI * 2, x = k % 2 ? 0.022 : -0.022;
+        spokes.push(x, Math.cos(a + 0.2) * 0.03, Math.sin(a + 0.2) * 0.03, 0, Math.cos(a) * (R - 0.075), Math.sin(a) * (R - 0.075));
+      }
       const sg = new T.BufferGeometry(); sg.setAttribute('position', new T.Float32BufferAttribute(spokes, 3));
-      w.add(new T.LineSegments(sg, new T.LineBasicMaterial({ color: 0x9aa1aa })));
-      const hub = new T.Mesh(new T.CylinderGeometry(0.025, 0.025, 0.1, 8), M.steel); hub.rotation.z = Math.PI / 2; w.add(hub);
-      const deep = new T.Mesh(new T.CylinderGeometry(R - 0.03, R - 0.03, 0.022, 40, 1, true), M.carbon); deep.rotation.z = Math.PI / 2; w.add(deep); // aero rim
-      const inner = new T.Mesh(new T.TorusGeometry(R - 0.075, 0.011, 6, 40), M.carbon); inner.rotation.y = Math.PI / 2; w.add(inner);
+      w.add(new T.LineSegments(sg, new T.LineBasicMaterial({ color: 0x2a2d33 })));
+      const hub = new T.Mesh(new T.CylinderGeometry(0.02, 0.02, 0.1, 10), M.carbon); hub.rotation.z = Math.PI / 2; w.add(hub);
+      for (const x of [-0.022, 0.022]) { const fl = new T.Mesh(new T.CylinderGeometry(0.03, 0.03, 0.006, 14), M.steel); fl.rotation.z = Math.PI / 2; fl.position.x = x; w.add(fl); }
+      const deep = new T.Mesh(new T.CylinderGeometry(R - 0.035, R - 0.035, 0.024, 48, 1, true), M.carbon); deep.rotation.z = Math.PI / 2; w.add(deep); // 45 mm carbon rim
+      const inner = new T.Mesh(new T.TorusGeometry(R - 0.072, 0.009, 6, 48), M.carbon); inner.rotation.y = Math.PI / 2; w.add(inner);
+      for (const x of [-0.0125, 0.0125]) { const side = new T.Mesh(new T.RingGeometry(R - 0.075, R - 0.035, 48), M.carbon); side.rotation.y = Math.PI / 2; side.position.x = x; if (x < 0) side.rotation.y = -Math.PI / 2; w.add(side); }
+      // Disc rotor and its calliper on his left.
+      const rotor = new T.Mesh(new T.RingGeometry(0.045, 0.078, 24), M.steel); rotor.rotation.y = -Math.PI / 2; rotor.position.x = -0.045; rotor.material.side = T.DoubleSide; w.add(rotor);
     }
-    const tube = (a, b, r, m = M.frame) => limb(add(unitCyl(r, r, 8), m), a, b);
-    tube(BB, SEAT.clone().lerp(BB, 0.1), 0.017);          // seat tube
-    tube(SEAT.clone().lerp(BB, 0.12), HEAD_TOP, 0.016);   // top tube
-    tube(BB, HEAD_LOW, 0.022);                            // down tube
-    tube(HEAD_LOW, HEAD_TOP, 0.022);                      // head tube
+    for (const c of [REAR, FRONT]) { const cal = add(new T.BoxGeometry(0.03, 0.05, 0.06), M.dark); cal.position.copy(c).add(V(-0.048, c === REAR ? 0.05 : 0.05, c === REAR ? -0.04 : 0.04)); }
+    const tube = (a, b, r, m = M.frame) => limb(add(unitCyl(r, r, 10), m), a, b);
+    // Aero tubes: deeper than wide, so they read flat from behind.
+    const aero = (a, b, w, d, m = M.frame) => { const o = add(loft([[0, w, d], [1, w, d]], 12), m); orient(o, a, b, V(0, 0, -1)); };
+    aero(BB, SEAT.clone().lerp(BB, 0.1), 0.016, 0.024);       // seat tube
+    aero(SEAT.clone().lerp(BB, 0.12), HEAD_TOP, 0.015, 0.02); // top tube
+    aero(BB, HEAD_LOW, 0.02, 0.03);                           // down tube
+    tube(HEAD_LOW.clone().addScaledVector(HEAD_TOP.clone().sub(HEAD_LOW), -0.08), HEAD_TOP.clone().addScaledVector(HEAD_TOP.clone().sub(HEAD_LOW), 0.12), 0.023); // head tube
     for (const x of [-0.05, 0.05]) {
       tube(BB.clone().setX(x * 0.6), REAR.clone().setX(x), 0.011);                       // chainstays
-      tube(SEAT.clone().lerp(BB, 0.14).setX(x * 0.4), REAR.clone().setX(x), 0.01);      // seatstays
-      tube(HEAD_LOW.clone().setX(x * 0.4), FRONT.clone().setX(x), 0.012);                // fork
+      tube(SEAT.clone().lerp(BB, 0.2).setX(x * 0.4), REAR.clone().setX(x), 0.009);      // seatstays, dropped
+      aero(HEAD_LOW.clone().setX(x * 0.4), FRONT.clone().setX(x), 0.009, 0.016);          // fork
     }
-    tube(HEAD_TOP, BAR, 0.015, M.dark);                   // stem
-    tube(V(-0.21, 0.88, -0.47), V(0.21, 0.88, -0.47), 0.013, M.dark); // bars
+    tube(HEAD_TOP.clone().add(V(0, 0.02, 0)), BAR, 0.016, M.dark); // stem
+    tube(HEAD_TOP, HEAD_TOP.clone().add(V(0, 0.03, -0.005)), 0.02, M.dark); // headset spacers
+    tube(V(-0.21, 0.88, -0.47), V(0.21, 0.88, -0.47), 0.013, M.tape); // bars, taped
     for (const x of [-0.2, 0.2]) {
-      tube(V(x, 0.88, -0.47), V(x, 0.84, -0.56), 0.013, M.dark);       // reach to the drops
-      tube(V(x, 0.84, -0.56), V(x, 0.74, -0.52), 0.013, M.dark);
+      tube(V(x, 0.88, -0.47), V(x, 0.875, -0.55), 0.013, M.tape);      // round to the hoods
+      tube(V(x, 0.875, -0.55), V(x, 0.80, -0.565), 0.013, M.tape);     // the drops
+      tube(V(x, 0.80, -0.565), V(x, 0.745, -0.53), 0.013, M.tape);
+      tube(V(x, 0.745, -0.53), V(x, 0.74, -0.47), 0.013, M.tape);
+      const hood = add(loft([[-0.1, 0.012, 0.012], [0, 0.017, 0.02], [0.5, 0.018, 0.022, 0.004], [0.9, 0.015, 0.02, 0.006], [1.05, 0.008, 0.01, 0.004]], 12), M.dark);
+      orient(hood, V(x, 0.885, -0.5), V(x, 0.9, -0.59), V(0, 1, 0)); // brake hood
+      tube(V(x, 0.89, -0.585), V(x, 0.79, -0.585), 0.007, M.dark);    // lever
     }
     // A bottle in its cage on the down tube.
     const bAt = BB.clone().lerp(HEAD_LOW, 0.42), bDir = HEAD_LOW.clone().sub(BB).normalize(), bUp = V(0, 1, 0).addScaledVector(bDir, -bDir.y).normalize();
-    const bottle = add(new T.CylinderGeometry(0.034, 0.034, 0.2, 12), M.bottle); bottle.position.copy(bAt).addScaledVector(bUp, 0.045); bottle.quaternion.setFromUnitVectors(V(0, 1, 0), bDir);
+    const bottle = add(new T.CylinderGeometry(0.034, 0.034, 0.2, 14), M.bottle); bottle.position.copy(bAt).addScaledVector(bUp, 0.048); bottle.quaternion.setFromUnitVectors(V(0, 1, 0), bDir);
     const cap = add(new T.CylinderGeometry(0.015, 0.022, 0.035, 10), M.cap); cap.position.copy(bottle.position).addScaledVector(bDir, 0.115); cap.quaternion.copy(bottle.quaternion);
-    const saddle = add(new T.BoxGeometry(0.13, 0.04, 0.27), M.saddle); saddle.position.copy(SEAT).add(V(0, 0.02, 0.0));
-    tube(SEAT.clone().lerp(BB, 0.1), SEAT, 0.013, M.steel); // seat post
-    const ring = add(new T.TorusGeometry(0.1, 0.008, 6, 30), M.steel); ring.rotation.y = Math.PI / 2; ring.position.copy(BB).setX(0.05);
-    const cranks = [add(unitCyl(0.012, 0.012, 6), M.steel), add(unitCyl(0.012, 0.012, 6), M.steel)];
-    const pedals = [add(new T.BoxGeometry(0.09, 0.015, 0.06), M.dark), add(new T.BoxGeometry(0.09, 0.015, 0.06), M.dark)];
+    // Saddle: a broad back narrowing to the nose, on its rails.
+    const saddle = add(loft([[-0.04, 0.03, 0.006], [0, 0.068, 0.012], [0.18, 0.072, 0.016], [0.4, 0.05, 0.015], [0.6, 0.026, 0.013], [0.9, 0.019, 0.012], [1.03, 0.008, 0.006]], 14), M.saddle);
+    orient(saddle, SEAT.clone().add(V(0, 0.035, 0.13)), SEAT.clone().add(V(0, 0.04, -0.14)), V(0, 1, 0));
+    tube(SEAT.clone().lerp(BB, 0.1), SEAT, 0.0135, M.carbon); // seat post
+    // Drivetrain on his right: two rings on a spider, cassette, mech, chain.
+    const RING = BB.clone().setX(0.055);
+    for (const [r, x] of [[0.105, 0.058], [0.085, 0.05]]) { const ring = add(new T.TorusGeometry(r, 0.006, 6, 40), M.steel); ring.rotation.y = Math.PI / 2; ring.position.copy(BB).setX(x); }
+    const spider = add(new T.CylinderGeometry(0.075, 0.075, 0.008, 5), M.carbon); spider.rotation.z = Math.PI / 2; spider.position.copy(RING);
+    for (let k = 0; k < 7; k++) { const cog = add(new T.CylinderGeometry(0.055 - k * 0.0045, 0.055 - k * 0.0045, 0.003, 20), M.steel); cog.rotation.z = Math.PI / 2; cog.position.copy(REAR).setX(0.03 + k * 0.0045); }
+    const mech = add(new T.BoxGeometry(0.014, 0.075, 0.03), M.dark); mech.position.copy(REAR).add(V(0.06, -0.06, 0.015)); mech.rotation.x = 0.25;
+    for (const dy of [-0.025, -0.09]) { const jw = add(new T.CylinderGeometry(0.013, 0.013, 0.008, 12), M.dark); jw.rotation.z = Math.PI / 2; jw.position.copy(REAR).add(V(0.055, dy, dy * 0.15)); }
+    tube(RING.clone().add(V(0, 0.105, 0)), REAR.clone().add(V(0.055, 0.05, 0)), 0.0035, M.chain); // top run
+    tube(RING.clone().add(V(0, -0.105, 0)), REAR.clone().add(V(0.055, -0.09, -0.013)), 0.0035, M.chain); // bottom run to the jockey wheel
+    tube(REAR.clone().add(V(0.055, -0.09, -0.013)), REAR.clone().add(V(0.055, -0.025, -0.004)), 0.0035, M.chain);
+    const cranks = [0, 1].map(() => add(loft([[-0.12, 0.012, 0.01], [0, 0.016, 0.012], [0.5, 0.012, 0.01], [1, 0.011, 0.01], [1.1, 0.008, 0.008]], 10), M.carbon));
+    const pedals = [0, 1].map(() => add(new T.BoxGeometry(0.075, 0.014, 0.085), M.dark));
 
-    // ---- Rider.
-    const THIGH = 0.45, SHIN = 0.44, UPPER = 0.29, FORE = 0.28;
+    // ---- Rider. Lengths in metres for a 1.80 m rider.
+    const THIGH = 0.45, SHIN = 0.44, UPPER = 0.29, FORE = 0.27, FOOT = 0.28;
+    // Cross-sections, measured off photos of riders: quads in front of the
+    // thigh, the calf high at the back of the shin, a narrow ankle.
+    const THIGH_R = [[-0.1, 0.07, 0.07], [0, 0.088, 0.088], [0.2, 0.086, 0.085, 0.006], [0.45, 0.077, 0.075, 0.01], [0.7, 0.063, 0.06, 0.006], [0.88, 0.052, 0.05], [1, 0.048, 0.046], [1.07, 0.034, 0.034]];
+    const SHIN_R = [[-0.07, 0.04, 0.04], [0, 0.049, 0.049], [0.1, 0.05, 0.055, -0.006], [0.25, 0.05, 0.062, -0.017], [0.4, 0.046, 0.057, -0.015], [0.6, 0.036, 0.04, -0.006], [0.8, 0.028, 0.03, -0.002], [0.95, 0.026, 0.028], [1.04, 0.026, 0.03], [1.08, 0.016, 0.016]];
     const legs = [-1, 1].map(() => ({
-      thigh: add(unitCyl(0.075, 0.058), M.bib), shin: add(unitCyl(0.052, 0.038), M.skin),
-      sock: add(unitCyl(0.04, 0.038), M.sock), knee: add(new T.SphereGeometry(0.057, 10, 8), M.skin), shoe: add(new T.BoxGeometry(0.08, 0.06, 0.25), M.shoe),
+      thigh: add(loft(THIGH_R), M.skin),
+      short: add(loft([...grow(THIGH_R.filter(r => r[0] <= 0.7), 0.004), [0.76, 0.064, 0.062, 0.005], [0.77, 0.03, 0.03]]), M.bib),
+      band: add(loft([[0.68, 0.068, 0.066, 0.006], [0.76, 0.065, 0.063, 0.005], [0.765, 0.03, 0.03]]), M.jersey2), // leg gripper
+      shin: add(loft(SHIN_R), M.skin),
+      sock: add(loft([[0.66, 0.035, 0.037, -0.003], [0.8, 0.032, 0.034, -0.002], [0.95, 0.03, 0.032], [1.04, 0.03, 0.034], [1.1, 0.015, 0.015]]), M.sock),
+      knee: add(new T.SphereGeometry(0.045, 12, 8), M.skin),
+      // Shoe along the foot from heel to toe, upper white, sole dark.
+      shoe: add(loft([[0, 0.022, 0.028, 0.025], [0.05, 0.035, 0.045, 0.032], [0.2, 0.041, 0.05, 0.036], [0.4, 0.044, 0.04, 0.026], [0.6, 0.047, 0.031, 0.019], [0.8, 0.042, 0.025, 0.012], [0.93, 0.032, 0.018, 0.008], [1, 0.012, 0.01, 0.006]], 16), M.shoe),
+      sole: add(loft([[0, 0.02, 0.008, -0.002], [0.05, 0.034, 0.01, -0.004], [0.5, 0.045, 0.008, -0.007], [0.9, 0.035, 0.008, -0.005], [1, 0.012, 0.006, -0.002]], 14), M.sole),
+      strap: add(new T.BoxGeometry(0.095, 0.012, 0.03), M.sole),
     }));
     const arms = [-1, 1].map(() => ({
-      upper: add(unitCyl(0.05, 0.043), M.jersey), fore: add(unitCyl(0.04, 0.032), M.skin),
-      elbow: add(new T.SphereGeometry(0.043, 8, 6), M.skin), hand: add(new T.SphereGeometry(0.038, 8, 6), M.dark),
+      upper: add(loft([[-0.1, 0.05, 0.05], [0, 0.056, 0.056], [0.3, 0.05, 0.049], [0.7, 0.043, 0.041], [1, 0.037, 0.035], [1.09, 0.025, 0.025]]), M.skin),
+      sleeve: add(loft([[-0.2, 0.03, 0.03], [-0.16, 0.055, 0.056], [-0.08, 0.065, 0.066], [0, 0.063, 0.063], [0.3, 0.056, 0.055], [0.52, 0.053, 0.052], [0.56, 0.045, 0.045]]), M.jersey),
+      cuff: add(loft([[0.46, 0.0545, 0.0535], [0.54, 0.054, 0.053], [0.55, 0.04, 0.04]]), M.cuff),
+      fore: add(loft([[-0.08, 0.03, 0.03], [0, 0.037, 0.034], [0.25, 0.04, 0.034], [0.6, 0.032, 0.026], [0.95, 0.024, 0.019], [1.03, 0.02, 0.017]]), M.skin),
+      hand: add(loft([[-0.05, 0.02, 0.018], [0.05, 0.026, 0.02], [0.35, 0.04, 0.024, 0.004], [0.7, 0.042, 0.022, 0.002], [0.92, 0.034, 0.018], [1.0, 0.012, 0.01]], 14), M.glove),
+      thumb: add(loft([[0, 0.012, 0.012], [0.6, 0.011, 0.01], [1.05, 0.006, 0.006]], 8), M.glove),
     }));
-    const pelvis = add(new T.SphereGeometry(0.15, 14, 10), M.bib); pelvis.scale.set(1.15, 0.8, 1);
-    const torso = add(unitCyl(0.15, 0.135, 18), M.jerseyKit);
-    const stripe = add(unitCyl(0.152, 0.137, 14), M.jersey2); // dark band round the waist
-    const shoulders = add(new T.SphereGeometry(0.12, 12, 8), M.jersey); shoulders.scale.set(1.9, 0.75, 1);
-    const neck = add(unitCyl(0.05, 0.05, 8), M.skin);
-    const head = add(new T.SphereGeometry(0.105, 16, 12), M.skin); head.scale.set(0.95, 1.05, 1.1);
-    const helmet = add(new T.SphereGeometry(0.135, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), M.helmetKit); helmet.scale.set(0.95, 0.9, 1.3);
+    // Torso from the hips (t=0) to the base of the neck (t=1), with the
+    // bib shorts, glutes and pelvis below: narrow waist, broad chest, a back
+    // that rounds over the bars, shoulder blades.
+    const torso = add(loft([
+      [-0.27, 0.06, 0.05, 0.0], [-0.23, 0.125, 0.105, -0.01], [-0.15, 0.162, 0.128, -0.02], [-0.06, 0.168, 0.125, -0.012],
+      [0, 0.163, 0.118, -0.004], [0.1, 0.158, 0.114, 0], [0.25, 0.15, 0.11, 0.002], [0.45, 0.158, 0.118, -0.008],
+      [0.62, 0.178, 0.125, -0.018], [0.78, 0.193, 0.12, -0.024], [0.9, 0.198, 0.104, -0.02], [0.98, 0.168, 0.084, -0.01],
+      [1.04, 0.1, 0.06, 0.0], [1.07, 0.048, 0.045, 0.006],
+    ], 24), M.jerseyKit);
+    const neck = add(loft([[-0.1, 0.05, 0.05], [0, 0.05, 0.052], [0.6, 0.046, 0.048], [1, 0.05, 0.05], [1.1, 0.03, 0.03]], 12), M.skin);
+    // Head: a sphere drawn narrower at the temples and in at the jaw, with ears.
+    const headGeo = new T.SphereGeometry(1, 24, 16), hp = headGeo.attributes.position;
+    for (let i = 0; i < hp.count; i++) {
+      let x = hp.getX(i), y = hp.getY(i), z = hp.getZ(i);
+      if (y < 0) { x *= 1 - 0.28 * -y; z *= 1 - (z > 0 ? 0.35 : 0.12) * -y; } // jaw and chin in, the back of the skull rounds off
+      if (z < -0.7 && Math.abs(x) < 0.25 && y > -0.35 && y < 0.1) z -= 0.12 * (1 - Math.abs(x) / 0.25); // nose
+      hp.setXYZ(i, x * 0.076, y * 0.112, z * 0.098);
+    }
+    headGeo.computeVertexNormals();
+    // Everything on the head moves with it, as one group.
+    const headG = new T.Group(); root.add(headG);
+    const hadd = (geo, m, x = 0, y = 0, z = 0) => { const o = new T.Mesh(geo, m); o.position.set(x, y, z); headG.add(o); return o; };
+    hadd(headGeo, M.skin);
+    for (const x of [-0.075, 0.075]) hadd(new T.SphereGeometry(0.03, 8, 6), M.skin, x, -0.005, 0.01).scale.set(0.35, 1, 0.65); // ears
+    const hair = hadd(new T.SphereGeometry(0.08, 14, 8, 0, Math.PI * 2, Math.PI * 0.35, Math.PI * 0.35), M.hair, 0, -0.005, 0.02); hair.scale.set(0.95, 0.9, 1.05); hair.rotation.x = 0.5;
+    // Helmet: a shell longer at the back, its tail dropping, with straps.
+    const helGeo = new T.SphereGeometry(1, 28, 14, 0, Math.PI * 2, 0, Math.PI * 0.56), gp = helGeo.attributes.position;
+    for (let i = 0; i < gp.count; i++) {
+      const x = gp.getX(i), y = gp.getY(i), z = gp.getZ(i);
+      gp.setXYZ(i, x * 0.097, y * 0.09 - (z > 0 ? 0.25 * z * z * (1 - y) : 0) * 0.1, z * (z > 0 ? 0.142 : 0.122));
+    }
+    helGeo.computeVertexNormals();
+    const helmet = hadd(helGeo, M.helmetKit, 0, 0.028, 0.01); helmet.rotation.x = -0.12;
+    for (const x of [-0.072, 0.072]) { // straps, in front of and behind the ear to the chin
+      const chin = V(x * 0.4, -0.1, -0.06);
+      for (const z of [0.035, -0.03]) limb(hadd(unitCyl(0.004, 0.004, 4), M.dark), V(x, 0.03, z), chin);
+    }
     // Wraparound sunglasses: a dark shiny band round the front of the face.
-    const glasses = add(new T.TorusGeometry(0.108, 0.016, 6, 20, Math.PI * 0.8), M.lens); glasses.scale.set(1, 1, 1.12);
-    const visor = add(new T.BoxGeometry(0.17, 0.035, 0.06), M.visor);
+    const glasses = hadd(new T.TorusGeometry(0.1, 0.011, 6, 20, Math.PI * 0.7), M.lens, 0, 0.005, -0.008); glasses.scale.set(0.8, 1, 1.02); glasses.rotation.set(Math.PI / 2, 0, -Math.PI * 0.85);
 
     // Two-bone IK: from a towards b with lengths l1, l2, bending towards `pole`.
     const ik = (a, b, l1, l2, pole, out) => {
@@ -1904,46 +2028,58 @@ void main() {`);
       const side = pole.clone().addScaledVector(dir, -pole.dot(dir)).normalize();
       return out.copy(a).addScaledVector(dir, along).addScaledVector(side, h);
     };
-    const KNEE_POLE = V(0, 0.3, -1).normalize(), ELBOW_POLE = V(0, -0.3, 1).normalize();
-    const hip = V(), shoulder = V(), j = V(), foot = V(), toe = V(), hand = V(), sh = V(), lift = V();
+    const KNEE_POLE = V(0, 0.3, -1).normalize(), FWD = V(0, 0, -1);
+    const hip = V(), j = V(), ank = V(), hand = V(), sh = V(), dir = V(), fup = V(), ball = V(), heel = V(), toe = V(), wrist = V(), tip = V();
 
     function pose(pedal, climb, roll) {
       for (const w of wheels) w.rotation.x -= roll;
-      // Seated hips on the saddle; standing, they rise and come forward over the cranks.
-      const hipC = V(0, 1.0 + 0.13 * climb, 0.28 - 0.2 * climb);
-      const shC = V(0, 1.33 + 0.12 * climb, -0.2 - 0.08 * climb);
-      limb(torso, hipC, shC); torso.scale.x = 1.2; torso.scale.z = 0.85;
-      limb(stripe, hipC, hipC.clone().lerp(shC, 0.18)); stripe.scale.x = 1.21; stripe.scale.z = 0.86;
-      pelvis.position.copy(hipC).add(V(0, 0.02, 0.02));
-      shoulders.position.copy(shC); shoulders.lookAt(shC.clone().sub(hipC).add(shC));
-      const neckTop = shC.clone().add(V(0, 0.09, -0.12));
-      limb(neck, shC, neckTop);
-      head.position.copy(neckTop).add(V(0, 0.08, -0.06));
-      helmet.position.copy(head.position).add(V(0, 0.03, 0.01)); helmet.rotation.x = -0.25;
-      visor.position.copy(head.position).add(V(0, 0.07, -0.15));
-      glasses.position.copy(head.position).add(V(0, 0.01, -0.005)); glasses.rotation.set(Math.PI / 2 - 0.12, 0, Math.PI * 0.1 + Math.PI / 2 * 0); glasses.rotation.z = -Math.PI * 0.9;
+      // Seated hips on the saddle; standing, they rise and come forward over
+      // the cranks. Seated, the hips rock a little with each stroke.
+      const rock = Math.sin(pedal) * 0.006 * (1 - climb);
+      const hipC = V(rock, 1.0 + 0.13 * climb, 0.27 - 0.2 * climb);
+      const shC = V(-rock * 0.5, 1.37 + 0.1 * climb, -0.16 - 0.1 * climb);
+      const spine = shC.clone().sub(hipC), chest = FWD.clone().addScaledVector(V(0, -1, 0), 0.3);
+      orient(torso, hipC, shC, chest);
+      const neckTop = shC.clone().add(V(0, 0.075, -0.075));
+      orient(neck, shC.clone().addScaledVector(spine, -0.04), neckTop, FWD);
+      // The head comes up to look down the road: the neck carries it forward.
+      headG.position.copy(neckTop).add(V(0, 0.075, -0.045)); headG.rotation.x = 0.3; // looking up the road
       [0, 1].forEach(k => {
         const sgn = k ? 1 : -1, a = pedal + (k ? Math.PI : 0);
         // Crank and pedal.
         const pd = V(sgn * 0.09, BB.y + Math.cos(a) * 0.17, BB.z - Math.sin(a) * 0.17);
-        limb(cranks[k], BB.clone().setX(sgn * 0.075), pd);
+        orient(cranks[k], BB.clone().setX(sgn * 0.075), pd.clone().setX(sgn * 0.08), V(1, 0, 0));
         pedals[k].position.copy(pd).setX(sgn * 0.11);
-        // Leg: hip -> knee -> ankle just above the pedal.
-        hip.copy(hipC).setX(sgn * 0.1);
-        foot.copy(pd).setX(sgn * 0.1).add(lift.set(0, 0.07, 0.02));
-        ik(hip, foot, THIGH, SHIN, KNEE_POLE, j);
+        // Foot: the ball over the pedal, the toe dropping as it comes round
+        // the bottom and back up (ankling), flattest pushing over the top.
+        const toeDown = 0.33 - 0.18 * Math.sin(a);
+        dir.set(0, -Math.sin(toeDown), -Math.cos(toeDown)); fup.set(0, Math.cos(toeDown), -Math.sin(toeDown));
+        pedals[k].rotation.x = toeDown;
+        ball.copy(pd).setX(sgn * 0.1).addScaledVector(fup, 0.02);
+        heel.copy(ball).addScaledVector(dir, -0.68 * FOOT); toe.copy(ball).addScaledVector(dir, 0.32 * FOOT);
+        ank.copy(heel).addScaledVector(dir, 0.2 * FOOT).addScaledVector(fup, 0.085);
         const L = legs[k];
-        limb(L.thigh, hip, j); L.knee.position.copy(j);
-        limb(L.shin, j, foot);
-        limb(L.sock, foot.clone().lerp(j, 0.18), foot);
-        L.shoe.position.copy(pd).setX(sgn * 0.1).add(V(0, 0.04, -0.03));
-        L.shoe.rotation.x = 0.15 - Math.sin(a) * 0.25; // ankle follows the stroke a little
-        // Arm: shoulder -> elbow -> hands on the hoods.
-        sh.copy(shC).setX(sgn * 0.19);
-        hand.set(sgn * 0.2, 0.92, -0.5);
-        ik(sh, hand, UPPER, FORE, ELBOW_POLE.clone().setX(sgn * 0.5).normalize(), j);
-        const A = arms[k];
-        limb(A.upper, sh, j); A.elbow.position.copy(j); limb(A.fore, j, hand); A.hand.position.copy(hand);
+        orient(L.shoe, heel, toe, fup); orient(L.sole, heel, toe, fup);
+        L.strap.position.copy(heel).addScaledVector(dir, 0.55 * FOOT).addScaledVector(fup, 0.05); L.strap.rotation.x = toeDown + 0.2;
+        // Leg: hip -> knee -> ankle, the knee a little out over the top tube.
+        hip.copy(hipC).setX(sgn * 0.095 + rock);
+        ik(hip, ank, THIGH, SHIN, KNEE_POLE.clone().setX(sgn * 0.08).normalize(), j);
+        const knee = KNEE_POLE.clone().setX(sgn * 0.08).normalize();
+        orient(L.thigh, hip, j, knee); orient(L.short, hip, j, knee); orient(L.band, hip, j, knee);
+        L.knee.position.copy(j).addScaledVector(knee, 0.018);
+        orient(L.shin, j, ank, knee); orient(L.sock, j, ank, knee);
+        // Arm: shoulder -> elbow -> wrist, hands over the hoods.
+        sh.copy(hipC).addScaledVector(spine, 0.9).add(V(sgn * 0.175, -0.01, 0.0));
+        wrist.set(sgn * 0.2, 0.935, -0.475);
+        const A = arms[k], elbowPole = V(sgn * 0.6, -0.2, 0.8).normalize();
+        ik(sh, wrist, UPPER, FORE, elbowPole, j);
+        const armFwd = V(0, -0.4, -1);
+        orient(A.upper, sh, j, armFwd); orient(A.sleeve, sh, j, armFwd); orient(A.cuff, sh, j, armFwd);
+        orient(A.fore, j, wrist, armFwd);
+        hand.set(sgn * 0.2, 0.9, -0.6);
+        orient(A.hand, wrist, hand, V(0, 1, 0.3));
+        tip.copy(wrist).add(V(-sgn * 0.035, -0.02, -0.06));
+        orient(A.thumb, wrist.clone().add(V(-sgn * 0.02, -0.005, -0.02)), tip, V(0, 1, 0));
       });
     }
     pose(0, 0, 0);

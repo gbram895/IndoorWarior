@@ -237,8 +237,10 @@ Heights are drawn 1.6x steeper than they are, because a real 8% looks flat
 from a chase camera; gradient, speed and the trainer use the real figures.
 
 The rider and bike are built in code. The legs follow the pedals at your
-cadence (two-bone IK from the hip to the pedal), the arms reach the hoods,
-and on a real gradient above 6% the rider gets out of the saddle and rocks
+cadence (two-bone IK from the hip to the ankle), the feet ankle through the
+stroke, the arms reach the hoods, and the body parts are lofted from
+cross-sections (quads, calves, glutes, a rounded back) rather than drawn as
+cylinders. On a real gradient above 6% the rider gets out of the saddle and rocks
 the bike. **Camera** switches between behind, close behind, the roadside and
 free: drag to go round the rider, the mouse wheel or two fingers to zoom
 (from 2.5 m to 450 m away), double-click to put it back behind him;
@@ -295,8 +297,10 @@ browser and free of any key:
 The picture goes through a camera-like grade: highlights roll off instead of
 clipping, a gentle S-curve gives the land depth, and the blacks lift slightly.
 The road shows wear: darker wheel tracks in each lane, dusty cracked edges,
-the odd sealed crack and patched rectangles. The rider wears a printed jersey,
-a vented helmet and wraparound glasses; the bike has deep carbon rims and a
+the odd sealed crack and patched rectangles. The rider wears a printed jersey
+with back pockets, bib shorts, socks, shoes, gloves, a vented helmet with
+straps and wraparound glasses; the bike has deep carbon rims, disc brakes,
+hoods and levers, a two-ring drivetrain with chain and rear mech, and a
 bottle.
 
 **World: Google 3D** (the World button in the 3D view, for a GPX route or
