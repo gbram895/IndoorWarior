@@ -2011,6 +2011,7 @@ void main() {`);
     const turn = (j, angle) => { if (j) j.b.quaternion.copy(q1.setFromAxisAngle(j.axis, angle)).multiply(j.q0); };
 
     // ---- Rider. Lengths in metres for a 1.80 m rider.
+    const riderFrom = root.children.length; // the built rider's parts follow
     const THIGH = 0.45, SHIN = 0.44, UPPER = 0.29, FORE = 0.27, FOOT = 0.28;
     // Cross-sections, measured off photos of riders: quads in front of the
     // thigh, the calf high at the back of the shin, a narrow ankle.
@@ -2076,6 +2077,117 @@ void main() {`);
     // Wraparound sunglasses: a dark shiny band round the front of the face.
     const glasses = hadd(new T.TorusGeometry(0.1, 0.011, 6, 20, Math.PI * 0.7), M.lens, 0, 0.005, -0.008); glasses.scale.set(0.8, 1, 1.02); glasses.rotation.set(Math.PI / 2, 0, -Math.PI * 0.85);
 
+    // The real body (vendor/rider.js: MakeHuman's CC0 human, skinned to 19
+    // bones, kit painted on). When it is there it replaces the built one and
+    // keeps only the built helmet and glasses, which ride on its head.
+    const real = window.IW_RIDER ? realBody(window.IW_RIDER) : null;
+    function realBody(D) {
+      const dec = (str, A) => { const b = atob(str), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return new A(u.buffer); };
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.BufferAttribute(Float32Array.from(dec(D.pos, Int16Array), x => x / 10000), 3));
+      g.setAttribute('normal', new T.BufferAttribute(Float32Array.from(dec(D.nrm, Int8Array), x => x / 127), 3));
+      g.setAttribute('uv', new T.BufferAttribute(Float32Array.from(dec(D.uv, Uint16Array), x => x / 65535), 2));
+      g.setAttribute('skinIndex', new T.Uint16BufferAttribute(Uint16Array.from(dec(D.si, Uint8Array)), 4));
+      g.setAttribute('skinWeight', new T.BufferAttribute(Float32Array.from(dec(D.sw, Uint8Array), x => x / 255), 4));
+      g.setIndex(new T.BufferAttribute(dec(D.idx, Uint16Array), 1));
+      const tex = new T.TextureLoader().load(D.tex); tex.anisotropy = 4;
+      const mesh = new T.SkinnedMesh(g, new T.MeshStandardMaterial({ map: tex, roughness: 0.66 }));
+      mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; // skinned: its box is the rest pose's
+      const B = {}, frame = (q, ax, ref) => { // a bone's turn: +y along it, +z its reference side
+        by.copy(ax).normalize(); bz.copy(ref).addScaledVector(by, -ref.dot(by)).normalize(); bx.crossVectors(by, bz);
+        return q.setFromRotationMatrix(basis.makeBasis(bx, by, bz));
+      };
+      const bones = D.bones.map(d => {
+        const b = new T.Bone(), h = V(...d.h), t = V(...d.t), r = V(...d.r);
+        b.position.copy(h); frame(b.quaternion, t.clone().sub(h), r);
+        B[d.name] = { b, h, t, r, len: t.distanceTo(h), q0: b.quaternion.clone() };
+        mesh.add(b); return b;
+      });
+      root.add(mesh); mesh.updateMatrixWorld(true);
+      mesh.bind(new T.Skeleton(bones));
+      const set = (n, head, ax, ref) => { const o = B[n]; o.b.position.copy(head); frame(o.b.quaternion, ax, ref); };
+      // A point carried rigidly by bone n from its rest place.
+      const carry = (n, p, out = V()) => { const o = B[n]; return out.copy(p).sub(o.h).applyQuaternion(tmpQ.copy(o.b.quaternion).multiply(o.q0.clone().invert())).add(o.b.position); };
+      const restDir = n => B[n].t.clone().sub(B[n].h);
+      const H0 = B.thighL.h.clone().add(B.thighR.h).multiplyScalar(0.5); // between the hip joints
+      const sh0 = [B.upperL.h, B.upperR.h], thumb0 = { L: B.fore2L.r.clone(), R: B.fore2R.r.clone() };
+      const ball = D.ball.map(b => V(b[0], D.sole, b[2])); // under the balls of the feet
+      const ARM = B.upperL.len + B.fore1L.len + B.fore2L.len;
+      const skull = V(0, D.skull.top - 0.105, D.skull.c[2]); // where the built head's centre was
+      const rot = (axis, a) => new T.Quaternion().setFromAxisAngle(axis, a), XAX = V(1, 0, 0);
+      const CURL = [[0.25, 0.45, 0.35], [0.8, 1.0, 0.6]], CURL_SIGN = 1; // thumb; fingers (radians per joint)
+      return {
+        mesh, B,
+        // hip: between the hip joints; pd/toe: pedal points and foot angles;
+        // wrist/hand: where the wrists go and which way the hands point.
+        pose(hip, tilt, pd, toe, wrist, hand) {
+          const qp = rot(XAX, -tilt);
+          const at = p => p.clone().sub(H0).applyQuaternion(qp).add(hip);
+          set('hips', at(B.hips.h), restDir('hips').applyQuaternion(qp), FWD);
+          // Torso: lean it until the hands reach the hoods with the elbows a
+          // little bent, the back rounded over the bars.
+          const s0 = at(B.hips.t), bend = 0.2;
+          let lo = 0.1, hi = 1.4, a = 0.7;
+          const place = a => {
+            const d1 = V(0, Math.sin(a + bend), -Math.cos(a + bend)), s1 = s0.clone().addScaledVector(d1, B.spineLow.len);
+            const d2 = V(0, Math.sin(a - bend * 0.6), -Math.cos(a - bend * 0.6));
+            set('spineLow', s0, d1, FWD); set('chest', s1, d2, FWD);
+            return s1;
+          };
+          for (let i = 0; i < 14; i++) {
+            a = (lo + hi) / 2; place(a);
+            const sh = carry('chest', sh0[1]);
+            if (sh.distanceTo(wrist[1]) > ARM * 0.84) hi = a; else lo = a; // elbows bent
+          }
+          const s1 = place(a), n0 = s1.clone().add(V(0, Math.sin(a - bend * 0.6), -Math.cos(a - bend * 0.6)).multiplyScalar(B.chest.len));
+          // Neck forward and up; the head lifted to look up the road.
+          const nd = V(0, 0.62, -0.78), n1 = n0.clone().addScaledVector(nd, B.neck.len);
+          set('neck', n0, nd, FWD);
+          set('head', n1, V(0, 0.98, -0.2), V(0, 0.04, -1));
+          [0, 1].forEach(k => {
+            const sd = k ? 'R' : 'L', sgn = k ? 1 : -1;
+            // Foot: the ball over the pedal, turned by the ankling angle.
+            const qf = rot(XAX, -toe[k]);
+            const ank = B['foot' + sd].h.clone().sub(ball[k]).applyQuaternion(qf).add(pd[k]);
+            const hj = at(B['thigh' + sd].h), pole = V(sgn * 0.1, 0.3, -1).normalize();
+            const knee = ik(hj, ank, B.thighL.len, B.shinL.len, pole, V());
+            set('thigh' + sd, hj, knee.clone().sub(hj), pole);
+            set('shin' + sd, knee, ank.clone().sub(knee), pole);
+            set('foot' + sd, ank, restDir('foot' + sd).applyQuaternion(qf), V(0, 1, 0).applyQuaternion(qf));
+            // Arm: shoulder -> elbow -> wrist; the forearm turns the hand thumb-up.
+            const sh = carry('chest', sh0[k]), w = wrist[k];
+            const elbow = ik(sh, w, B.upperL.len, B.fore1L.len + B.fore2L.len, V(sgn * 0.35, -0.3, 0.9).normalize(), V());
+            const ua = elbow.clone().sub(sh), inside = w.clone().sub(sh);
+            set('upper' + sd, sh, ua, inside);
+            const fa = w.clone().sub(elbow), U = B['upper' + sd];
+            const still = thumb0[sd].clone().applyQuaternion(tmpQ.copy(U.b.quaternion).multiply(U.q0.clone().invert())); // no twist
+            const thumbUp = V(-sgn * 0.35, 1, -0.1);
+            set('fore1' + sd, elbow, fa, still.clone().add(thumbUp.clone().normalize()));
+            set('fore2' + sd, elbow.clone().addScaledVector(fa, B.fore1L.len / (B.fore1L.len + B.fore2L.len)), fa, still.clone().multiplyScalar(0.3).add(thumbUp.clone().normalize()));
+            set('hand' + sd, w, hand[k], thumbUp);
+            // Fingers curl round the hood, the thumb round its inside.
+            const H = B['hand' + sd], dq = H.b.quaternion.clone().multiply(H.q0.clone().invert());
+            const across = H.r.clone().applyQuaternion(dq).normalize();
+            for (let f = 1; f <= 5; f++) {
+              let p = carry('hand' + sd, B[`fing${f}1${sd}`].h), ang = 0;
+              for (let g = 1; g <= 3; g++) {
+                const o = B[`fing${f}${g}${sd}`]; ang += CURL[f === 1 ? 0 : 1][g - 1];
+                const q = rot(across, ang * sgn * CURL_SIGN).multiply(dq), d = o.t.clone().sub(o.h).applyQuaternion(q);
+                set(`fing${f}${g}${sd}`, p, d, o.r.clone().applyQuaternion(q));
+                p = p.clone().add(d);
+              }
+            }
+          });
+          return carry('head', skull);
+        },
+      };
+    }
+    if (real) {
+      const keep = new Set([headG, real.mesh, ...legs.flatMap(L => [L.shoe, L.sole, L.strap])]); // its feet are shaped to fit inside the built shoes
+      for (const o of root.children.slice(riderFrom)) if (!keep.has(o)) o.visible = false;
+      headG.children.forEach((o, i) => { o.visible = i === 4 || i === headG.children.length - 1; }); // only the helmet and glasses stay
+    }
+
     // Two-bone IK: from a towards b with lengths l1, l2, bending towards `pole`.
     const ik = (a, b, l1, l2, pole, out) => {
       const d = tmpV.subVectors(b, a), dist = Math.min(l1 + l2 - 1e-4, Math.max(Math.abs(l1 - l2) + 1e-4, d.length()));
@@ -2104,6 +2216,7 @@ void main() {`);
       orient(neck, shC.clone().addScaledVector(spine, -0.04), neckTop, FWD);
       // The head comes up to look down the road: the neck carries it forward.
       headG.position.copy(neckTop).add(V(0, 0.075, -0.045)); headG.rotation.x = 0.3; // looking up the road
+      const rpd = [], rtoe = [], rwr = [], rhand = [];
       [0, 1].forEach(k => {
         const sgn = k ? 1 : -1, a = pedal + (k ? Math.PI : 0);
         // Crank and pedal.
@@ -2116,9 +2229,10 @@ void main() {`);
         const toeDown = 0.33 - 0.18 * Math.sin(a);
         dir.set(0, -Math.sin(toeDown), -Math.cos(toeDown)); fup.set(0, Math.cos(toeDown), -Math.sin(toeDown));
         pedals[k].rotation.x = toeDown;
+        rpd[k] = pd.clone().setX(sgn * 0.1).add(V(0, 0.012, 0)); rtoe[k] = toeDown; // shoe sole on the pedal
         if (own?.bb) turn(own.pedals[k], pedal + Math.PI - own.a0 - toeDown); // the pedal stays under the shoe
         ball.copy(pd).setX(sgn * 0.1).addScaledVector(fup, 0.02);
-        heel.copy(ball).addScaledVector(dir, -0.68 * FOOT); toe.copy(ball).addScaledVector(dir, 0.32 * FOOT);
+        heel.copy(ball).addScaledVector(dir, real ? -0.215 : -0.68 * FOOT); toe.copy(ball).addScaledVector(dir, real ? 0.085 : 0.32 * FOOT); // the real body's feet are longer
         ank.copy(heel).addScaledVector(dir, 0.2 * FOOT).addScaledVector(fup, 0.085);
         const L = legs[k];
         orient(L.shoe, heel, toe, fup); orient(L.sole, heel, toe, fup);
@@ -2140,9 +2254,17 @@ void main() {`);
         orient(A.fore, j, wrist, armFwd);
         if (own) hand.set(wrist.x, wrist.y - 0.03, wrist.z - 0.11); else hand.set(sgn * 0.2, 0.9, -0.6);
         orient(A.hand, wrist, hand, V(0, 1, 0.3));
+        if (real) { // the palm on top of the hood, the fingers round its front
+          const hd = own ? own.hood : V(0.2, 0.9, -0.53);
+          rwr[k] = V(sgn * Math.abs(hd.x) * 0.95, hd.y + 0.03, hd.z + 0.075); rhand[k] = V(-sgn * 0.04, -0.42, -1);
+        }
         tip.copy(wrist).add(V(-sgn * 0.035, -0.02, -0.06));
         orient(A.thumb, wrist.clone().add(V(-sgn * 0.02, -0.005, -0.02)), tip, V(0, 1, 0));
       });
+      if (real) { // the real body, from the same pedals and hoods
+        const c = real.pose(hipC, 0.95 - 0.35 * climb, rpd, rtoe, rwr, rhand);
+        headG.position.copy(c); headG.quaternion.copy(real.B.head.b.quaternion).multiply(real.B.head.q0.clone().invert());
+      }
     }
     pose(0, 0, 0);
     return { root, pose, useBike, get bikeOn() { return !!own; } };

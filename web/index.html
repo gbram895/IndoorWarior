@@ -3781,6 +3781,7 @@ const view3d = (() => {
       if (!window.THREE) await loadScript('vendor/three.min.js');
       if (!window.IW_PHOTOS) await loadScript('vendor/photos.js').catch(() => {}); // without it the land is painted plain
       if (!window.IW_PLACES) await loadScript('places.js').catch(() => {}); // without it every route is made-up land
+      if (!window.IW_RIDER) await loadScript('vendor/rider.js').catch(() => {}); // without it the rider is the built one
       if (!window.World3D) await loadScript('world3d.js');
       return World3D.mount($('route3d'), state);
     })();

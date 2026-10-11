@@ -236,12 +236,19 @@ grass, and the sun casts shadows near the rider.
 Heights are drawn 1.6x steeper than they are, because a real 8% looks flat
 from a chase camera; gradient, speed and the trainer use the real figures.
 
-The rider and bike are built in code. The legs follow the pedals at your
-cadence (two-bone IK from the hip to the ankle), the feet ankle through the
-stroke, the arms reach the hoods, and the body parts are lofted from
-cross-sections (quads, calves, glutes, a rounded back) rather than drawn as
-cylinders. On a real gradient above 6% the rider gets out of the saddle and rocks
-the bike.
+The rider is a real human body: [MakeHuman](http://www.makehumancommunity.org)'s
+base mesh, shaped as a lean, muscular man of 1.80 m, with its skeleton,
+weights and skin (all CC0 / public domain). `tools/build_rider.py` merges its
+skeleton into the 49 bones the view poses (the fingers kept, so the hands
+close round the hoods), paints a cycling kit onto the skin (jersey with back
+pockets, bib shorts, socks, mitts) and smooths the feet to fit inside the
+shoes, and writes `web/vendor/rider.js`, a script, so the page still works
+opened from disk. Each frame his legs follow the pedals at your cadence
+(two-bone IK from the hip to the ankle, the feet ankling through the stroke),
+his back leans until his hands reach the hoods with the elbows bent, and he
+looks up the road. On a real gradient above 6% he gets out of the saddle and
+rocks the bike. Without `rider.js` the older rider built in code is drawn.
+The bike is built in code.
 
 **Bike** swaps the built-in bike for a 3D model of your own: pick a `.glb`
 file (or drop one on the 3D view to replace it) and the button then switches
@@ -406,6 +413,9 @@ The photographs are in `web/vendor/photos.js` (loaded with the 3D view; without
 it the land is painted plain): grass, soil and road grit from the
 [Babylon.js assets](https://github.com/BabylonJS/Assets) (CC BY 4.0), and the
 sky from Poly Haven's "Immenstadter Horn" (CC0).
+
+The rider in `web/vendor/rider.js` is made from MakeHuman's assets (CC0;
+[makehumancommunity/makehuman](https://github.com/makehumancommunity/makehuman)).
 
 ## Di2 gears (experimental)
 
