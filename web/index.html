@@ -78,6 +78,23 @@
   .sensor .label { color: var(--muted); font-size: 13px; }
   .sensor-state { font-size: 15px; }
   .sensor-state.ok { color: var(--ok); } .sensor-state.bad { color: var(--bad); }
+  .stat .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .sumtitle { font-weight: 600; margin-bottom: 10px; }
+  .sumgrid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+  .sumlabel { color: var(--muted); font-size: 13px; margin: 14px 0 6px; }
+  .verdicts { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 6px; }
+  .verdicts li { position: relative; padding-left: 18px; }
+  .verdicts li::before { content: ''; position: absolute; left: 2px; top: 0.5em; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .verdicts li.ok::before { background: var(--ok); } .verdicts li.warn::before { background: var(--warn); }
+  .zonebar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: #20242d; gap: 1px; }
+  .zonelegend, .bests { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .zonelegend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+  .bests b { color: var(--text); font-weight: 600; }
+  .steps { margin-top: 12px; }
+  .steps table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .steps th { text-align: left; color: var(--muted); font-weight: 400; font-size: 13px; }
+  .steps td, .steps th { padding: 4px 6px 4px 0; border-bottom: 1px solid #262b35; }
+  .steps td.ok { color: var(--ok); } .steps td.warn { color: var(--warn); }
   .erg-head { display: flex; justify-content: space-between; align-items: center; }
   .switch { position: relative; width: 56px; height: 32px; flex: none; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -322,6 +339,7 @@
       <button id="disconnectBtn" class="secondary hidden">Disconnect</button>
     </div>
     <div id="status">Close Zwift or any other app using the trainer, pedal to wake it, then connect.</div>
+    <div id="lowBattery" class="hidden" style="color:var(--warn);margin-top:6px"></div>
     <div class="sensors">
       <div class="sensor">
         <div><div class="label">Heart rate strap</div><div class="sensor-state" id="hrState">Not connected</div></div>
@@ -351,6 +369,7 @@
       <div class="stat"><div class="label">Heart rate</div><div class="value" id="hr">--</div></div>
       <div class="stat"><div class="label">Power meter</div><div class="value" id="pmWatts">--</div></div>
       <div class="stat"><div class="label">Trainer power</div><div class="value" id="trainerWatts">--</div></div>
+      <div class="stat hidden" id="balanceStat"><div class="label" id="balanceLabel">Balance left / right</div><div class="value" id="balanceTile">--</div></div>
       <div class="stat hidden" id="gearStat"><div class="label">Gear (Di2)</div><div class="value" id="gearTile">--</div></div>
     </div>
     <div id="fresh">Waiting for the first reading…</div>
@@ -785,7 +804,8 @@ const SIM = (() => {
   ]);
 
   const hrData = characteristic(u16(0x2a37), { notify: true });
-  const hr = device('sim-hr', 'SIM HR strap', [{ uuid: u16(0x180d), chars: [hrData] }]);
+  const hr = device('sim-hr', 'SIM HR strap', [{ uuid: u16(0x180d), chars: [hrData] },
+    { uuid: u16(0x180f), chars: [characteristic(u16(0x2a19), { read: true }, dv([12]))] }]);
 
   // ---- Di2, as an RD-RX827 broadcasts it: rear position in byte 5 and the
   // number of rear gears in byte 6 of message type 0x00 on 18ef/2ac1.
@@ -879,7 +899,10 @@ const SIM = (() => {
     const tick = Math.round(world.t / DT);
     if (tick % 2 === 0) {
       bikeData.emit(dv([0x40, 0x00, ...le16(Math.round(world.speed * 100)), ...le16(Math.round(world.trainerReads))]));
-      pmData.emit(dv([0x20, 0x00, ...le16(Math.round(pedals)), ...le16(Math.floor(world.revs)), ...le16(world.crankTime)]));
+      // A dual-sided meter: the left pedal's share in half percent, a touch
+      // right-leaning, more so as the watts climb.
+      const left = 49.5 - Math.max(0, world.power - 150) / 60 + (Math.random() - 0.5);
+      pmData.emit(dv([0x23, 0x00, ...le16(Math.round(pedals)), Math.round(left * 2), ...le16(Math.floor(world.revs)), ...le16(world.crankTime)]));
     }
     if (tick % 4 === 0) hrData.emit(dv([0x00, Math.round(world.hr)]));
     // Di2 cycles its three state messages, as the real one does.
@@ -944,8 +967,13 @@ const BLE = (() => {
     const r = reader(view);
     const flags = r.u16(), power = r.s16();
     if (flags === null || power === null) return null;
-    const out = { power, crankRevs: null, crankTime: null };
-    if (flags & 0x0001 && !r.skip(1)) return null; // pedal power balance
+    const out = { power, crankRevs: null, crankTime: null, balance: null };
+    // Pedal power balance, in half percent. Flag bit 1 says it is the LEFT
+    // pedal's share; without it the meter does not say which side it is.
+    if (flags & 0x0001) {
+      const b = r.u8(); if (b === null) return null;
+      if (b > 0 && b < 200) out.balance = { pct: b / 2, left: !!(flags & 0x0002) };
+    }
     if (flags & 0x0004 && !r.skip(2)) return null; // accumulated torque
     if (flags & 0x0010 && !r.skip(6)) return null; // wheel revolution data
     if (flags & 0x0020) {                           // crank revolution data
@@ -1177,8 +1205,42 @@ function noteTrainerMsg(now) {
 }
 const ext = {
   hr: { device: null, manual: false, value: null, at: 0, noContactAt: 0, msgAt: 0, waitFront: 0, waitBack: 0 },
-  pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null },
+  pm: { device: null, manual: false, power: null, at: 0, cadence: null, cadenceAt: 0, crank: null, balance: null, balanceAt: 0, battery: null },
 };
+ext.hr.battery = null;
+
+// ---- Battery levels: the standard Battery service (0x180F/0x2A19) that most
+// straps, power meters and Di2 offer; mains-powered trainers usually do not.
+const LOW_BATTERY = 15;
+const batteries = { trainer: null, hr: null, pm: null, di2: null };
+async function watchBattery(server, kind) {
+  batteries[kind] = null;
+  try {
+    const ch = await (await server.getPrimaryService(0x180f)).getCharacteristic(0x2a19);
+    const set = v => { batteries[kind] = v.byteLength ? Math.min(100, v.getUint8(0)) : null; showBatteries(); };
+    if (ch.properties.notify) {
+      ch.addEventListener('characteristicvaluechanged', e => set(e.target.value));
+      await ch.startNotifications().catch(() => {});
+    }
+    set(await ch.readValue());
+  } catch { showBatteries(); /* no battery service: nothing to show */ }
+}
+// "48 / 52" with the left pedal first; a meter that does not name the side
+// gets its share and the rest, in the order it sent them.
+const balanceText = pct => `${Math.round(pct)} / ${100 - Math.round(pct)}`;
+const trainerConnectedText = () => `Connected to ${device.name || 'trainer'}${batteryText('trainer')}.`;
+const batteryText = kind => (batteries[kind] == null ? '' : ` · battery ${batteries[kind]}%`);
+function showBatteries() {
+  // Only a line that says "connected" is rewritten, never an error or a reconnect.
+  for (const kind of ['hr', 'pm']) if (ext[kind].device && $(`${kind}State`).classList.contains('ok')) sensorState(kind, sensorStateText(kind), 'ok');
+  if (device?.gatt?.connected && /^Connected to /.test($('status').textContent)) setStatus(trainerConnectedText());
+  if (di2.device && /^Connected to /.test($('di2State').textContent)) $('di2State').textContent = `Connected to ${di2.device.name || 'Di2'}${batteryText('di2')}.`;
+  const low = Object.entries(batteries).filter(([, v]) => v != null && v <= LOW_BATTERY);
+  const names = { trainer: 'trainer', hr: 'heart rate strap', pm: 'power meter', di2: 'Di2' };
+  const el = $('lowBattery');
+  el.textContent = low.length ? `Low battery: ${low.map(([k, v]) => `${names[k]} ${v}%`).join(', ')}. Charge or replace it before a long ride.` : '';
+  el.classList.toggle('hidden', !low.length);
+}
 
 function trainerPower(watts) {
   state.live.power = watts;
@@ -1225,6 +1287,13 @@ function onSensorValue(kind, view) {
   ext.pm.at = now;
   $('pmWatts').textContent = `${m.power} W`;
   recordPower(m.power, 'pm');
+  if (m.balance) {
+    ext.pm.balance = m.balance;
+    ext.pm.balanceAt = now;
+    $('balanceTile').textContent = balanceText(m.balance.pct);
+    $('balanceLabel').textContent = m.balance.left ? 'Balance left / right' : 'Balance (side not given)';
+    $('balanceStat').classList.remove('hidden');
+  }
   if (m.crankRevs !== null) {
     const rpm = ext.pm.crank(m.crankRevs, m.crankTime);
     if (rpm !== null) {
@@ -1244,14 +1313,17 @@ async function subscribeSensor(kind) {
   s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
   ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
   await ch.startNotifications();
-  sensorState(kind, s.device.name || 'Connected', 'ok');
+  sensorState(kind, sensorStateText(kind), 'ok');
+  watchBattery(server, kind);
 }
 
 function forgetSensor(kind) {
   const s = ext[kind];
   s.device = null;
   s.at = 0;
-  if (kind === 'pm') { s.cadenceAt = 0; $('pmWatts').textContent = '--'; $('cadence').textContent = '--'; }
+  batteries[kind] = null;
+  showBatteries();
+  if (kind === 'pm') { s.cadenceAt = 0; s.balanceAt = 0; $('pmWatts').textContent = '--'; $('cadence').textContent = '--'; $('balanceStat').classList.add('hidden'); }
   else $('hr').textContent = '--';
   renderSensors();
 }
@@ -1285,7 +1357,7 @@ async function toggleSensor(kind) {
   }
 }
 
-function sensorStateText(kind) { return ext[kind].device?.name || 'Connected'; }
+function sensorStateText(kind) { return (ext[kind].device?.name || 'Connected') + batteryText(kind); }
 
 // Straps and power meters drop out now and then; try to get them back.
 async function onSensorDisconnected(kind, which) {
@@ -1421,8 +1493,9 @@ async function setupTrainer() {
   if (ride.status === 'riding') applyStep();
   $('connectBtn').classList.add('hidden');
   $('disconnectBtn').classList.remove('hidden');
-  setStatus(`Connected to ${device.name || 'trainer'}.`);
+  setStatus(trainerConnectedText());
   renderReport();
+  watchBattery(server, 'trainer');
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
 }
 
@@ -1450,6 +1523,8 @@ async function onDisconnected() {
   }
   ergStatus('Trainer disconnected. ERG is off.');
   setStatus(trainerManual ? 'Disconnected.' : 'Trainer connection lost. Pedal to wake it and press Connect trainer.', !trainerManual);
+  batteries.trainer = null;
+  showBatteries();
   $('connectBtn').classList.remove('hidden');
   $('disconnectBtn').classList.add('hidden');
   wakeLock?.release().catch(() => {});
@@ -2634,7 +2709,13 @@ async function startRide() {
     status: 'riding', step: 0, stepElapsed: 0, workoutDone: !workout,
     samples: [], events: [{ t: Math.floor(now), type: 'start' }], name: workout ? workout.name : 'Free ride', strava: null,
     rpe: null, rpeNotes: '', rpeSent: null, hrGaps: { contact: 0, silent: 0, silentHidden: 0 },
+    ftp: workout?.ftp || Number(store.get('ftp', 200)) || 200, lrLeft: null, stepCount: workout ? workout.steps.length : 0,
   });
+  // FTP for the summary's zones and load: the workout's, else Gradient's, else the builder's.
+  if (!workout && gradient.token) {
+    const mine = ride.events;
+    gradientApi('/api/settings/thresholds').then(t => { if (t?.ftpWatts && ride.events === mine) ride.ftp = t.ftpWatts; }).catch(() => {});
+  }
   Object.assign(ext.hr, { waitFront: 0, waitBack: 0 });
   Object.assign(trainerWait, { front: 0, back: 0 });
   renderHrGaps();
@@ -2703,7 +2784,10 @@ function recordSample() {
     ...routeSample(), // position, elevation, distance and road speed on a route
     tg: ERG.on ? ERG.target : null, // ERG target, for the live chart
     st: workout && !ride.workoutDone ? ride.step : null, // workout step, saved as a lap
+    tw: currentStep() ? stepWatts(currentStep()) : null, // the step's target, ERG or not, for the summary
+    lr: isFresh(ext.pm.balanceAt) ? ext.pm.balance.pct : null, // pedal balance (left share when lrLeft)
   });
+  if (isFresh(ext.pm.balanceAt)) ride.lrLeft = ext.pm.balance.left;
   // Why heart rate is missing, so a gap in the chart can be explained.
   const s = ride.samples[ride.samples.length - 1];
   if (ext.hr.device && s.hr == null) {
@@ -2730,7 +2814,7 @@ function renderHrGaps() {
 // A copy of the ride survives a closed tab or a crash until it is saved or discarded.
 function saveUnsaved() {
   if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null,
-    rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null });
+    rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null, ftp: ride.ftp || null, lrLeft: ride.lrLeft ?? null, stepCount: ride.stepCount || 0 });
 }
 
 // ---- Mini window: a small always-on-top window (Document Picture-in-Picture,
@@ -2815,6 +2899,176 @@ function summarize(samples) {
   return { avg, max: Math.max(0, ...watts), kj, seconds: samples.length };
 }
 
+// ---- After the ride: the numbers, where the time went, and a plain verdict
+// on how it went, all worked out from the 1 Hz samples.
+const ZONES = [[0.56, 'Recovery'], [0.76, 'Endurance'], [0.91, 'Tempo'], [1.06, 'Threshold'], [1.21, 'VO2max'], [1.5, 'Anaerobic'], [Infinity, 'Sprint']];
+const ZONE_COLORS = ['#7f8aa3', '#3b82f6', '#3ecf8e', '#f5b84b', '#ff7a1a', '#ff5d5d', '#d946ef'];
+const BESTS = [[5, '5 s'], [60, '1 min'], [300, '5 min'], [1200, '20 min'], [3600, '60 min']];
+
+function bestAverage(w, n) {
+  if (w.length < n) return null;
+  let sum = 0, best = 0;
+  for (let i = 0; i < w.length; i++) {
+    sum += w[i];
+    if (i >= n) sum -= w[i - n];
+    if (i >= n - 1) best = Math.max(best, sum);
+  }
+  return Math.round(best / n);
+}
+
+// Normalized power: the fourth-power mean of a 30 s rolling average.
+function normalizedPower(w) {
+  if (w.length < 30) return w.length ? w.reduce((a, b) => a + b, 0) / w.length : 0;
+  let sum = 0, acc = 0, n = 0;
+  for (let i = 0; i < w.length; i++) {
+    sum += w[i];
+    if (i >= 30) sum -= w[i - 30];
+    if (i >= 29) { acc += (sum / 30) ** 4; n++; }
+  }
+  return (acc / n) ** 0.25;
+}
+
+const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+
+function analyseRide(r) {
+  const S = r.samples, ftp = r.ftp || 200, secs = S.length;
+  const w = S.map(s => s.p || 0);
+  const sum = summarize(S);
+  const np = Math.round(normalizedPower(w));
+  const IF = np / ftp;
+  const tss = Math.round((secs * np * IF) / (ftp * 3600) * 100);
+
+  let dist = 0;
+  for (const s of S) dist = s.d != null ? s.d : dist + (s.s ?? 0) / 3.6;
+  // Climbing from the route's heights, ignoring wobbles under a metre.
+  let climb = 0, ref = null;
+  for (const s of S) {
+    if (s.alt == null) continue;
+    if (ref == null || s.alt < ref) ref = s.alt;
+    else if (s.alt - ref >= 1) { climb += s.alt - ref; ref = s.alt; }
+  }
+  const hrs = S.filter(s => s.hr).map(s => s.hr);
+  const cads = S.filter(s => s.c > 0).map(s => s.c);
+
+  const zones = ZONES.map(() => 0);
+  for (const p of w) zones[ZONES.findIndex(([top]) => p / ftp < top)]++;
+
+  const bests = BESTS.map(([n, label]) => ({ label, watts: bestAverage(w, n) })).filter(b => b.watts != null);
+
+  // Pedal balance while pedalling, and split by how hard.
+  const lr = S.filter(s => s.lr != null && s.p > 0);
+  const lrOf = list => (list.length >= 60 ? mean(list.map(s => s.lr)) : null);
+  const balance = lr.length >= 30 ? {
+    all: mean(lr.map(s => s.lr)), left: !!r.lrLeft,
+    easy: lrOf(lr.filter(s => s.p < 0.76 * ftp)), hard: lrOf(lr.filter(s => s.p >= 0.91 * ftp)),
+  } : null;
+
+  // Workout steps: each run of samples on one step with a target.
+  const steps = [];
+  S.forEach((s, i) => {
+    if (s.st == null || s.tw == null) return;
+    const last = steps[steps.length - 1];
+    if (last && last.st === s.st && last.to === i - 1) { last.to = i; last.t.push(s.tw); }
+    else steps.push({ st: s.st, from: i, to: i, t: [s.tw] });
+  });
+  for (const st of steps) {
+    const len = st.to - st.from + 1;
+    // Skip the first few seconds: the trainer takes a moment to get there.
+    const skip = Math.min(10, Math.floor(len / 4));
+    st.sec = len;
+    st.target = Math.round(mean(st.t));
+    st.actual = Math.round(mean(w.slice(st.from + skip, st.to + 1)));
+    st.hard = st.target >= 0.76 * ftp;
+    st.off = st.target ? (st.actual - st.target) / st.target : 0;
+  }
+
+  // Heart rate drift against power, first half to second, on a steady ride.
+  let drift = null;
+  const ridden = S.filter(s => s.p > 0);
+  if (ridden.length >= 1200 && np <= 1.05 * Math.max(1, sum.avg) && hrs.length >= 0.8 * secs) {
+    const half = Math.floor(S.length / 2);
+    const eff = part => { const ok = part.filter(s => s.hr && s.p > 0); return mean(ok.map(s => s.p)) / mean(ok.map(s => s.hr)); };
+    const a = eff(S.slice(0, half)), b = eff(S.slice(half));
+    if (a && b) drift = ((a - b) / a) * 100;
+  }
+
+  return { ftp, secs, sum, np, IF, tss, dist, climb, hrAvg: mean(hrs), hrMax: hrs.length ? Math.max(...hrs) : null,
+    cad: mean(cads), zones, bests, balance, steps, drift, stepCount: r.stepCount || 0 };
+}
+
+// The verdict: a few plain sentences, each marked good, so-so or worth a look.
+function judgeRide(a) {
+  const out = [];
+  const say = (cls, text) => out.push({ cls, text });
+  const kind = a.IF < 0.65 ? 'a recovery ride' : a.IF < 0.8 ? 'an endurance ride' : a.IF < 0.9 ? 'a tempo ride' : a.IF < 1.0 ? 'a threshold ride' : 'a very hard ride';
+  if (a.secs >= 600) say('', `Load ${a.tss} at an intensity of ${a.IF.toFixed(2)}: ${kind} for an FTP of ${a.ftp} W.`);
+
+  const hard = a.steps.filter(s => s.hard && s.sec >= 20);
+  if (hard.length) {
+    const short = hard.filter(s => s.off < -0.05), over = hard.filter(s => s.off > 0.08);
+    const hit = hard.length - short.length - over.length;
+    say(short.length ? 'warn' : 'ok', hit === hard.length
+      ? `You held all ${hard.length} work interval${hard.length > 1 ? 's' : ''} within 5% of target.`
+      : `You held ${hit} of ${hard.length} work intervals within 5% of target.`);
+    for (const s of short.slice(0, 3)) say('warn', `Step ${s.st + 1} (${fmtTime(s.sec)} at ${s.target} W) averaged ${s.actual} W, ${Math.round(-s.off * 100)}% under.` +
+      (s === short[0] && short.length > 1 && short[short.length - 1].st > hard[Math.floor(hard.length / 2)].st ? ' The misses come late, which points to fatigue rather than a target set too high.' : ''));
+    if (over.length) say('', `${over.length} interval${over.length > 1 ? 's were' : ' was'} more than 8% over target. Fine now and then; on a regular basis it means the targets are too easy or the FTP is too low.`);
+  }
+  const lastStep = a.steps.length ? a.steps[a.steps.length - 1].st : -1;
+  if (a.stepCount && lastStep >= 0 && lastStep < a.stepCount - 1) say('warn', `You stopped at step ${lastStep + 1} of ${a.stepCount}.`);
+
+  if (a.drift != null) {
+    const d = a.drift;
+    say(d < 5 ? 'ok' : 'warn', d < 5
+      ? `Heart rate stayed with your power (${d.toFixed(1)}% drift from the first half to the second): good aerobic endurance at this effort.`
+      : `Heart rate drifted ${d.toFixed(1)}% against your power from the first half to the second. Over 5% at this effort usually means heat, too little fuel or drink, or endurance still to build.`);
+  }
+
+  if (a.balance) {
+    const b = a.balance, l = Math.round(b.all);
+    const side = b.left ? (l < 50 ? 'right' : 'left') : null;
+    const off = Math.abs(l - 50);
+    const pair = v => `${Math.round(v)}/${100 - Math.round(v)}`;
+    let text = b.left ? `Left/right balance ${pair(b.all)}` : `Pedal balance ${pair(b.all)} (your power meter does not say which side is which)`;
+    text += off <= 2 ? ': even.' : off <= 4 ? `: a little ${side ? `${side}-leaning` : 'uneven'}, which is normal.` : `: ${side ? `${side}-leaning` : 'uneven'} by ${off * 2} points. Worth watching if it stays like this.`;
+    if (b.easy != null && b.hard != null && Math.abs(b.easy - b.hard) >= 1.5) text += ` It was ${pair(b.easy)} riding easy and ${pair(b.hard)} going hard.`;
+    say(off > 4 ? 'warn' : '', text);
+  }
+  return out;
+}
+
+function summaryHtml(r, title) {
+  const a = analyseRide(r);
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const tile = (label, value, sub = '') => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+  const tiles = [
+    tile('Time', fmtTime(a.secs)),
+    a.dist >= 50 ? tile('Distance', `${fmtKm(a.dist)} km`, a.climb >= 5 ? `${Math.round(a.climb)} m climbed` : '') : '',
+    tile('Average power', `${a.sum.avg} W`, `max ${a.sum.max} W`),
+    tile('Normalized power', `${a.np} W`, `intensity ${a.IF.toFixed(2)}`),
+    tile('Load', a.tss, `${a.sum.kj} kJ`),
+    a.hrAvg ? tile('Heart rate', `${Math.round(a.hrAvg)} bpm`, `max ${a.hrMax} bpm`) : '',
+    a.cad ? tile('Cadence', `${Math.round(a.cad)} rpm`, 'while pedalling') : '',
+    a.balance ? tile(a.balance.left ? 'Balance L / R' : 'Balance', balanceText(a.balance.all), a.balance.left ? '' : 'side not given') : '',
+  ].join('');
+  const verdicts = judgeRide(a).map(v => `<li class="${v.cls}">${esc(v.text)}</li>`).join('');
+  const total = a.zones.reduce((x, y) => x + y, 0) || 1;
+  const bar = a.zones.map((n, i) => (n ? `<span style="flex:${n};background:${ZONE_COLORS[i]}" title="${ZONES[i][1]} ${fmtTime(n)}"></span>` : '')).join('');
+  const legend = a.zones.map((n, i) => (n / total >= 0.02 ? `<span><i style="background:${ZONE_COLORS[i]}"></i>${ZONES[i][1]} ${fmtTime(n)}</span>` : '')).join('');
+  const bests = a.bests.map(b => `<span><b>${b.watts} W</b> ${b.label}</span>`).join('');
+  const rows = a.steps.filter(s => s.sec >= 20).map(s => {
+    const cls = s.hard ? (s.off < -0.05 ? 'warn' : s.off > 0.08 ? '' : 'ok') : '';
+    return `<tr><td>${s.st + 1}</td><td>${fmtTime(s.sec)}</td><td>${s.target} W</td><td class="${cls}">${s.actual} W</td><td class="${cls}">${s.off >= 0 ? '+' : ''}${Math.round(s.off * 100)}%</td></tr>`;
+  }).join('');
+  return `<div class="sumtitle">${esc(title)}</div>
+    <div class="grid sumgrid">${tiles}</div>
+    <ul class="verdicts">${verdicts}</ul>
+    <div class="label sumlabel">Time in power zones</div>
+    <div class="zonebar">${bar}</div><div class="zonelegend">${legend}</div>
+    ${bests ? `<div class="label sumlabel">Best efforts</div><div class="bests">${bests}</div>` : ''}
+    ${rows ? `<details class="steps"><summary>Every step against its target</summary><table><thead><tr><th>Step</th><th>Length</th><th>Target</th><th>You</th><th></th></tr></thead><tbody>${rows}</tbody></table></details>` : ''}`;
+}
+
 function renderRide() {
   const active = ride.status === 'riding' || ride.status === 'paused';
   drawLive();
@@ -2857,10 +3111,14 @@ function renderRide() {
   const pending = active ? null : pendingRide();
   $('savedBox').classList.toggle('hidden', !pending || !pending.samples.length);
   if (pending && pending.samples.length) {
-    const sum = summarize(pending.samples);
     const when = new Date(pending.samples[0].t * 1000).toLocaleString();
     const label = ride.status === 'finished' ? 'Ride finished' : pending.strava && pending.strava.activityId ? 'Last ride' : 'Unsaved ride';
-    $('rideSummary').textContent = `${label} (${when}): ${fmtTime(sum.seconds)}, average ${sum.avg} W, max ${sum.max} W, ${sum.kj} kJ.`;
+    // Worked out again only when the ride changes, not on every tick.
+    const key = `${label}|${pending.samples.length}|${pending.ftp}`;
+    if ($('rideSummary').dataset.key !== key) {
+      $('rideSummary').dataset.key = key;
+      $('rideSummary').innerHTML = summaryHtml(pending, `${label} · ${when}`);
+    }
     const onStrava = pending.strava && pending.strava.activityId;
     renderRpe(pending);
     $('stravaBtn').classList.toggle('hidden', !!onStrava);
@@ -2934,7 +3192,9 @@ function buildFit(r) {
 
   define(1, 21, [[253, T.uint32], [0, T.enum], [1, T.enum]]); // event: timer start/stop
   define(2, 20, [[253, T.uint32], [7, T.uint16], [4, T.uint8], [6, T.uint16], [3, T.uint8], [5, T.uint32],
-    [0, T.sint32], [1, T.sint32], [2, T.uint16]]); // record
+    [0, T.sint32], [1, T.sint32], [2, T.uint16], [30, T.uint8]]); // record
+  // left_right_balance: a percentage, with 0x80 set when it is the RIGHT pedal's.
+  const lrb = s => (s.lr == null ? null : r.lrLeft ? (100 - Math.round(s.lr)) | 0x80 : Math.round(s.lr));
   let e = 0;
   samples.forEach((s, i) => {
     while (e < r.events.length && r.events[e].t <= s.t) {
@@ -2942,7 +3202,7 @@ function buildFit(r) {
       e++;
     }
     write(2, [ft(s.t), s.p, s.c, s.s != null ? (s.s / 3.6) * 1000 : null, s.hr, distAt[i] * 100,
-      semi(s.lat), semi(s.lon), s.alt != null ? (s.alt + 500) * 5 : null]);
+      semi(s.lat), semi(s.lon), s.alt != null ? (s.alt + 500) * 5 : null, lrb(s)]);
   });
   for (; e < r.events.length; e++) write(1, [ft(Math.max(r.events[e].t, end)), 0, r.events[e].type === 'start' ? 0 : 4]);
 
@@ -3266,7 +3526,7 @@ async function showRouteMap(r, res) {
 }
 
 function saveFit() {
-  const r = ride.status === 'finished' ? { name: ride.name, samples: ride.samples, events: ride.events } : store.get('unsavedRide', null);
+  const r = ride.status === 'finished' ? ride : store.get('unsavedRide', null);
   if (!r || !r.samples.length) return;
   const d = new Date(r.samples[0].t * 1000);
   const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
@@ -4079,12 +4339,19 @@ function di2Gear(view) {
 function di2Notify(id, view) {
   if (!di2.device) return;
   if (id === 'shimano:18ef/shimano:2ac1') di2Gear(view);
+  if (id === '180f/2a19') di2Battery(view);
   const value = hex(view);
   // Messages on one channel are told apart by their first byte.
   const key = `${id}#${value.slice(0, 2)}`;
   if (di2.last[key] === value) return;
   di2.last[key] = value;
   di2Log(`notify ${id}: ${value}`);
+}
+
+function di2Battery(view) {
+  if (!view.byteLength) return;
+  batteries.di2 = Math.min(100, view.getUint8(0));
+  showBatteries();
 }
 
 async function di2Attach() {
@@ -4107,7 +4374,11 @@ async function di2Attach() {
         .filter(([, v]) => v).map(([k]) => k).join(',');
       di2Log(`char ${id} [${props}]`);
       try {
-        if (c.properties.read) di2Log(`read ${id}: ${hex(await c.readValue())}`);
+        if (c.properties.read) {
+          const v = await c.readValue();
+          di2Log(`read ${id}: ${hex(v)}`);
+          if (id === '180f/2a19') di2Battery(v);
+        }
         if (c.properties.notify || c.properties.indicate) {
           c.addEventListener('characteristicvaluechanged', e => di2Notify(id, e.target.value));
           await c.startNotifications();
@@ -4117,7 +4388,7 @@ async function di2Attach() {
     }
   }
   $('di2State').textContent = subscribed
-    ? `Connected to ${dev.name || 'Di2'}.`
+    ? `Connected to ${dev.name || 'Di2'}${batteryText('di2')}.`
     : 'Connected, but it exposes nothing to listen to. Copy the log anyway; it shows what is there.';
 }
 
@@ -4132,6 +4403,8 @@ function di2Disconnected() {
   }
   di2.device = null;
   di2.gear = null;
+  batteries.di2 = null;
+  showBatteries();
   $('gearStat').classList.add('hidden');
   $('gearRear').textContent = '--';
   $('gearOf').textContent = '';

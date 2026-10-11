@@ -157,6 +157,16 @@ In the last 5 seconds of each workout step a big countdown shows the next
 target, with a short beep at 3, 2 and 1 and a long one as the step changes
 (turn the beeps off under the workout).
 
+A finished ride gets a summary: time, distance and climbing on a route,
+average, normalized and max power, load (TSS from the ride's FTP: the
+workout's, else Gradient's, else the builder's), heart rate, cadence and pedal
+balance, the time in each power zone, best 5 s to 60 min efforts, and every
+workout step against its target. Above that, a short verdict: what kind of
+ride it was, how many work intervals (steps at 76% of FTP or more) you held
+within 5% of target and which fell short, whether you stopped early, heart
+rate drift against power from the first half to the second on a steady ride
+of 20 minutes or more, and how even your pedalling was, easy and hard.
+
 Under a finished ride, **How hard did it feel?** takes an RPE from 1 to 10
 and optional notes. Once the ride is on Strava they are saved on its Gradient
 workout (`POST /api/health/strava/ride-feedback`), where the next day's plan
@@ -174,6 +184,16 @@ crank cadence are shown and recorded instead of the trainer's; the strap's
 heart rate likewise wins over any the trainer relays. If either drops out the
 page tries to reconnect three times, and falls back to the trainer's values
 meanwhile.
+
+A dual-sided power meter that sends pedal power balance (the flag in the
+Cycling Power Measurement) shows a **Balance left / right** tile; it is
+recorded every second and saved in the .fit, so Garmin Connect shows it too.
+A meter that does not say which pedal its share belongs to is labelled "side
+not given". Bluetooth power meters do not report standing or seated.
+
+Battery levels (the standard Battery service 0x180F) show next to the
+trainer, strap, power meter and Di2 once connected, and a warning appears
+under the trainer button when any is at 15% or less.
 
 **Power match** (on by default, a tick box in the ERG panel while a power
 meter is connected): ERG holds the target on the power meter rather than the
