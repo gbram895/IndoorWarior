@@ -253,6 +253,18 @@ Under the Route buttons, three tabs (kept in this browser, IndexedDB
   ahead (green) or behind (amber) you are, in time at the same distance.
   A ride whose route was removed from Your routes is ridden on its own track.
 
+### Build a route
+
+**Build a route** opens a map: click a start and each point to ride through,
+and the route between them follows real roads, routed by
+[BRouter](https://brouter.de) (OpenStreetMap, with heights) with its
+`fastbike` profile for **Road** or `gravel` for **Gravel** (falling back to
+`trekking`), or **Straight lines**. Drag a point to move it, right-click to
+remove it; **Undo point**, **Back to the start** and **Clear** do what they
+say. Distance and climbing update as you go. **Save .gpx** downloads it;
+**Save and ride** loads it and keeps it in Your routes. If BRouter cannot be
+reached, that leg is drawn straight and the page says why.
+
 ### Ride anywhere
 
 **Ride anywhere** in the Route panel opens a map (OpenStreetMap, with a place
