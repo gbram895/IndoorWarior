@@ -520,7 +520,7 @@
           <div class="rv-box rv-right">
             <div class="rv-big"><b id="rvHr">--</b><i>bpm</i></div>
             <div class="rv-row"><span><b id="rvHrAvg">--</b><i>avg</i></span><span><b id="rvHrMax">--</b><i>max</i></span></div>
-            <div class="rv-row"><span><b id="rvGrade">--</b><i>gradient</i></span><span><b id="rvDist">--</b><i>km</i></span><span><b id="rvUp">--</b><i>m up</i></span></div>
+            <div class="rv-row"><span><b id="rvGrade">--</b><i id="rvGradeL">gradient</i></span><span><b id="rvDist">--</b><i>km</i></span><span><b id="rvUp">--</b><i>m up</i></span></div>
           </div>
           <div class="rv-box rv-climb hidden" id="rvClimb"><div class="t" id="rvClimbT"></div><div class="s" id="rvClimbS"></div><canvas id="rvClimbC"></canvas></div>
           <div class="rv-ctrl">
@@ -1641,11 +1641,12 @@ const ERG = (() => {
     indication: onIndication,
     get on() { return on; },
     get target() { return target; },
-    // Indoor Bike Simulation with a gradient (%), no wind, Crr 0.0040, Cw 0.51.
-    async setGrade(pct) {
+    // Indoor Bike Simulation with a gradient (%), no wind, rolling resistance
+    // (Crr, 0.0040 on tarmac, more on gravel and dirt), Cw 0.51.
+    async setGrade(pct, crr = 0.004) {
       await ensureControl();
       const g = Math.round(pct * 100) & 0xffff;
-      const r = await send([OP.setSimulation, 0, 0, g & 0xff, g >> 8, 40, 51]);
+      const r = await send([OP.setSimulation, 0, 0, g & 0xff, g >> 8, Math.max(0, Math.min(255, Math.round(crr * 10000))), 51]);
       if (r !== 1) throw new Error(`trainer refused the gradient (${FTMS_RESULT[r] || r})`);
     },
     get connected() { return !!cp && !$('ergToggle').disabled; },
@@ -3688,8 +3689,16 @@ function gradeBetween(d1, d2) {
 
 // Speed from power, with inertia: rider + bike mass, rolling resistance,
 // air drag and gravity on the current gradient.
-function advanceSpeed(watts, gradePct, dt) {
-  const m = routeCfg.mass, g = 9.81, crr = 0.004, cda = 0.32, rho = 1.2, eta = 0.97;
+// What the road is made of where you are (the 3D view reads it off the map):
+// gravel and dirt roll slower, here and on the trainer.
+const SURFACES = [{ name: 'Tarmac', crr: 0.004 }, { name: 'Gravel', crr: 0.009 }, { name: 'Dirt', crr: 0.014 }];
+const surfaceAt = d => {
+  const s = route?.surface;
+  return s && s.length ? s[Math.max(0, Math.min(s.length - 1, Math.round(d / ROUTE_STEP)))] || 0 : 0;
+};
+
+function advanceSpeed(watts, gradePct, dt, crr = 0.004) {
+  const m = routeCfg.mass, g = 9.81, cda = 0.32, rho = 1.2, eta = 0.97;
   const theta = Math.atan(gradePct / 100);
   let v = routeState.speed;
   const steps = Math.max(1, Math.ceil(dt / 0.05));
@@ -3711,7 +3720,7 @@ function currentPower() {
 function routeTick(dt) {
   if (!route || routeState.finished) return;
   const grade = gradeBetween(routeState.dist - 25, routeState.dist + 25);
-  const v = advanceSpeed(currentPower(), grade, dt);
+  const v = advanceSpeed(currentPower(), grade, dt, SURFACES[surfaceAt(routeState.dist)].crr);
   if (route.loop) {
     routeState.dist += v * dt;
     if (routeState.dist >= route.total) {
@@ -3736,11 +3745,12 @@ function routeTick(dt) {
 function sendGrade(gradePct, force = false) {
   if (!ERG.connected || ERG.on || routeState.gradeBusy) return;
   const g = Math.max(-10, Math.min(20, gradePct * routeCfg.difficulty + (vgear.n - 12) * 0.5));
+  const crr = SURFACES[surfaceAt(routeState.dist)].crr;
   const now = Date.now();
-  if (!force && routeState.lastGrade !== null && Math.abs(g - routeState.lastGrade) < 0.2 && now - routeState.lastGradeAt < 5000) return;
+  if (!force && routeState.lastGrade !== null && Math.abs(g - routeState.lastGrade) < 0.2 && crr === routeState.lastCrr && now - routeState.lastGradeAt < 5000) return;
   routeState.gradeBusy = true;
-  ERG.setGrade(g)
-    .then(() => { routeState.lastGrade = g; routeState.lastGradeAt = now; })
+  ERG.setGrade(g, crr)
+    .then(() => { routeState.lastGrade = g; routeState.lastCrr = crr; routeState.lastGradeAt = now; })
     .catch(e => routeMsg(`Gradient not sent to the trainer: ${e.message}`, 'bad'))
     .finally(() => { routeState.gradeBusy = false; });
 }
@@ -4839,7 +4849,7 @@ const rideView = (() => {
     put('rv3s', num(x.p3)); put('rvAvg', num(x.avg)); put('rvLapP', num(x.lap)); put('rvLapL', x.lapLabel); put('rvWkg', x.wkg);
     put('rvCad', num(x.cad)); put('rvSpd', num(x.speed, 1)); put('rvGear', x.gear || '--');
     put('rvHr', num(x.hr)); put('rvHrAvg', num(x.hrAvg)); put('rvHrMax', num(x.hrMax));
-    put('rvGrade', x.grade == null ? '--' : fmtGrade(x.grade)); put('rvDist', x.dist == null ? '--' : fmtKm(x.dist)); put('rvUp', num(x.up));
+    put('rvGrade', x.grade == null ? '--' : fmtGrade(x.grade)); put('rvGradeL', route && surfaceAt(routeState.dist) ? `gradient · ${SURFACES[surfaceAt(routeState.dist)].name.toLowerCase()}` : 'gradient'); put('rvDist', x.dist == null ? '--' : fmtKm(x.dist)); put('rvUp', num(x.up));
     put('rvTime', fmtTime(x.time)); put('rvLapT', `${x.lapLabel} ${fmtTime(x.lapTime)}`);
     put('rvStep', x.step ? `${x.step.w == null ? 'Free' : `${x.step.w} W`} · ${fmtTime(x.step.left)} left` : workout ? 'Workout done' : '');
     put('rvPause', ride.status === 'paused' ? 'Resume' : 'Pause');

@@ -34,6 +34,66 @@
   // How much of the made-up hills shows at a distance from the road (0 on the verge).
   const hillWeight = o => smooth(6, 70, Math.abs(o));
 
+  // ---- What the road under each route point is made of, from the map's ways:
+  // 0 tarmac, 1 gravel (compacted, fine gravel, a good track), 2 dirt (earth,
+  // grass, sand, a rough track or a path). Each point takes the nearest way
+  // within 12 m that runs the same way as the route (so a crossing road does
+  // not count); stretches under 50 m take the surface either side of them.
+  const GRAVEL = /^(gravel|fine_gravel|compacted|unpaved|pebblestone|shells|woodchips)$/;
+  const DIRT = /^(dirt|earth|ground|grass|grass_paver|mud|sand|soil|rock)$/;
+  const PAVED = /^(asphalt|paved|concrete|concrete:plates|concrete:lanes|chipseal|paving_stones|sett|cobblestone|unhewn_cobblestone|metal|wood|bricks)$/;
+  function surfaceKind(t) {
+    const sf = (t.surface || '').split(';')[0];
+    if (PAVED.test(sf)) return 0;
+    if (GRAVEL.test(sf)) return 1;
+    if (DIRT.test(sf)) return 2;
+    if (t.highway === 'track') return t.tracktype === 'grade1' ? 0 : /grade[45]/.test(t.tracktype || '') ? 2 : 1;
+    if (/^(path|bridleway)$/.test(t.highway)) return 2;
+    return 0;
+  }
+  function surfacesOf(res, osm) {
+    const n = res.length, out = new Uint8Array(n);
+    if (!osm?.roads?.length || n < 2) return out;
+    const lat0 = res[0].lat, lon0 = res[0].lon, k = Math.cos((lat0 * Math.PI) / 180);
+    const xy = (la, lo) => [(lo - lon0) * 111320 * k, (la - lat0) * 110540];
+    // Every way's pieces in 50 m cells.
+    const CELL = 50, cells = new Map(), key = (i, j) => i * 100003 + j;
+    for (const r of osm.roads) {
+      const kind = surfaceKind(r.tags || {}), pts = r.line.map(p => xy(p[0], p[1]));
+      for (let q = 0; q + 1 < pts.length; q++) {
+        const a = pts[q], b = pts[q + 1], seg = { a, b, kind };
+        const i0 = Math.floor((Math.min(a[0], b[0]) - 12) / CELL), i1 = Math.floor((Math.max(a[0], b[0]) + 12) / CELL);
+        const j0 = Math.floor((Math.min(a[1], b[1]) - 12) / CELL), j1 = Math.floor((Math.max(a[1], b[1]) + 12) / CELL);
+        if ((i1 - i0) * (j1 - j0) > 400) continue; // a way far longer than its points say: skip it
+        for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) { const c = key(i, j); (cells.get(c) || cells.set(c, []).get(c)).push(seg); }
+      }
+    }
+    const P = res.map(p => xy(p.lat, p.lon)), found = new Int8Array(n).fill(-1);
+    for (let i = 0; i < n; i++) {
+      const p = P[i], a = P[Math.max(0, i - 1)], b = P[Math.min(n - 1, i + 1)];
+      const dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, dx = (b[0] - a[0]) / dl, dy = (b[1] - a[1]) / dl;
+      let best = 12;
+      for (const seg of cells.get(key(Math.floor(p[0] / CELL), Math.floor(p[1] / CELL))) || []) {
+        const sx = seg.b[0] - seg.a[0], sy = seg.b[1] - seg.a[1], sl = Math.hypot(sx, sy) || 1;
+        if (Math.abs((sx * dx + sy * dy) / sl) < 0.8) continue; // more than ~37° off: a road crossing or beside
+        const t = Math.max(0, Math.min(1, ((p[0] - seg.a[0]) * sx + (p[1] - seg.a[1]) * sy) / (sl * sl)));
+        const d = Math.hypot(p[0] - seg.a[0] - sx * t, p[1] - seg.a[1] - sy * t);
+        if (d < best) { best = d; found[i] = seg.kind; }
+      }
+    }
+    // Points with no way near keep the surface of the nearest point that has one.
+    let last = -1;
+    for (let i = 0; i < n; i++) if (found[i] >= 0) last = found[i]; else if (last >= 0) found[i] = last;
+    for (let i = n - 1, next = 0; i >= 0; i--) if (found[i] >= 0) { next = found[i]; out[i] = next; } else out[i] = next;
+    // No flicker: a run shorter than 5 points (50 m) takes the run before it.
+    for (let i = 0; i < n;) {
+      let j = i; while (j < n && out[j] === out[i]) j++;
+      if (j - i < 5 && (i > 0 || j < n)) out.fill(i > 0 ? out[i - 1] : out[j], i, j);
+      i = j;
+    }
+    return out;
+  }
+
   // ---- The route as 3D points: x east, z south, y up, in metres from the start.
   // A free ride's road that grew passes the last geometry as `prev` and how
   // many of its points stay (`keep`): those keep exactly what they had, so the
@@ -101,7 +161,7 @@
     // Back and forth between metres and latitude/longitude (the exact inverse of raw above).
     const ll = (x, z) => [lat0 - z / 110540, lon0 + x / (111320 * k)];
     const xzOf = (lat, lon) => [(lon - lon0) * 111320 * k, -(lat - lat0) * 110540];
-    return { n, xz, y, side, base, tilt, bend, hash, dup, loop: !!route.loop, ll, xzOf, ele0 };
+    return { n, xz, y, side, base, tilt, bend, hash, dup, loop: !!route.loop, ll, xzOf, ele0, surf: route.surface?.length === n ? route.surface : null };
   }
   // Points before `keep` take their old values; a number goes on from where
   // its old value ended and blends into its new one over `ease` points.
@@ -1692,7 +1752,7 @@ void main() {`);
   // greens) and the texture only adds the grain.
   function surface(kind, renderer) {
     const N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
-    const cx = cv.getContext('2d'), rand = rng(kind === 'road' ? 11 : 23);
+    const cx = cv.getContext('2d'), rand = rng(kind === 'road' ? 11 : kind === 'gravel' ? 37 : 23);
     const img = cx.createImageData(N, N), d = img.data;
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
       const k = (y * N + x) * 4;
@@ -1700,6 +1760,7 @@ void main() {`);
       const u = x / N, v = y / N, blot = (noise(u * 8, v * 8) + noise((u * 8 + 4) % 8, v * 8)) / 2;
       let l = kind === 'road' ? 0.8 + 0.12 * blot + (rand() - 0.5) * 0.28 : 0.72 + 0.22 * blot + (rand() - 0.5) * 0.3;
       if (kind === 'road' && rand() < 0.015) l += 0.25; // light stones in the tar
+      if (kind === 'gravel') { l = 0.7 + 0.18 * blot + (rand() - 0.5) * 0.45; if (rand() < 0.06) l += 0.3; else if (rand() < 0.05) l -= 0.3; } // loose stones
       const c = Math.max(0, Math.min(255, l * 255));
       d[k] = d[k + 1] = d[k + 2] = c; d[k + 3] = 255;
     }
@@ -2763,10 +2824,12 @@ void main() {`);
       built = route; tiles = []; grassAt = null; grassMade = new Map(); grass.count = 0;
       world = new T.Group();
       if (!route) return;
-      const g = geometryOf(route);
-      world.userData.g = g;
       // Real land for a GPX route (the built-in course is the made-up world).
       const rec = (realWant || route.roam) && !route.scenery ? placesFor(route) : null; // a free ride is always the real place
+      // Gravel and dirt from the map; the ride's road speed reads it too.
+      route.surface = rec?.osm ? surfacesOf(route.res, rec.osm) : null;
+      const g = geometryOf(route);
+      world.userData.g = g;
       builtV = rec ? rec.v : null; note = noteOf(rec); noteRec = rec;
       if (rec?.near) { useTerrain(g, rec.near); REAL = realOf(route, g, rec); }
       hazeFor();
@@ -2781,7 +2844,13 @@ void main() {`);
       // Side roads (a free ride): tarmac and dirt, drawn over the land.
       const lane = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x34373c : 0x50545b, map: tarmac || null, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
       const dirt = new T.MeshLambertMaterial({ color: 0x8b7b5f, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
-      world.userData.mats = { asphalt, paint, land, lane, dirt };
+      // The route itself where it is gravel or dirt: lighter, narrower, no lines.
+      const loose = surface('gravel', renderer), soil = photo('dirt', renderer);
+      soil?.repeat.set(0.5, 0.5);
+      const gravel = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x8a8170 : 0xb9ad94, map: loose });
+      const track = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x5e4c38 : 0x8d7454, map: soil || loose });
+      const mid = new T.MeshLambertMaterial({ color: 0x5c7440, map: surface('grass', renderer), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      world.userData.mats = { asphalt, paint, land, lane, dirt, gravel, track, mid };
       world.userData.seed = Math.round(route.total) + route.res.length;
       scatter = []; pieces = []; job = null; chunks = []; tileOf = new Map();
       const sc = sceneryOf(route);
@@ -2823,10 +2892,20 @@ void main() {`);
       const piece = { s, e, objs, extra: [] };
       const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; add(m); };
       const fresh = i => !(g.dup[i] && g.dup[i - 1]); // road ridden before is drawn once
-      strip(-ROAD_HALF, ROAD_HALF, 0.02, M.asphalt, fresh);
-      strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, M.paint, fresh);
-      strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, M.paint, fresh);
-      strip(-0.07, 0.07, 0.04, M.paint, i => i % 2 === 0 && fresh(i)); // dashed centre line
+      // What the road is made of (surfacesOf): tarmac with its lines, a
+      // narrower gravel road, or a dirt track with grass up the middle.
+      const kind = i => (g.surf ? g.surf[i] : 0), on = k => i => fresh(i) && (kind(i) === k || kind(i - 1) === k);
+      const tar = on(0);
+      strip(-ROAD_HALF, ROAD_HALF, 0.02, M.asphalt, tar);
+      strip(-ROAD_HALF + 0.25, -ROAD_HALF + 0.4, 0.04, M.paint, tar);
+      strip(ROAD_HALF - 0.4, ROAD_HALF - 0.25, 0.04, M.paint, tar);
+      strip(-0.07, 0.07, 0.04, M.paint, i => i % 2 === 0 && tar(i)); // dashed centre line
+      if (g.surf) {
+        let has1 = false, has2 = false;
+        for (let i = s; i <= e; i++) { has1 = has1 || g.surf[i] === 1; has2 = has2 || g.surf[i] === 2; }
+        if (has1) strip(-2.2, 2.2, 0.025, M.gravel, on(1));
+        if (has2) { strip(-1.6, 1.6, 0.025, M.track, on(2)); strip(-0.3, 0.3, 0.04, M.mid, on(2)); }
+      }
       const strip0 = nearLand(g, s, e, M.land);
       add(strip0); pieces.push(strip0);
       const avoid = (x, z, i) => sc.clearings.some(([a, b]) => i * STEP >= a && i * STEP <= b);
@@ -2866,6 +2945,7 @@ void main() {`);
       // The road ridden so far stays as it is; after a U-turn, up to where he turned.
       const turned = route.turnedAt != null, keep = Math.max(1, Math.min(old.n, turned ? route.turnedAt : old.n));
       route.turnedAt = null; route.changedFrom = Infinity; builtVer = route.ver;
+      route.surface = surfacesOf(route.res, rec.osm);
       const g = geometryOf(route, old, keep);
       world.userData.g = g;
       if (rec.near) useTerrain(g, rec.near, old, keep);

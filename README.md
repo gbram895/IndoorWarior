@@ -214,6 +214,15 @@ Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
 while ERG is on, ERG wins. Rides on a route are saved with position and
 elevation as a virtual ride, so Strava shows the map.
 
+Gravel and dirt come from the map: the roads under the route (OpenStreetMap
+`surface`, `tracktype`, tracks and paths, within 25 m and running the same way
+as the route) mark each 10 m of it as tarmac, gravel or dirt, ignoring
+stretches under 50 m. In the 3D view gravel is a narrower stony road without
+lines and dirt a two-track with grass up the middle; the ride view says
+"gradient · gravel". They also roll slower: rolling resistance 0.004 on
+tarmac, 0.009 on gravel and 0.014 on dirt, in the road speed and in the Crr
+sent to the trainer. This needs the real world (World: real) and its map.
+
 ### Ride anywhere
 
 **Ride anywhere** in the Route panel opens a map (OpenStreetMap, with a place

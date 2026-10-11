@@ -218,11 +218,11 @@
 
   // ---- OpenStreetMap. One Overpass query for everything along the route.
   // Points every 250 m or so make the line it searches round.
-  function line(pts) {
+  function line(pts, gap = 250) {
     const out = [];
     let last = null;
     for (const p of pts) {
-      if (last && Math.hypot((p[0] - last[0]) * 110540, (p[1] - last[1]) * M_PER_DEG * Math.cos((p[0] * Math.PI) / 180)) < 250) continue;
+      if (last && Math.hypot((p[0] - last[0]) * 110540, (p[1] - last[1]) * M_PER_DEG * Math.cos((p[0] * Math.PI) / 180)) < gap) continue;
       out.push(p); last = p;
     }
     if (out[out.length - 1] !== pts[pts.length - 1]) out.push(pts[pts.length - 1]);
@@ -230,6 +230,9 @@
   }
   function query(pts) {
     const L = line(pts), [lat0, lon0] = pts[0];
+    // The road under the route, for gravel and dirt: a finer line, since a
+    // bend strays far from a 250 m chord. (pts are every 30 m or so.)
+    const under = `(around:25,${line(pts, 60)})`;
     const near = r => `(around:${r},${L})`;
     return `[out:json][timeout:120][maxsize:268435456];
 (
@@ -245,6 +248,7 @@
   way["landuse"~"^(residential|vineyard|orchard|meadow|farmland)$"]${near(800)};
   way["natural"~"^(bare_rock|scree|glacier|grassland)$"]${near(800)};
   way["building"]${near(250)};
+  way["highway"]${under};
 );
 out geom qt;
 node["place"~"^(city|town|village|hamlet|suburb)$"]["name"]${near(2000)};
