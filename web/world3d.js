@@ -2157,6 +2157,24 @@ void main() {`);
     };
   }
 
+  // Google's map script, once, with the key. A key Google refuses shows up
+  // as gm_authFailure, not as an error on the script.
+  let googleLoad = null;
+  function loadGoogle(key) {
+    if (window.google?.maps?.importLibrary) return Promise.resolve();
+    return googleLoad || (googleLoad = new Promise((res, rej) => {
+      window.__iwGoogle = res;
+      window.gm_authFailure = () => { // can come after the script has loaded
+        const m = 'Google refused the key. Check that the Maps JavaScript API is enabled, billing is on, and the key allows this site.';
+        googleLoad = null; rej(new Error(m)); window.__iwGoogleFail?.(m);
+      };
+      const sc = document.createElement('script');
+      sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=beta&loading=async&callback=__iwGoogle`;
+      sc.onerror = () => { googleLoad = null; rej(new Error('Google Maps could not be reached.')); };
+      document.head.append(sc);
+    }));
+  }
+
   function mount(container, getState) {
     let renderer;
     try { renderer = new T.WebGLRenderer({ antialias: true }); }
@@ -2217,7 +2235,7 @@ void main() {`);
     // to put it back behind him.
     const ORBIT0 = { yaw: 0, pitch: 0.32, dist: 9 }, orbit = { ...ORBIT0 }, touches = new Map();
     let pinch = 0;
-    const canvas = renderer.domElement;
+    function bindOrbit(canvas) {
     canvas.addEventListener('pointerdown', e => {
       if (view !== 'free') return;
       touches.set(e.pointerId, [e.clientX, e.clientY]); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing';
@@ -2245,6 +2263,68 @@ void main() {`);
       orbit.dist = Math.max(2.5, Math.min(450, orbit.dist * Math.exp(e.deltaY * 0.0015)));
     }, { passive: false });
     canvas.addEventListener('dblclick', () => { if (view === 'free') Object.assign(orbit, ORBIT0); });
+    }
+    bindOrbit(renderer.domElement);
+
+    // ---- World: Google 3D. Google's photoreal world is drawn by Google's own
+    // map element (its tiles can't be taken into three.js from Europe), under
+    // a see-through canvas where only the rider is drawn. Every frame the
+    // map's camera is set to the one the rider view would use, so the two
+    // line up: ours looks at the same point from the same place.
+    let gl3 = null, glFail = '';
+    function googleOn(key) {
+      const box = document.createElement('div');
+      box.style.cssText = 'position:absolute;inset:0;background:#9aa7b4';
+      const r = new T.WebGLRenderer({ antialias: true, alpha: true });
+      r.setPixelRatio(renderer.getPixelRatio()); r.setClearColor(0x000000, 0);
+      r.shadowMap.enabled = true; r.shadowMap.type = T.PCFSoftShadowMap;
+      r.domElement.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+      container.prepend(box, r.domElement);
+      bindOrbit(r.domElement);
+      const sc = new T.Scene();
+      const sunG = sun.clone(); // its own shadow and target
+      sc.add(hemi.clone(), sunG, sunG.target);
+      // His shadow on Google's ground: a sheet that is clear except for it.
+      const catcher = new T.Mesh(new T.PlaneGeometry(14, 14), new T.ShadowMaterial({ opacity: 0.32 }));
+      catcher.rotation.x = -Math.PI / 2; catcher.receiveShadow = true; sc.add(catcher);
+      sc.add(bike.root);
+      renderer.domElement.style.visibility = 'hidden';
+      const L = { box, r, sc, sun: sunG, catcher, map: null };
+      loadGoogle(key).then(async () => {
+        const { Map3DElement } = await google.maps.importLibrary('maps3d');
+        if (gl3 !== L) return;
+        L.map = new Map3DElement({ mode: 'SATELLITE', defaultUIHidden: true, fov: camera.fov, center: { lat: 0, lng: 0, altitude: 0 }, range: 10, tilt: 70, heading: 0 });
+        L.map.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+        L.map.addEventListener('gmp-error', () => googleFail('Google 3D reported an error. Check the key allows this site and the Maps JavaScript API is on.'));
+        box.append(L.map);
+      }).catch(e => googleFail(e.message));
+      return L;
+    }
+    function googleOff() {
+      if (!gl3) return;
+      const L = gl3; gl3 = null;
+      scene.add(bike.root);
+      L.box.remove(); L.r.domElement.remove(); L.r.dispose(); L.catcher.geometry.dispose();
+      renderer.domElement.style.visibility = '';
+    }
+    function googleFail(m) { glFail = m; googleOff(); }
+    window.__iwGoogleFail = googleFail;
+    // Where Google's camera goes: the same as ours, as a point looked at
+    // (latitude, longitude, height above the sea), how far back, how far
+    // tipped up from looking straight down, and which way.
+    function googleCamera(L, g, pos) {
+      const msl = (x, z, y) => { const h = g.dem ? g.dem(x, z) : NaN; return Number.isFinite(h) ? h : g.ele0 + y / LIFT; };
+      const ground = msl(pos.x, pos.z, pos.y) + googleLift;
+      const d = camera.position.clone().sub(camLook), range = Math.max(0.5, d.length());
+      const [lat, lng] = g.ll(camLook.x, camLook.z);
+      const m = L.map;
+      m.center = { lat, lng, altitude: ground + (camLook.y - pos.y) };
+      m.range = range;
+      m.tilt = (Math.acos(Math.max(-1, Math.min(1, d.y / range))) * 180) / Math.PI;
+      m.heading = ((Math.atan2(-d.x, d.z) * 180) / Math.PI + 360) % 360; // looking along -d: east -d.x, north +d.z (z is south)
+      if (m.fov !== camera.fov) m.fov = camera.fov;
+    }
+    let googleLift = 0; // m, if his wheels sit in or above Google's road
 
     // Weather. Clear is the photographed sky as it is; the others fade the sky
     // into a heavier haze, dim the sun (no hard shadows under cloud), thicken
@@ -2582,12 +2662,15 @@ void main() {`);
       raf = running ? requestAnimationFrame(frame) : 0;
       const dt = Math.min(0.1, (now - last) / 1000); last = now;
       const s = getState();
-      const want = s.real !== false;
+      const want = s.real !== false || !!s.google; // Google 3D wants the real heights too
       if (s.route !== built || want !== realWant) { realWant = want; setRoute(s.route); }
       else if (built && !built.scenery && (realWant || built.roam) && (built.roam ? built.roam.rec : placeData.get(built))?.v !== builtV) setRoute(built); // more of the real place is in
       else if (built?.roam && world && (built.ver !== builtVer || built.roam.rec.area !== builtArea)) grow(built); // a free ride's road went on
       if (!built) return;
-      if (tiles.length) {
+      if (s.google && !gl3 && !glFail) gl3 = googleOn(s.google);
+      else if (!s.google && gl3) googleOff();
+      if (!s.google) glFail = '';
+      if (tiles.length && !gl3) {
         // Nearest to the rider first; sorted again after he has moved on 300 m (or jumped).
         const here = at(disp, new T.Vector3());
         if (!sortedAt || sortedAt.distanceTo(here) > 300) {
@@ -2605,7 +2688,7 @@ void main() {`);
           world.add(m); pieces.push(m); tileOf.set(t.key, m);
         }
       }
-      paintGround(dt);
+      if (!gl3) paintGround(dt);
       // Glide between the ride's 4 ticks a second, then ease onto the real distance.
       disp += s.speed * dt;
       disp += (s.dist - disp) * Math.min(1, dt * 2.5);
@@ -2679,6 +2762,16 @@ void main() {`);
       hills0.position.set(camPos.x, g.base[0] + (camPos.y - g.base[0]) * 0.85, camPos.z);
       if (sky2) { drift += dt * 1.5; sky2.position.set(camPos.x * 0.9 + drift, hills0.position.y, camPos.z * 0.9); }
       farCam.position.copy(camera.position); farCam.quaternion.copy(camera.quaternion);
+      if (gl3) { // Google draws the world; we draw him over it
+        camera.updateMatrixWorld();
+        if (gl3.map) googleCamera(gl3, g, pos);
+        gl3.catcher.position.set(pos.x, pos.y + 0.02, pos.z);
+        gl3.sun.target.position.copy(pos); gl3.sun.position.copy(pos).addScaledVector(SUN_DIR, 200);
+        const w = container.clientWidth, h = container.clientHeight;
+        if (w && h && (gl3.w !== w || gl3.h !== h)) { gl3.w = w; gl3.h = h; gl3.r.setSize(w, h, false); }
+        gl3.r.render(gl3.sc, camera);
+        return;
+      }
       const draw = () => {
         renderer.clear();
         renderer.render(farScene, farCam);
@@ -2709,6 +2802,8 @@ void main() {`);
       get look() { return look ? 'video' : 'plain'; }, // the video look (null when this browser can't have it)
       set look(v) { const on = v === 'video' && !!post; if (on !== look) { look = on; if (post) post.reset(); } },
       get canLook() { return !!post; },
+      get google() { return gl3 ? (gl3.map ? 'on' : 'loading') : glFail ? `fail:${glFail}` : ''; },
+      set googleLift(m) { googleLift = +m || 0; },
     };
   }
 
