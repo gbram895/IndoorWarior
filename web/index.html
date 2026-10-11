@@ -3773,7 +3773,7 @@ const view3d = (() => {
   });
   const state = () => {
     const d = route?.loop ? routeRidden() : routeState.dist, cad = parseInt($('cadence').textContent, 10); // laps: the 3D view rides on round
-    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0, real: realWorld };
+    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0, real: realWorld, google: worldKind === 'google' && !route?.scenery ? googleKey() : null };
   };
   async function ensure() {
     if (world) return world;
@@ -3789,20 +3789,40 @@ const view3d = (() => {
     $('r3dLook').classList.toggle('hidden', !world.canLook); // WebGL 1: plain only
     return world;
   }
-  // World: for a GPX route, the real land, woods, water and towns where it
-  // runs (loaded from free map services), or the made-up world. Remembered.
+  // World: for a GPX route or a free ride, the real land, woods, water and
+  // towns where it runs (loaded from free map services), the made-up world,
+  // or Google's photoreal 3D (with your own Google Maps key). Remembered.
   // The built-in course is always made up.
-  try { realWorld = localStorage.getItem('world3d') !== 'game'; } catch {}
-  const setWorld = real => {
-    realWorld = real;
-    $('r3dWorld').textContent = `World: ${real ? 'real' : 'made up'}`;
-    try { localStorage.setItem('world3d', real ? 'real' : 'game'); } catch {}
+  // The key is the one the Google 3D test page saved, or asked for here; it
+  // stays in this browser.
+  let worldKind = 'real', googleSaid = '', googleSaidUntil = 0;
+  const googleKey = () => { try { return localStorage.getItem('gmapsKey') || ''; } catch { return ''; } };
+  try { worldKind = { game: 'game', google: 'google' }[localStorage.getItem('world3d')] || 'real'; } catch {}
+  const setWorld = kind => {
+    if (kind === 'google' && !googleKey()) {
+      const k = (prompt('Your Google Maps API key (the Maps JavaScript API must be on, and the key must allow this site). It stays in this browser.') || '').trim();
+      if (!k) kind = 'real';
+      else try { localStorage.setItem('gmapsKey', k); } catch {}
+    }
+    worldKind = kind; realWorld = kind !== 'game';
+    $('r3dWorld').textContent = `World: ${{ real: 'real', game: 'made up', google: 'Google 3D' }[kind]}`;
+    try { localStorage.setItem('world3d', kind); } catch {}
   };
-  setWorld(realWorld);
-  $('r3dWorld').addEventListener('click', () => setWorld(!realWorld));
+  setWorld(worldKind === 'google' && !googleKey() ? 'real' : worldKind);
+  $('r3dWorld').addEventListener('click', () => setWorld({ real: 'game', game: 'google', google: 'real' }[worldKind]));
   const showNote = () => {
     $('r3dWorld').classList.toggle('hidden', !route || !!route.scenery);
-    $('r3dNote').textContent = realWorld && route && !route.scenery ? world?.note || '' : '';
+    // Google's picture can't be copied out of its map, so no screenshots or recordings there.
+    document.querySelector('.r3dshoot').classList.toggle('hidden', worldKind === 'google' && !!route && !route.scenery);
+    const g = world?.google || '';
+    if (g.startsWith('fail:')) { // Google said no: back to the real world, and say why
+      if (/refused/.test(g)) try { localStorage.removeItem('gmapsKey'); } catch {} // so the next try asks for a key again
+      setWorld('real');
+      googleSaid = g.slice(5); googleSaidUntil = Date.now() + 15000;
+    }
+    if (Date.now() < googleSaidUntil) { $('r3dNote').textContent = googleSaid; return; } // keep that message up a while
+    $('r3dNote').textContent = worldKind === 'google' && route && !route.scenery ? (g === 'loading' ? 'Loading Google 3D…' : '')
+      : realWorld && route && !route.scenery ? world?.note || '' : '';
   };
   async function show(next) {
     mode = next;

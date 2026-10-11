@@ -299,6 +299,20 @@ the odd sealed crack and patched rectangles. The rider wears a printed jersey,
 a vented helmet and wraparound glasses; the bike has deep carbon rims and a
 bottle.
 
+**World: Google 3D** (the World button in the 3D view, for a GPX route or
+Ride anywhere): Google's photoreal 3D world instead of ours. Google draws it
+in its own map element (Map3DElement); the rider is drawn on a see-through
+canvas over it, with his shadow, and every frame Google's camera is set to
+the one the view would use (the point looked at, how far back, how far
+tipped, which way), so all four cameras work, the free one included. The
+height under him comes from the same terrain tiles as the real world, so
+he can sit a metre or two off Google's road. It uses your own Google Maps
+key (the one the test page below saved, or it asks); if Google refuses it,
+the view goes back to the real world and says why. No screenshots or
+recordings here: Google's picture can't be copied out of its map. Pricing
+at the time of writing: 1,000 map loads a month free, then about $6 per
+1,000.
+
 **Google 3D test** (`google3d.html`, not linked from the app): a separate
 page that flies Google's photoreal 3D map along a GPX at a chosen speed, to
 judge whether Google's scenery is worth building the ride view on. It needs
