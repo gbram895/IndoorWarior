@@ -238,6 +238,19 @@
   .rv-step { margin-top: 4px; font-size: 15px; }
   .rv-step b { font-size: 22px; }
   .rv-climb { right: 12px; top: 250px; width: 260px; }
+  .rv-race { left: 12px; top: 186px; width: 250px; }
+  .rv-race .rc-head { display: flex; flex-direction: column; gap: 1px; }
+  .rv-race .rc-head b { font-size: 24px; } .rv-race .rc-head b i { font-size: 14px; font-weight: 500; } .rv-race .rc-head span { font-size: 12px; color: #c9cfda; }
+  .rv-race ol { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+  .rv-race li { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 5px; }
+  .rv-race li.me { background: rgba(255, 255, 255, 0.14); font-weight: 700; }
+  .rv-race .pos { width: 18px; text-align: right; color: #9aa3b2; } .rv-race .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-race .gap { color: #c9cfda; } .rv-race .kit { width: 9px; height: 9px; border-radius: 50%; flex: none; } .rv-race .kit.you { background: #ff7a1a; }
+  .raceevs { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-top: 6px; }
+  .raceev { display: flex; flex-direction: column; gap: 3px; text-align: left; background: #10131a; color: var(--text); border: 1px solid #2a2f3a; border-radius: 10px; padding: 10px 12px; font: inherit; cursor: pointer; }
+  .raceev.on { border-color: var(--accent); }
+  .raceev .k { font-size: 12px; color: var(--accent); } .raceev .d { font-size: 13px; color: #9aa3b2; }
+  .raceres tr.me td { font-weight: 700; } .raceline { margin: 4px 0 6px; }
   .rv-climb .t { font-weight: 700; font-size: 15px; }
   .rv-climb .s { font-size: 13px; color: #c9cfda; margin-top: 2px; }
   .rv-climb canvas { display: block; width: 100%; height: 70px; margin-top: 6px; }
@@ -511,6 +524,7 @@
         <button id="courseBtn">Ride IndoorWarior Island</button>
         <button id="roamBtn" class="secondary">Ride anywhere</button>
         <button id="buildBtn" class="secondary">Build a route</button>
+        <button id="raceBtn" class="secondary">Race</button>
         <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,application/gpx+xml"><span>Load GPX</span></label>
       </div>
     </div>
@@ -539,6 +553,7 @@
             <div class="rv-row"><span><b id="rvHrAvg">--</b><i>avg</i></span><span><b id="rvHrMax">--</b><i>max</i></span></div>
             <div class="rv-row"><span><b id="rvGrade">--</b><i id="rvGradeL">gradient</i></span><span><b id="rvDist">--</b><i>km</i></span><span><b id="rvUp">--</b><i>m up</i></span></div>
           </div>
+          <div class="rv-box rv-race hidden" id="rvRace"></div>
           <div class="rv-box rv-climb hidden" id="rvClimb"><div class="t" id="rvClimbT"></div><div class="s" id="rvClimbS"></div><canvas id="rvClimbC"></canvas></div>
           <div class="rv-ctrl">
             <button id="rvErg" title="ERG on or off (E)">ERG</button><button id="rvMinus" title="Target −5 W (↓)">−5</button><button id="rvPlus" title="Target +5 W (↑)">+5</button>
@@ -595,6 +610,22 @@
         <input id="rbName" placeholder="Name (optional)" maxlength="80" style="flex:1;min-width:140px;font:inherit;background:#10131a;color:var(--text);border:1px solid #2a2f3a;border-radius:8px;padding:9px 12px">
         <button class="secondary" id="rbGpx">Save .gpx</button><button id="rbGo">Save and ride</button>
       </div>
+    </div>
+  </div>
+
+  <div class="roampick hidden" id="racePick" role="dialog" aria-modal="true" aria-labelledby="raceTitle">
+    <div class="roampick-card">
+      <div class="erg-head"><h2 id="raceTitle" style="margin:0">Race</h2><button class="link" id="raceClose">Close</button></div>
+      <p class="muted" style="margin:6px 0 0">Race a field of computer riders. They ride the same physics you do, tire the way you do, and sit in each other's wheels (and yours). In a road race or hill climb, riding close behind someone saves you a third of your effort against the air.</p>
+      <div class="label sumlabel">On IndoorWarior Island</div>
+      <div class="raceevs" id="raceEvents"></div>
+      <div class="label sumlabel">On your route</div>
+      <div id="raceOwn"></div>
+      <div class="row" style="margin-top:14px;gap:18px">
+        <div><div class="label">Opponents</div><div class="seg" id="raceStrength" style="margin:4px 0 0"><button data-s="easier">Easier</button><button data-s="even">Even</button><button data-s="harder">Harder</button></div></div>
+        <div><div class="label">Riders</div><div class="seg" id="raceSize" style="margin:4px 0 0"><button data-n="5">5</button><button data-n="11">11</button><button data-n="19">19</button></div></div>
+      </div>
+      <div class="row" style="justify-content:space-between;margin-top:14px"><span class="muted" id="raceSum"></span><button id="raceGo">Start race</button></div>
     </div>
   </div>
 
@@ -1859,6 +1890,321 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
 
+// ---- Races: you against a field of computer riders, on the island or on a
+// route of your own. Each rider has an FTP, a weight and a type (climber,
+// rouleur, sprinter), rides the same physics you do and tires the same way:
+// above FTP it spends a store of work (W′) that only comes back below FTP,
+// and once that is empty it can only ride at threshold, so a climb or an
+// attack that is too hard for it drops it. In a road race or a hill climb
+// everyone (you too) saves energy in the wheel of the rider in front; a time
+// trial has no drafting. The field is set from your FTP and weight: Easier,
+// Even or Harder.
+const race = (() => {
+  const NAMES = ['Jens Maes', 'Lotte Peeters', 'Wout Claes', 'Elise Janssens', 'Arne De Smet', 'Fien Willems', 'Sander Goossens', 'Noor Wouters',
+    'Bram Hermans', 'Ruben Mertens', 'Kaat Dubois', 'Senne Vermeulen', 'Lies Martens', 'Thibault Lambert', 'Marie Lefebvre', 'Joris Van Dyck',
+    'Hanne Pauwels', 'Pieter-Jan Aerts', 'Lena Schmitz', 'Tom Verbruggen', 'Anouk de Vries', 'Matteo Rossi', 'Lucas Moreau', 'Femke Bakker'];
+  // Jersey and helmet colours, one team kit per rider.
+  const KITS = [[0x1f6fd1, 0xffffff], [0xd7263d, 0x111111], [0x1b998b, 0xffffff], [0xf2c230, 0x111111], [0x7d3c98, 0xffffff], [0x2e9e48, 0xf2f3f5],
+    [0xf3f4f6, 0xd7263d], [0x23262b, 0xf2c230], [0xe2711d, 0x23262b], [0x0f8a8a, 0xf3f4f6], [0xa61e2e, 0xf3f4f6], [0x3f8fe0, 0x23262b],
+    [0xe94e9b, 0xf3f4f6], [0x6b8e23, 0x23262b], [0x8e5a2b, 0xf3f4f6], [0x5d6dd6, 0xf3f4f6], [0x13a3c5, 0xf3f4f6], [0xc9b037, 0x23262b], [0x9b9fa6, 0xd7263d]];
+  const TYPES = { climber: 'Climber', rouleur: 'Rouleur', sprinter: 'Sprinter' };
+  const EVENTS = [
+    { id: 'isl-crit', name: 'Island Criterium', type: 'road', course: 'island', laps: 2, blurb: 'Two fast laps in a bunch. Stay in the wheels over the climb and save something for the sprint.' },
+    { id: 'isl-classic', name: 'Island Classic', type: 'road', course: 'island', laps: 4, blurb: 'Four laps, four times up the climb. The field thins out every lap.' },
+    { id: 'isl-tt', name: 'Island Time Trial', type: 'tt', course: 'island', laps: 1, blurb: 'One lap on your own, no wheels to sit on. Pace it.' },
+    { id: 'isl-summit', name: 'Island Summit', type: 'climb', course: 'island', laps: 1, blurb: 'From the foot of the climb to the summit. Pure climbing.' },
+  ];
+  const KIND = { road: 'Road race', tt: 'Time trial', climb: 'Hill climb' };
+  const STRENGTH = { easier: [0.8, 0.97], even: [0.9, 1.08], harder: [1.0, 1.16] };
+  const store2 = { strength: store.get('raceStrength', 'even'), size: Number(store.get('raceSize', 11)) || 11 };
+
+  let armed = null;  // the race set up for the next ride: { ev, routeOf, strength, size }
+  let R = null;      // the race being ridden
+  let pick = null;   // what is chosen in the dialog
+
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const G = 9.81, RHO = 1.2, ETA = 0.97, CDA = 0.32;
+  const crrAt = d => SURFACES[surfaceAt(route.loop ? ((d % route.total) + route.total) % route.total : d)].crr;
+  const gradeAt = d => gradeBetween(d - 25, d + 25);
+  const resist = (v, grade, mass, cda, crr) => { const th = Math.atan(grade / 100); return mass * G * (crr * Math.cos(th) + Math.sin(th)) + 0.5 * RHO * cda * v * v; };
+  // The power to be going at speed vt within a couple of seconds.
+  const powerFor = (v, vt, grade, mass, cda, crr) => (((mass + 1.5) * clamp((vt - v) / 2, -1.5, 1) + resist(v, grade, mass, cda, crr)) * Math.max(v, 1)) / ETA;
+
+  // How hard a steady effort of this many minutes can be, as a share of FTP.
+  const ifFor = min => (min <= 10 ? 1.12 : min <= 20 ? 1.12 - (min - 10) * 0.007 : min <= 60 ? 1.05 - (min - 20) * 0.0025 : Math.max(0.78, 0.95 - (min - 60) * 0.0022));
+
+  // Where the race runs on the route, in metres ridden: a climb race from the
+  // foot of the biggest climb to its top; otherwise from the start, a lap or
+  // more of a loop.
+  function courseOf(ev) {
+    if (ev.type === 'climb') {
+      const c = biggestClimb();
+      return c ? { start: c.start, finish: c.top, climb: c } : null;
+    }
+    return { start: 0, finish: route.loop ? route.total * ev.laps : route.total };
+  }
+  function biggestClimb() {
+    const list = rideView.climbs();
+    return list.length ? list.reduce((a, b) => (b.gain > a.gain ? b : a)) : null;
+  }
+
+  // ---- The field.
+  function makeField(n, strength, userFtp, userMass) {
+    const wkg = userFtp / Math.max(45, userMass - 8);
+    const [lo, hi] = STRENGTH[strength] || STRENGTH.even;
+    const names = NAMES.slice().sort(() => Math.random() - 0.5), kits = KITS.slice().sort(() => Math.random() - 0.5);
+    const field = [];
+    for (let i = 0; i < n; i++) {
+      const type = ['climber', 'rouleur', 'rouleur', 'sprinter'][i % 4];
+      const body = type === 'climber' ? rnd(56, 66) : type === 'sprinter' ? rnd(74, 84) : rnd(66, 76);
+      // Spread evenly over the strength range, so every race has someone to ride with.
+      const share = n > 1 ? i / (n - 1) : 0.5, k = lo + (hi - lo) * ((share * 0.8 + Math.random() * 0.2));
+      const wk = wkg * k * (type === 'climber' ? 1.04 : type === 'sprinter' ? 0.95 : 1);
+      const ftp = Math.round(wk * body);
+      field.push({
+        name: names[i % names.length], kit: kits[i % kits.length], type, ftp, mass: body + 8, cda: type === 'climber' ? 0.31 : type === 'sprinter' ? 0.34 : 0.32,
+        wp: Math.round((type === 'sprinter' ? 24000 : type === 'climber' ? 17000 : 20000) * rnd(0.9, 1.1)), sprint: Math.round(ftp * (type === 'sprinter' ? rnd(4.2, 5) : rnd(3, 3.6))),
+        form: rnd(0.97, 1.03), lane: 0, d: 0, v: 0, p: 0, wbal: 0, attack: 0, done: null, cad: 88,
+      });
+    }
+    field.forEach((b, i) => { b.wbal = b.wp; b.lane = ((i % 5) - 2) * 0.55 + rnd(-0.12, 0.12); }); // side by side across the road
+    return field;
+  }
+
+  // Draft: up to a third less air to push in the wheel of a rider 1 m ahead, nothing from 15 m.
+  function draftFor(d, riders, self) {
+    if (R.ev.type === 'tt') return 0;
+    let gap = Infinity;
+    for (const o of riders) if (o !== self && !o.gone) { const g = o.d - d; if (g > 0.2 && g < gap) gap = g; }
+    return gap > 15 ? 0 : gap < 1 ? 0.33 : 0.33 * (1 - (gap - 1) / 14);
+  }
+
+  // One rider's power for the next tick: its own pace for the terrain and the
+  // stage of the race, or what it takes to hold the wheel ahead; never more
+  // than its legs have left.
+  function botPower(b, riders, dt) {
+    const tot = R.finish - R.start, left = tot - b.d, abs = R.start + b.d;
+    const g = gradeAt(abs), crr = crrAt(abs), draft = draftFor(b.d, riders, b), cda = b.cda * (1 - draft);
+    if (b.done != null) return { p: b.ftp * 0.45, cda, crr, g };
+    let own;
+    if (R.ev.type === 'tt' || R.ev.type === 'climb') own = R.ifTT * b.form * (g > 2 ? 1.05 : g < -2 ? 0.7 : 1);
+    else {
+      const climbF = { climber: 1.02, rouleur: 0.93, sprinter: 0.86 }[b.type];
+      own = (g > 3 ? climbF : g < -2 ? 0.45 : 0.72) * b.form;
+      // Someone up the road: the rest chase, harder the bigger the gap.
+      let front = -Infinity;
+      for (const o of riders) if (!o.gone && o.done == null && o.d > front) front = o.d;
+      if (front - b.d > 30 && g > -2) own = Math.max(own, (0.8 + Math.min(0.18, (front - b.d) / 2000)) * b.form);
+      if (b.attack > 0) { b.attack -= dt; own = b.attackP; }
+      else if (left > 2500 && b.wbal > 0.85 * b.wp && Math.random() < dt / 1400) { b.attack = rnd(20, 45); b.attackP = rnd(1.3, 1.5); }
+      if (left < 1500) own = Math.max(own, 1.0);
+    }
+    let p = own * b.ftp;
+    if (R.ev.type !== 'tt') {
+      let ahead = null, gap = 31;
+      for (const o of riders) if (o !== b && !o.gone && o.done == null) { const x = o.d - b.d; if (x > 0.2 && x < gap) { gap = x; ahead = o; } }
+      if (ahead) {
+        const follow = powerFor(b.v, ahead.v + 0.25 * (gap - 1.8), g, b.mass, cda, crr);
+        p = Math.max(follow, p * (draft > 0 ? 0.75 : 1));
+      }
+    }
+    if (R.ev.type === 'road' && left < 280 && left > 0) p = b.sprint * (b.wbal > 0 ? 1 : 0.4); // the sprint
+    // What the legs allow: lots while W′ lasts, threshold once it is gone.
+    const cap = b.wbal > 0.15 * b.wp ? b.ftp * 1.7 : b.wbal > 0 ? b.ftp * 1.05 : b.ftp * 0.95;
+    if (!(R.ev.type === 'road' && left < 280)) p = Math.min(p, cap);
+    return { p: clamp(p + rnd(-8, 8), 0, b.sprint), cda, crr, g };
+  }
+
+  // When each rider passed each 25 m of the course, for time gaps: how long
+  // ago the rider ahead was where you are now.
+  const MARK = 25;
+  function mark(o, was) {
+    if (!o.log) o.log = [];
+    for (let k = Math.floor(was / MARK) + 1; k <= Math.floor(o.d / MARK); k++) o.log[k] = R.t;
+  }
+  function timeGap(o, you) { // + behind you, − ahead
+    if (o.d >= you.d) { const t = o.log?.[Math.floor(you.d / MARK)]; return t == null ? null : -(R.t - t); }
+    const t = you.log?.[Math.floor(o.d / MARK)]; return t == null ? null : R.t - t;
+  }
+
+  function step(riders, dt) {
+    const tot = R.finish - R.start;
+    const plan = riders.map(b => (b.you ? null : botPower(b, riders, dt)));
+    riders.forEach((b, i) => {
+      if (b.you || b.gone) return;
+      const { p, cda, crr, g } = plan[i];
+      b.p = p;
+      b.wbal = p > b.ftp ? b.wbal - (p - b.ftp) * dt : Math.min(b.wp, b.wbal + (b.ftp - p) * dt * 0.55);
+      b.v = physStep(b.v, p, g, dt, b.mass, cda, crr);
+      const was = b.d;
+      b.d += b.v * dt;
+      mark(b, was);
+      if (!route.loop && R.start + b.d >= route.total) { b.d = route.total - R.start; b.v = 0; }
+      if (b.done == null && b.d >= tot) b.done = R.t - dt + (tot - was) / Math.max(0.1, b.d - was) * dt;
+      b.cad = p < 20 ? 0 : clamp(80 + (b.v - 9) * 1.5 - Math.max(0, g) * 1.6, 62, 102);
+    });
+  }
+
+  // ---- The race itself.
+  function start() {
+    R = null;
+    if (!armed || !route || armed.routeOf !== route) { armed = null; return; }
+    const c = courseOf(armed.ev);
+    if (!c) { armed = null; return routeMsg('This route has no climb to race up.', 'bad'); }
+    const userFtp = ride.ftp || 200, userMass = routeCfg.mass;
+    const flatKmh = 29 * Math.cbrt(userFtp / 200); // a rough speed for the duration of a time trial
+    const minutes = ((c.finish - c.start) / 1000 / flatKmh) * 60 * (armed.ev.type === 'climb' ? 2.2 : 1);
+    R = { ev: armed.ev, start: c.start, finish: c.finish, t: 0, ifTT: ifFor(minutes), field: makeField(armed.size, armed.strength, userFtp, userMass), you: { you: true, name: 'You', d: 0, v: 0, done: null }, results: null };
+    if (c.start) { routeState.dist = c.start % route.total; routeState.lap = Math.floor(c.start / route.total); }
+    showToast(R.ev.name, `${KIND[R.ev.type]} · ${R.field.length} riders · go!`);
+    render();
+  }
+
+  function tick(dt) {
+    if (!R || R.results) return;
+    R.t += dt;
+    const was = R.you.d;
+    R.you.d = routeRidden() - R.start; R.you.v = routeState.speed;
+    if (R.you.d > was) mark(R.you, Math.max(0, was));
+    const riders = [R.you, ...R.field];
+    for (let s = 0, n = Math.ceil(dt / 0.25); s < n; s++) step(riders, dt / n);
+    if (R.you.done == null && R.you.d >= R.finish - R.start) { R.you.done = R.t; finish(true); }
+    render();
+  }
+
+  // You crossed the line (or stopped): the riders still out there are ridden
+  // to the line now, without you, for their times.
+  function finish(crossed) {
+    if (!R || R.results) return;
+    const tot = R.finish - R.start, live = R.field.map(b => ({ ...b, log: b.log?.slice() })); // copies: the live riders keep riding
+    const you = { ...R.you, log: R.you.log?.slice(), gone: true };
+    const saveT = R.t;
+    for (let guard = 0; live.some(b => b.done == null) && guard < 4 * 3600 * 2; guard++) { R.t += 0.5; step([you, ...live], 0.5); }
+    R.t = saveT;
+    const rows = live.map(b => ({ name: b.name, type: b.type, ftp: b.ftp, time: b.done, d: Math.min(tot, b.d) }));
+    rows.push({ name: 'You', you: true, time: crossed ? R.you.done : null, d: Math.min(tot, R.you.d) });
+    rows.sort((a, b) => (a.time == null) - (b.time == null) || (a.time ?? 0) - (b.time ?? 0) || b.d - a.d);
+    const pos = rows.findIndex(r => r.you) + 1;
+    R.results = { name: R.ev.name, type: R.ev.type, dist: tot, rows, pos, of: rows.length, finished: crossed };
+    ride.race = R.results;
+    armed = null;
+    if (crossed) {
+      showToast(pos === 1 ? 'You won!' : `${ordinal(pos)} of ${rows.length}`, `${R.ev.name} · ${fmtTime(R.you.done)}`);
+      routeMsg(`${R.ev.name}: ${pos === 1 ? 'you won' : `you were ${ordinal(pos)} of ${rows.length}`} in ${fmtTime(R.you.done)}. Keep riding or press Finish.`, 'ok');
+    }
+    render();
+  }
+  const ordinal = n => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+
+  // The ride is over: a race not yet finished counts as given up.
+  function onFinish() { if (R && !R.results) finish(false); }
+
+  // ---- What the 3D view draws: riders within sight, at their distance on the route.
+  function rivals() {
+    if (!R || !route) return null;
+    const base = route.loop ? 0 : 0;
+    return R.field.filter(b => !b.gone && Math.abs(b.d - R.you.d) < 400).map(b => ({ id: b.name, d: base + R.start + b.d, speed: b.v, cadence: b.cad, lane: b.lane, kit: b.kit, standing: b.p > b.ftp * 1.25 && b.v < 9, name: b.name }));
+  }
+  const userDraft = () => (R && !R.results ? draftFor(R.you.d, R.field, R.you) : 0);
+
+  // ---- The race board in the ride view.
+  function render() {
+    const el = $('rvRace');
+    if (!R) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    const tot = R.finish - R.start;
+    const order = [R.you, ...R.field].slice().sort((a, b) => (a.done == null) - (b.done == null) || (a.done != null ? a.done - b.done : b.d - a.d));
+    const me = order.indexOf(R.you);
+    const head = R.results
+      ? `<b>${R.results.finished ? (R.results.pos === 1 ? 'You won' : `${ordinal(R.results.pos)} of ${R.results.of}`) : 'Race over'}</b><span>${esc(R.ev.name)}</span>`
+      : `<b>${ordinal(me + 1)} <i>of ${order.length}</i></b><span>${fmtKm(Math.max(0, tot - R.you.d))} km to go${R.ev.type === 'road' && route.loop && R.ev.laps > 1 ? ` · lap ${Math.min(R.ev.laps, Math.floor(R.you.d / route.total) + 1)}/${R.ev.laps}` : ''}</span>`;
+    const show = new Set([order[0], ...order.slice(Math.max(0, me - 2), me + 3)]);
+    const v = Math.max(3, R.you.v || 0);
+    const rows = order.filter(o => show.has(o)).map(o => {
+      const i = order.indexOf(o);
+      let gap = '';
+      if (o !== R.you) {
+        if (o.done != null && R.you.done != null) gap = `${o.done < R.you.done ? '−' : '+'}${fmtTime(Math.abs(o.done - R.you.done))}`;
+        else if (o.done != null) gap = 'finished';
+        else if (Math.abs(o.d - R.you.d) < 3) gap = 'with you';
+        else { const s = timeGap(o, R.you) ?? (R.you.d - o.d) / v; gap = Math.abs(s) < 1 ? 'with you' : `${s < 0 ? '−' : '+'}${fmtTime(Math.round(Math.abs(s)))}`; }
+      }
+      const dot = o.kit ? `<i class="kit" style="background:#${o.kit[0].toString(16).padStart(6, '0')}"></i>` : '<i class="kit you"></i>';
+      return `<li class="${o === R.you ? 'me' : ''}"><span class="pos">${i + 1}</span>${dot}<span class="nm">${esc(o.name)}</span><span class="gap">${gap}</span></li>`;
+    }).join('');
+    el.innerHTML = `<div class="rc-head">${head}</div><ol>${rows}</ol>`;
+  }
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+  // ---- Results under the ride summary.
+  function resultsHtml(r) {
+    if (!r?.race?.rows) return '';
+    const x = r.race, win = x.rows[0];
+    const rows = x.rows.map((o, i) => `<tr class="${o.you ? 'me' : ''}"><td>${o.time == null ? '–' : i + 1}</td><td>${esc(o.name)}${o.type ? ` <span class="muted">${TYPES[o.type]}</span>` : ''}</td><td>${o.time == null ? (o.you ? 'Did not finish' : '') : fmtTime(Math.round(o.time))}</td><td>${o.time == null || o === win ? '' : `+${fmtTime(Math.round(o.time - win.time))}`}</td></tr>`).join('');
+    const line = x.finished ? (x.pos === 1 ? `You won ${esc(x.name)}.` : `You were ${ordinal(x.pos)} of ${x.of} in ${esc(x.name)}.`) : `You stopped before the line in ${esc(x.name)}.`;
+    return `<div class="label sumlabel">Race</div><p class="raceline">${line} ${KIND[x.type]}, ${fmtKm(x.dist)} km.</p>
+      <details class="steps raceres" open><summary>Results</summary><table><thead><tr><th></th><th>Rider</th><th>Time</th><th>Gap</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+  }
+
+  // ---- Picking a race.
+  function open() {
+    if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before starting a race.', 'bad');
+    pick = pick || EVENTS[0];
+    $('racePick').classList.remove('hidden');
+    draw();
+  }
+  function close() { $('racePick').classList.add('hidden'); }
+  function own() { return route && !route.scenery && !route.roam ? route : null; }
+  function draw() {
+    const mine = own();
+    $('raceEvents').innerHTML = EVENTS.map(e => `<button class="raceev ${pick?.id === e.id ? 'on' : ''}" data-ev="${e.id}"><b>${e.name}</b><span class="k">${KIND[e.type]} · ${e.type === 'climb' ? 'the island climb, 3 km' : `${e.laps} lap${e.laps > 1 ? 's' : ''}, ${Math.round(12.6 * e.laps)} km`}</span><span class="d">${e.blurb}</span></button>`).join('');
+    const box = $('raceOwn');
+    if (!mine) {
+      box.innerHTML = '<p class="muted" style="margin:0">Load a GPX file, pick one of your routes or build one, then come back here to race on it.</p>';
+    } else {
+      const c = biggestClimb(), cur = pick?.own ? pick : null;
+      const kinds = [['road', 'Road race'], ['tt', 'Time trial'], ['climb', 'Hill climb']];
+      box.innerHTML = `<div class="wname" style="margin:0 0 6px">${esc(mine.name)} <span class="muted">${fmtKm(mine.total)} km${mine.loop ? ', a loop' : ''}</span></div>
+        <div class="row"><div class="seg" id="raceKind" style="margin:0">${kinds.map(([k, l]) => `<button data-k="${k}" class="${cur?.type === k ? 'on' : ''}" ${k === 'climb' && !c ? 'disabled title="This route has no climb of 500 m at 3% or more."' : ''}>${l}</button>`).join('')}</div>
+        ${mine.loop ? `<label class="muted">Laps <select id="raceLaps">${[1, 2, 3, 4, 5, 6].map(n => `<option ${n === (cur?.laps || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}</div>
+        ${c ? `<p class="muted" style="margin:6px 0 0">The hill climb goes up the biggest climb: ${fmtKm(c.len)} km at ${c.avg.toFixed(1)}%.</p>` : ''}`;
+    }
+    $('raceStrength').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.s === store2.strength));
+    $('raceSize').querySelectorAll('button').forEach(b => b.classList.toggle('on', Number(b.dataset.n) === store2.size));
+    $('raceGo').disabled = !pick;
+    $('raceSum').textContent = pick ? `${pick.name}: ${KIND[pick.type]}${pick.own && pick.type !== 'climb' && own()?.loop ? `, ${pick.laps} lap${pick.laps > 1 ? 's' : ''}` : ''}, against ${store2.size} riders.` : 'Pick a race.';
+  }
+  function ownPick(type) {
+    const mine = own();
+    const laps = Number($('raceLaps')?.value) || 1;
+    pick = { id: 'own', own: true, type, course: null, laps, name: `${mine.name} ${type === 'climb' ? 'Hill Climb' : type === 'tt' ? 'Time Trial' : 'Race'}` };
+  }
+  async function go() {
+    if (!pick) return;
+    if (ride.status === 'riding' || ride.status === 'paused') return;
+    if (pick.course && route?.course !== pick.course) await loadCourse(pick.course);
+    if (pick.own && !own()) return;
+    armed = { ev: pick, routeOf: route, strength: store2.strength, size: store2.size };
+    close();
+    rideView.begin();
+  }
+  $('raceBtn').addEventListener('click', open);
+  $('raceClose').addEventListener('click', close);
+  $('racePick').addEventListener('click', e => { if (e.target === $('racePick')) close(); });
+  $('raceEvents').addEventListener('click', e => { const b = e.target.closest('[data-ev]'); if (b) { pick = EVENTS.find(x => x.id === b.dataset.ev); draw(); } });
+  $('raceOwn').addEventListener('click', e => { const b = e.target.closest('[data-k]'); if (b && !b.disabled) { ownPick(b.dataset.k); draw(); } });
+  $('raceOwn').addEventListener('change', e => { if (e.target.id === 'raceLaps' && pick?.own) { pick.laps = Number(e.target.value) || 1; draw(); } });
+  $('raceStrength').addEventListener('click', e => { const b = e.target.closest('[data-s]'); if (b) { store2.strength = b.dataset.s; store.set('raceStrength', b.dataset.s); draw(); } });
+  $('raceSize').addEventListener('click', e => { const b = e.target.closest('[data-n]'); if (b) { store2.size = Number(b.dataset.n); store.set('raceSize', store2.size); draw(); } });
+  $('raceGo').addEventListener('click', go);
+
+  // A route change throws away a race set up for another route.
+  function routeChanged() { if (armed && armed.routeOf !== route) armed = null; if (R && ride.status !== 'riding' && ride.status !== 'paused') { R = null; render(); } }
+
+  return { start, tick, onFinish, rivals, userDraft, resultsHtml, routeChanged, get armed() { return armed; }, get on() { return !!R && !R.results; }, get state() { return R; } };
+})();
+
 let gradient = store.get('gradient', { url: GRADIENT_DEFAULT, token: null });
 
 function rideMsg(text, cls = '') { $('rideMsg').textContent = text; $('rideMsg').className = cls; }
@@ -2763,6 +3109,8 @@ async function startRide() {
   countdown.unlock(); // sound needs a click to be allowed
   rideMsg('');
   if (route) Object.assign(routeState, { dist: 0, lap: 0, speed: 0, lastGrade: null, finished: false });
+  ride.race = null;
+  race.start(); // a race set up for this route: the field lines up (a hill climb moves you to its foot)
   applyStep();
   renderRide();
 }
@@ -2801,6 +3149,7 @@ function finishRide() {
   calibration.render();
   if (ERG.on) { ERG.setOn(false); renderErg(); }
   else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
+  race.onFinish();
   saveUnsaved();
   renderRide();
   myRoutes.saveRide(ride);
@@ -2895,7 +3244,7 @@ function renderHrGaps() {
 // A copy of the ride survives a closed tab or a crash until it is saved or discarded.
 function saveUnsaved() {
   if (ride.samples.length) store.set('unsavedRide', { name: ride.name, samples: ride.samples, events: ride.events, strava: ride.strava || null,
-    rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null, ftp: ride.ftp || null, lrLeft: ride.lrLeft ?? null, stepCount: ride.stepCount || 0 });
+    rpe: ride.rpe ?? null, rpeNotes: ride.rpeNotes || '', rpeSent: ride.rpeSent || null, ftp: ride.ftp || null, lrLeft: ride.lrLeft ?? null, stepCount: ride.stepCount || 0, race: ride.race || null });
 }
 
 // ---- Mini window: a small always-on-top window (Document Picture-in-Picture,
@@ -2955,6 +3304,7 @@ function tick() {
   ride.lastTick = t;
   if (ride.status !== 'riding') return;
   routeTick(dt);
+  race.tick(dt);
   recordSample();
   if (workout && !ride.workoutDone) {
     ride.stepElapsed += dt;
@@ -3155,6 +3505,7 @@ function summaryHtml(r, title) {
     <div class="label sumlabel">Time in power zones</div>
     <div class="zonebar">${bar}</div><div class="zonelegend">${legend}</div>
     ${bests ? `<div class="label sumlabel">Best efforts</div><div class="bests">${bests}</div>` : ''}
+    ${race.resultsHtml(r)}
     ${rows ? `<details class="steps"><summary>Every step against its target</summary><table><thead><tr><th>Step</th><th>Length</th><th>Target</th><th>You</th><th></th></tr></thead><tbody>${rows}</tbody></table></details>` : ''}`;
 }
 
@@ -3789,10 +4140,15 @@ const surfaceAt = d => {
   return s && s.length ? s[Math.max(0, Math.min(s.length - 1, Math.round(d / ROUTE_STEP)))] || 0 : 0;
 };
 
-function advanceSpeed(watts, gradePct, dt, crr = 0.004) {
-  const m = routeCfg.mass, g = 9.81, cda = 0.32, rho = 1.2, eta = 0.97;
+// draft: the share of air drag saved in someone's wheel (races).
+function advanceSpeed(watts, gradePct, dt, crr = 0.004, draft = 0) {
+  routeState.speed = physStep(routeState.speed, watts, gradePct, dt, routeCfg.mass, 0.32 * (1 - draft), crr);
+  return routeState.speed;
+}
+// One rider's speed after dt seconds at this power: yours, or a race rival's.
+function physStep(v, watts, gradePct, dt, m, cda, crr) {
+  const g = 9.81, rho = 1.2, eta = 0.97;
   const theta = Math.atan(gradePct / 100);
-  let v = routeState.speed;
   const steps = Math.max(1, Math.ceil(dt / 0.05));
   for (let k = 0; k < steps; k++) {
     const h = dt / steps;
@@ -3800,7 +4156,6 @@ function advanceSpeed(watts, gradePct, dt, crr = 0.004) {
     const resist = m * g * (crr * Math.cos(theta) + Math.sin(theta)) + 0.5 * rho * cda * v * v;
     v = Math.max(0, v + ((drive - resist) / (m + 1.5)) * h); // +1.5 kg for the wheels' rotating mass
   }
-  routeState.speed = v;
   return v;
 }
 
@@ -3812,7 +4167,7 @@ function currentPower() {
 function routeTick(dt) {
   if (!route || routeState.finished) return;
   const grade = gradeBetween(routeState.dist - 25, routeState.dist + 25);
-  const v = advanceSpeed(currentPower(), grade, dt, SURFACES[surfaceAt(routeState.dist)].crr);
+  const v = advanceSpeed(currentPower(), grade, dt, SURFACES[surfaceAt(routeState.dist)].crr, race.userDraft());
   if (route.loop) {
     routeState.dist += v * dt;
     if (routeState.dist >= route.total) {
@@ -3974,6 +4329,7 @@ function useRoute(next) {
   if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before loading another route.', 'bad');
   if (ghost && ghost.route !== next) ghost = null; // racing an old ride only on its own route
   route = next;
+  race.routeChanged();
   Object.assign(routeState, { dist: 0, lap: 0, speed: 0, lastGrade: null, finished: false });
   $('routeBox').classList.remove('hidden');
   $('routeName').textContent = route.name;
@@ -4051,7 +4407,7 @@ const myRoutes = (() => {
     const id = r.samples[0].t;
     const routeRec = route && !route.scenery && !route.roam ? { routeId: route.libId || null, routeName: route.name } : route?.scenery ? { course: route.course, routeName: route.name } : {};
     await put('rides', {
-      id, name: r.name, samples: r.samples, events: r.events, ftp: r.ftp || null, lrLeft: r.lrLeft ?? null, stepCount: r.stepCount || 0,
+      id, name: r.name, samples: r.samples, events: r.events, ftp: r.ftp || null, lrLeft: r.lrLeft ?? null, stepCount: r.stepCount || 0, race: r.race || null,
       ...routeRec, sum: { secs: a.secs, dist: a.dist, avg: a.sum.avg, np: a.np, tss: a.tss, climb: a.climb },
     }).catch(() => {});
     if (route?.libId) { const rec = await get('routes', route.libId); if (rec) put('routes', { ...rec, riddenAt: Date.now() }).catch(() => {}); }
@@ -4514,7 +4870,7 @@ const view3d = (() => {
   const state = () => {
     const d = route?.loop ? routeRidden() : routeState.dist, cad = parseInt($('cadence').textContent, 10); // laps: the 3D view rides on round
     return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0,
-      standing: isFresh(ext.pm.cadenceAt) && ride.status === 'riding' ? standing.on : null, real: realWorld, google: worldKind === 'google' && !route?.scenery ? googleKey() : null };
+      standing: isFresh(ext.pm.cadenceAt) && ride.status === 'riding' ? standing.on : null, rivals: race.rivals(), real: realWorld, google: worldKind === 'google' && !route?.scenery ? googleKey() : null };
   };
   async function ensure() {
     if (world) return world;

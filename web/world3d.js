@@ -1856,10 +1856,22 @@ void main() {`);
   // left side (0) over the chest (0.25, the zip) and right side (0.5) to the
   // middle of the back (0.75); v runs from the bib shorts (0) up to the
   // collar (1). The helmet: shell with vent slots.
-  function kitTexture(kind) {
+  // kit: [jersey, helmet] colours for a race rival; without, his own orange kit.
+  const hex = (n, f = 1) => '#' + [16, 8, 0].map(b => Math.round(((n >> b) & 255) * f).toString(16).padStart(2, '0')).join('');
+  function kitTexture(kind, kit) {
     const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
     const cx = cv.getContext('2d');
-    if (kind === 'jersey') {
+    if (kind === 'jersey' && kit) { // the same jersey in a rival's colours
+      cx.fillStyle = hex(kit[0]); cx.fillRect(0, 0, 256, 128);
+      cx.fillStyle = hex(kit[1]); cx.fillRect(116, 0, 24, 128); cx.fillRect(244, 0, 12, 128); cx.fillRect(0, 0, 12, 128); cx.fillRect(0, 34, 256, 7);
+      cx.fillStyle = hex(kit[0], 0.82); cx.fillRect(160, 80, 64, 20); cx.fillRect(0, 98, 256, 4);
+      cx.fillStyle = '#15171b'; cx.fillRect(0, 102, 256, 26);
+    } else if (kind === 'helmet' && kit) {
+      cx.fillStyle = hex(kit[1]); cx.fillRect(0, 0, 256, 128);
+      cx.fillStyle = '#1b1e23';
+      for (const u of [96, 112, 128, 144, 160]) for (const v of [28, 52]) { cx.beginPath(); cx.ellipse(u, v, 4, 9, 0, 0, Math.PI * 2); cx.fill(); }
+      cx.fillStyle = hex(kit[0]); cx.fillRect(0, 96, 256, 6);
+    } else if (kind === 'jersey') {
       cx.fillStyle = '#ff7a1a'; cx.fillRect(0, 0, 256, 128);
       cx.fillStyle = '#1f2329'; cx.fillRect(116, 0, 24, 128); cx.fillRect(244, 0, 12, 128); cx.fillRect(0, 0, 12, 128); // side panels
       cx.fillStyle = '#2a2d33'; cx.fillRect(0, 0, 256, 12); // dark yoke over the shoulders
@@ -1910,7 +1922,34 @@ void main() {`);
     return g;
   }
 
-  function rider() {
+  // The real body's painted kit in another colour: its orange (strongly
+  // coloured, orange-hued pixels; skin is too pale to count) turned to this
+  // colour at the same brightness.
+  // Put on mat once made (a texture's size is fixed at its first upload, so
+  // it is a new texture, not the old one redrawn).
+  function recolor(src, color, mat) {
+    const cv = document.createElement('canvas'), img = new Image();
+    const tr = (color >> 16) & 255, tg = (color >> 8) & 255, tb = color & 255;
+    img.onload = () => {
+      cv.width = img.width; cv.height = img.height;
+      const cx = cv.getContext('2d'); cx.drawImage(img, 0, 0);
+      const px = cx.getImageData(0, 0, cv.width, cv.height), a = px.data;
+      for (let i = 0; i < a.length; i += 4) {
+        const r = a[i], g = a[i + 1], b = a[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        if (mx < 80 || (mx - mn) / mx < 0.55 || r !== mx || b > g) continue;
+        const hue = ((g - b) / (mx - mn)) * 60;
+        if (hue < 8 || hue > 42) continue;
+        const v = mx / 255;
+        a[i] = tr * v; a[i + 1] = tg * v; a[i + 2] = tb * v;
+      }
+      cx.putImageData(px, 0, 0);
+      const t = new T.CanvasTexture(cv); t.anisotropy = 4;
+      mat.map?.dispose(); mat.map = t; mat.needsUpdate = true;
+    };
+    img.src = src;
+  }
+
+  function rider(kit) {
     const root = new T.Group();
     const mat = (c, rough = 0.7, metal = 0) => new T.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal });
     const M = {
@@ -1921,8 +1960,9 @@ void main() {`);
       chain: mat(0x6b7078, 0.45, 0.7), tape: mat(0x202226, 0.9), cuff: mat(0xf4f5f7, 0.7),
       lens: new T.MeshPhongMaterial({ color: 0x111317, specular: 0x8899aa, shininess: 90 }),
     };
-    M.jerseyKit = new T.MeshStandardMaterial({ map: kitTexture('jersey'), roughness: 0.7 });
-    M.helmetKit = new T.MeshStandardMaterial({ map: kitTexture('helmet'), roughness: 0.32 });
+    M.jerseyKit = new T.MeshStandardMaterial({ map: kitTexture('jersey', kit), roughness: 0.7 });
+    M.helmetKit = new T.MeshStandardMaterial({ map: kitTexture('helmet', kit), roughness: 0.32 });
+    if (kit) { M.jersey.color.setHex(kit[0]); M.cap.color.setHex(kit[1]); }
     // A unit cylinder along +y, centred, that `limb` stretches between two points.
     const unitCyl = (r0, r1, seg = 10) => new T.CylinderGeometry(r1, r0, 1, seg, 1);
     const up = new T.Vector3(0, 1, 0), tmpV = new T.Vector3(), tmpQ = new T.Quaternion(), basis = new T.Matrix4();
@@ -2153,6 +2193,7 @@ void main() {`);
       g.setIndex(new T.BufferAttribute(dec(D.idx, Uint16Array), 1));
       const tex = new T.TextureLoader().load(D.tex); tex.anisotropy = 4;
       const mesh = new T.SkinnedMesh(g, new T.MeshStandardMaterial({ map: tex, roughness: 0.66 }));
+      if (kit) recolor(D.tex, kit[0], mesh.material); // a rival's kit
       mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; // skinned: its box is the rest pose's
       const B = {}, frame = (q, ax, ref) => { // a bone's turn: +y along it, +z its reference side
         by.copy(ax).normalize(); bz.copy(ref).addScaledVector(by, -ref.dot(by)).normalize(); bx.crossVectors(by, bz);
@@ -2593,6 +2634,53 @@ void main() {`);
     const camera = new T.PerspectiveCamera(62, 1, 0.2, FAR);
     const bike = rider(); scene.add(bike.root);
     bike.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    // Race rivals: a rider each, made the first time one comes into sight
+    // (one a frame, they take a moment to build) and kept for the race.
+    const rivalsOn = new Map(); // id -> { r: rider, disp, pedal, climb, tag }
+    function nameTag(text) {
+      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 48;
+      const cx = cv.getContext('2d');
+      cx.font = '600 26px "Segoe UI", Arial, sans-serif';
+      const w = Math.min(248, cx.measureText(text).width + 24);
+      cx.fillStyle = 'rgba(12,14,18,0.72)'; cx.beginPath(); cx.roundRect ? cx.roundRect((256 - w) / 2, 6, w, 36, 10) : cx.rect((256 - w) / 2, 6, w, 36); cx.fill();
+      cx.fillStyle = '#f2f4f8'; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(text, 128, 25);
+      const sp = new T.Sprite(new T.SpriteMaterial({ map: new T.CanvasTexture(cv), depthWrite: false, transparent: true }));
+      sp.scale.set(1.6, 0.3, 1); sp.position.set(0, 2.15, 0); sp.renderOrder = 5;
+      return sp;
+    }
+    function drawRivals(list, dt) {
+      const seen = new Set();
+      let made = false;
+      for (const o of list || []) {
+        let e = rivalsOn.get(o.id);
+        if (!e) {
+          if (made) continue; // one new rider a frame
+          made = true;
+          const r = rider(o.kit); r.root.traverse(m => { if (m.isMesh) m.castShadow = true; });
+          const tag = nameTag(o.name); r.root.add(tag);
+          e = { r, disp: o.d, pedal: Math.random() * 6, climb: 0, tag };
+          rivalsOn.set(o.id, e); scene.add(r.root);
+        }
+        seen.add(o.id);
+        e.r.root.visible = true;
+        e.disp += o.speed * dt; e.disp += (o.d - e.disp) * Math.min(1, dt * 2.5);
+        if (Math.abs(o.d - e.disp) > 50) e.disp = o.d;
+        const p = at(e.disp, new T.Vector3()), f = at(e.disp + 4, new T.Vector3()).sub(at(e.disp - 4, new T.Vector3()));
+        const fl = Math.hypot(f.x, f.z) || 1, side = KEEP + o.lane;
+        e.r.root.position.copy(p).add(new T.Vector3(-f.z / fl * side, 0, f.x / fl * side));
+        e.r.root.rotation.set(0, Math.atan2(-f.x, -f.z), 0); e.r.root.rotateX(Math.atan2(f.y, fl));
+        e.pedal += (o.cadence / 60) * Math.PI * 2 * dt;
+        e.climb += ((o.standing ? 1 : 0) - e.climb) * Math.min(1, dt * 2);
+        e.r.root.rotateZ(Math.sin(e.pedal) * 0.09 * e.climb);
+        e.r.pose(e.pedal, e.climb, (o.speed / 0.34) * dt);
+        e.tag.visible = camPos.distanceTo(e.r.root.position) < 60;
+      }
+      for (const [id, e] of rivalsOn) if (!seen.has(id)) e.r.root.visible = false;
+      if (!list && rivalsOn.size) { // the race is over and gone: let them go
+        for (const e of rivalsOn.values()) { scene.remove(e.r.root); e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { m.geometry?.dispose(); m.material?.map?.dispose(); m.material?.dispose(); } }); }
+        rivalsOn.clear();
+      }
+    }
     const hills0 = mountains(photoDome && haze); scene.add(hills0);
 
     // Grass round the rider: tufts for the stretches from GRASS_BACK behind to
@@ -3142,6 +3230,7 @@ void main() {`);
       bike.root.rotation.set(0, heading, 0); bike.root.rotateX(pitch); // the model faces -z
       bike.root.rotateZ(Math.sin(pedal) * 0.09 * climb);
       bike.pose(pedal, climb, (s.speed / 0.34) * dt);
+      drawRivals(s.rivals, dt);
       // Chase camera: behind and above, looking down the road. It only tilts a
       // third of the way with the road, so a climb rises up the screen ahead of
       // the rider (and a descent drops away) instead of the horizon tilting with it.
