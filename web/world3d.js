@@ -2273,7 +2273,7 @@ void main() {`);
     // trees and houses with him on them, always at the right height; beyond,
     // it is Google's land, towns and mountains, and the sky. Every frame the
     // map's camera is set to ours, so the far land lines up with the near.
-    const GFADE = [160, 430];
+    const GFADE = [220, 560];
     let gl3 = null, glFail = '';
     function googleOn(key) {
       const box = document.createElement('div');
@@ -2351,7 +2351,13 @@ void main() {`);
       m.heading = ((Math.atan2(-d.x, d.z) * 180) / Math.PI + 360) % 360; // looking along -d: east -d.x, north +d.z (z is south)
       if (m.fov !== camera.fov) m.fov = camera.fov;
     }
-    let googleLift = 0; // m, to raise or lower Google's land against ours
+    // Google's camera rides this much higher than ours. Its ground and our
+    // terrain disagree by up to 20 m (and ours is drawn LIFT times steeper),
+    // so with the cameras level Google's land could rise in front of our
+    // road or the camera end up inside Google's hill. From higher up, its
+    // land sits a little lower in the picture, under our near world, and
+    // the far mountains move by a fraction of a degree.
+    let googleLift = 25;
 
     // Weather. Clear is the photographed sky as it is; the others fade the sky
     // into a heavier haze, dim the sun (no hard shadows under cloud), thicken
@@ -2826,7 +2832,7 @@ void main() {`);
       set look(v) { const on = v === 'video' && !!post; if (on !== look) { look = on; if (post) post.reset(); } },
       get canLook() { return !!post; },
       get google() { return gl3 ? (gl3.map ? 'on' : 'loading') : glFail ? `fail:${glFail}` : ''; },
-      set googleLift(m) { googleLift = +m || 0; },
+      set googleLift(m) { googleLift = Number.isFinite(+m) ? +m : 25; },
     };
   }
 
