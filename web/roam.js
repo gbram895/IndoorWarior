@@ -160,6 +160,7 @@
     // What is ahead: the last node taken and the one before it (the way in).
     let end = null, sel = 0, opts = [];
     const segs = []; // the road under each stretch: { d0, a, b } (a behind, b ahead)
+    const turns = []; // the route points where you turned round
 
     const push = (p, lvl) => {
       const last = raw[raw.length - 1];
@@ -257,7 +258,7 @@
     // Called as you ride: loads the next square of map when you near the edge
     // of this one, and takes the way you picked as a junction comes close.
     function update(dist) {
-      const here = res[Math.min(res.length - 1, Math.floor(dist / STEP))];
+      const here = res[Math.max(0, Math.min(res.length - 1, Math.floor(dist / STEP)))];
       if (!loading && centre && metres(here, centre) > MOVE) {
         loading = loadSquare(here.lat, here.lon).then(() => { if (opts.length < 2) grow(); }, e => { rec.loadErr = e.message || String(e); }).finally(() => { loading = null; });
       }
@@ -287,7 +288,10 @@
       push(s.a);
       end = { node: s.a, from: s.b, way: s.a.adj.find(e => e.to === s.b)?.way || end.way };
       take(null);
-      resample(Math.max(0, Math.floor(p.d / STEP)));
+      const at = Math.max(0, Math.floor(p.d / STEP));
+      resample(at);
+      // For the 3D view: the road up to here stays; from here it doubles back.
+      route.turnedAt = at; turns.push(at);
       refreshOptions();
     }
 
@@ -299,7 +303,7 @@
     const pick = k => { if (opts.length > 1) sel = Math.max(0, Math.min(opts.length - 1, k)); };
 
     route.roam = {
-      rec, net, update, uTurn, next,
+      rec, net, update, uTurn, next, turns,
       left() { pick(sel - 1); }, right() { pick(sel + 1); },
       straight() { if (opts.length > 1) sel = straightest(opts, end.way); },
       choose(k) { pick(k); },
