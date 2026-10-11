@@ -2,3 +2,4 @@
 .build/
 *.swiftpm/.swiftpm/
 xcuserdata/
+__pycache__/
