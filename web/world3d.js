@@ -35,14 +35,21 @@
   const hillWeight = o => smooth(6, 70, Math.abs(o));
 
   // ---- The route as 3D points: x east, z south, y up, in metres from the start.
-  function geometryOf(route) {
+  // A free ride's road that grew passes the last geometry as `prev` and how
+  // many of its points stay (`keep`): those keep exactly what they had, so the
+  // world already built along them does not move, and the new road eases on
+  // from them.
+  function geometryOf(route, prev, keep = 0) {
     const res = route.res, n = res.length;
+    if (!prev) keep = 0;
+    keep = Math.min(keep, n, prev ? prev.n : 0);
     const lat0 = res[0].lat, lon0 = res[0].lon, k = Math.cos((lat0 * Math.PI) / 180);
-    const raw = res.map(p => [(p.lon - lon0) * 111320 * k, -(p.lat - lat0) * 110540]);
+    const raw = res.map((p, i) => i < keep ? prev.xz[i] : [(p.lon - lon0) * 111320 * k, -(p.lat - lat0) * 110540]);
     // GPS wobble makes the road zigzag; average a few points either side.
     // The window stays centred, so the ends don't get pulled inwards (that
     // left a 30 m gap at the line of a loop); a loop averages round the line.
     const xz = raw.map((_, i) => {
+      if (i < keep) return prev.xz[i];
       const w = route.loop ? 3 : Math.min(3, i, n - 1 - i);
       let x = 0, z = 0, c = 0;
       for (let j = i - w; j <= i + w; j++) { const q = raw[route.loop ? (((j % (n - 1)) + n - 1) % (n - 1)) : j]; x += q[0]; z += q[1]; c++; } // a loop's last point is its first
@@ -51,8 +58,10 @@
     // Heights are drawn 1.6x steeper than they are. From a chase camera a true
     // 8% looks almost flat; this makes it read like the climb it feels like.
     // Only the picture: gradient, speed and the trainer use the real figures.
-    const y = res.map(p => (p.ele - res[0].ele) * LIFT);
-    const dup = sameRoad(xz, y, !!route.loop);
+    const ele0 = prev ? prev.ele0 : res[0].ele;
+    const y = res.map((p, i) => i < keep ? prev.y[i] : (p.ele - ele0) * LIFT);
+    const dup = sameRoad(xz, y, !!route.loop, route.roam?.turns);
+    for (let i = 0; i < keep; i++) { xz[i] = prev.xz[i]; y[i] = prev.y[i]; dup[i] = prev.dup[i]; }
     // Right-hand side of the direction of travel, flat.
     const side = xz.map((_, i) => {
       // A loop's ends share one direction, so the road closes without a crack at the line.
@@ -82,13 +91,24 @@
       let dh = h1 - h0; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
       return dh / (((b - a) || 1) * STEP); // + bends right, - left
     });
+    if (keep) { // the kept points as they were; the new ones ease away from them
+      freeze(side, prev.side, keep, 0); freeze(bend, prev.bend, keep, 0);
+      freeze(base, prev.base, keep, W); freeze(tilt, prev.tilt, keep, 20);
+    }
     // Road points in 100 m buckets, to find the road near any spot quickly.
     const hash = new Map();
     xz.forEach(([x, z], i) => { const k = bucket(x, z); hash.get(k)?.push(i) || hash.set(k, [i]); });
     // Back and forth between metres and latitude/longitude (the exact inverse of raw above).
     const ll = (x, z) => [lat0 - z / 110540, lon0 + x / (111320 * k)];
     const xzOf = (lat, lon) => [(lon - lon0) * 111320 * k, -(lat - lat0) * 110540];
-    return { n, xz, y, side, base, tilt, bend, hash, dup, loop: !!route.loop, ll, xzOf, ele0: res[0].ele };
+    return { n, xz, y, side, base, tilt, bend, hash, dup, loop: !!route.loop, ll, xzOf, ele0 };
+  }
+  // Points before `keep` take their old values; a number goes on from where
+  // its old value ended and blends into its new one over `ease` points.
+  function freeze(now, old, keep, ease) {
+    const jump = typeof old[0] === 'number' && keep < now.length ? old[keep - 1] - now[keep - 1] : 0;
+    for (let i = 0; i < keep; i++) now[i] = old[i];
+    if (jump && ease) for (let i = keep; i < Math.min(now.length, keep + ease); i++) now[i] += jump * (1 - (i - keep + 1) / ease);
   }
 
   // Out and back, or any road ridden twice: where the route runs along road
@@ -101,13 +121,18 @@
   // road nor the scenery beside it is built twice. A road merely crossing
   // another is left alone (it is not running the same way), and so are the
   // last few hundred metres of a loop meeting its own start.
-  function sameRoad(xz, y, loop) {
+  function sameRoad(xz, y, loop, turns) {
     const n = xz.length, dup = new Uint8Array(n), seen = new Map(), CELL = 20, BEHIND = 30;
+    // A free ride turned round at these points: the way back lies exactly on
+    // the way there (too close behind for the search below to see it).
+    const back = new Int32Array(n).fill(-1);
+    for (const p of turns || []) for (let i = p; i <= p + BEHIND && i < n && 2 * p - i >= 0; i++) back[i] = 2 * p - i;
     const key = (cx, cz) => cx * 65536 + cz;
     const dir = i => { const a = xz[Math.max(0, i - 1)], b = xz[Math.min(n - 1, i + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1; return [dx / l, dz / l]; };
     for (let i = 0; i < n; i++) {
       const r = i - BEHIND; // only road well behind counts as road already there
       if (r >= 0 && r < n - 1) { const k = key(Math.floor(xz[r][0] / CELL), Math.floor(xz[r][1] / CELL)); seen.get(k)?.push(r) || seen.set(k, [r]); }
+      if (back[i] >= 0) { xz[i] = xz[back[i]].slice(); y[i] = y[back[i]]; dup[i] = 1; continue; }
       const [x, z] = xz[i], cx = Math.floor(x / CELL), cz = Math.floor(z / CELL), di = dir(i);
       let best = null;
       for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const j of seen.get(key(cx + a, cz + b)) || []) {
@@ -228,7 +253,7 @@
 
   // The real land under a route: heights in route metres, and how far the
   // GPX's own heights sit from it along the road (smoothed over 300 m).
-  function useTerrain(g, near) {
+  function useTerrain(g, near, prev, keep = 0) {
     g.dem = (x, z) => { const [lat, lon] = g.ll(x, z); return near(lat, lon); };
     const raw = g.xz.map(([x, z], i) => { const h = g.dem(x, z); return Number.isFinite(h) ? g.y[i] - (h - g.ele0) * LIFT : 0; });
     g.off = raw.map((_, i) => {
@@ -236,6 +261,7 @@
       for (let j = Math.max(0, i - 15); j <= Math.min(g.n - 1, i + 15); j++) { s += raw[j]; c++; }
       return s / c;
     });
+    if (prev?.off && keep) freeze(g.off, prev.off, keep, 15);
   }
 
   // Snow lies above snowLine (m) at this time of year; trees grow up to
@@ -536,8 +562,11 @@
   // from range[0] up to range[1], so each piece of road builds its own.
   function houses(g, R, osm, range) {
     if (!osm) return [];
-    const cells = new Map(), rand = rng(77);
+    const cells = new Map();
     for (const bd of osm.buildings) {
+      // Each building's own dice, from where it stands, so it comes out the
+      // same however often (and in whatever company) it is built.
+      const rand = rng(Math.round(bd.ring[0][0] * 1e5) * 92821 + Math.round(bd.ring[0][1] * 1e5));
       if (range) { // quick test on one corner before the whole outline
         const [x, z] = g.xzOf(bd.ring[0][0], bd.ring[0][1]), n = nearestPoint(g, x, z, 280);
         if (n < range[0] - 2 || n >= range[1] + 2) continue;
@@ -548,7 +577,7 @@
       let cx = 0, cz = 0;
       for (const [x, z] of ring) { cx += x; cz += z; }
       cx /= ring.length; cz /= ring.length;
-      if (range) { const n = nearestPoint(g, cx, cz, 280); if (n < range[0] || n >= range[1]) continue; }
+      if (range) { const n = nearestPoint(g, cx, cz, 280); if (n < range[0] || n >= range[1] || g.dup[n]) continue; } // road ridden before has its houses
       let sxx = 0, szz = 0, sxz = 0;
       for (const [x, z] of ring) { sxx += (x - cx) ** 2; szz += (z - cz) ** 2; sxz += (x - cx) * (z - cz); }
       const a = 0.5 * Math.atan2(2 * sxz, sxx - szz), ux = Math.cos(a), uz = Math.sin(a);
@@ -666,7 +695,7 @@
           const x = ax + ((bx - ax) * m) / n, z = az + ((bz - az) * m) / n, along = walked + (len * m) / n;
           if (x < x0 - SIDE || x > x1 + SIDE || z < z0 - SIDE || z > z1 + SIDE) { flush(); continue; }
           let j = nearestPoint(g, x, z, 120); if (j < 0) j = nearestPoint(g, x, z, SIDE);
-          const mine = j >= s && (j < e || j === g.n - 1); // the last piece also has what lies past the end
+          const mine = j >= s && (j < e || j === g.n - 1) && !g.dup[j]; // the last piece also has what lies past the end; road ridden before has its side roads
           if (!mine || roadDist(g, x, z) < ROAD_HALF + 0.3) { flush(); continue; }
           run.push([x, z, meshY(x, z), along]);
         }
@@ -2178,7 +2207,7 @@ void main() {`);
     let scatter = [], scatterTick = 0; // tree and hedge groups, hidden when far away
     // Land pieces and their painted textures: the job being painted, and the
     // grass grain every land material shares.
-    let pieces = [], paintTick = 0, job = null, chunks = new Map(), tileOf = new Map(), builtVer = null, builtArea = null;
+    let pieces = [], paintTick = 0, job = null, chunks = [], tileOf = new Map(), builtVer = null, builtArea = null;
     const grassPhoto = photo('grass', renderer), grain = grassPhoto ? { photo: true, grass: grassPhoto, soil: photo('dirt', renderer) } : { grass: surface('grass', renderer) };
     const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
@@ -2321,7 +2350,7 @@ void main() {`);
       const dirt = new T.MeshLambertMaterial({ color: 0x8b7b5f, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
       world.userData.mats = { asphalt, paint, land, lane, dirt };
       world.userData.seed = Math.round(route.total) + route.res.length;
-      scatter = []; pieces = []; job = null; chunks = new Map(); tileOf = new Map();
+      scatter = []; pieces = []; job = null; chunks = []; tileOf = new Map();
       const sc = sceneryOf(route);
       woodsAt = route.scenery?.woods || [0, 0];
       world.userData.sc = sc;
@@ -2355,9 +2384,10 @@ void main() {`);
     // land strip, its trees, and on a free ride the side roads and houses
     // nearest it. Kept by s, so a free ride can build it again when the road
     // past it changes.
-    function buildChunk(g, s) {
-      const e = Math.min(g.n - 1, s + CHUNK), M = world.userData.mats, sc = world.userData.sc, objs = [];
+    function buildChunk(g, s, e = Math.min(g.n - 1, s + CHUNK)) {
+      const M = world.userData.mats, sc = world.userData.sc, objs = [];
       const add = o => { world.add(o); objs.push(o); };
+      const piece = { s, e, objs, extra: [] };
       const strip = (from, to, lift, mat, keep) => { const m = new T.Mesh(ribbon(g, s, e, from, to, lift, keep), mat); m.receiveShadow = true; add(m); };
       const fresh = i => !(g.dup[i] && g.dup[i - 1]); // road ridden before is drawn once
       strip(-ROAD_HALF, ROAD_HALF, 0.02, M.asphalt, fresh);
@@ -2370,12 +2400,18 @@ void main() {`);
       const t = trees(g, s, e, world.userData.seed + s, avoid);
       for (const o of t) add(o);
       scatter.push(...t);
-      if (built.roam) {
-        const side = sideRoads(g, s, e, built.roam, M);
-        if (side) add(side);
-        if (REAL) { const h = houses(g, REAL, built.roam.rec.osm, [s, e === g.n - 1 ? e + 1 : e]); for (const o of h) add(o); scatter.push(...h); }
-      }
-      chunks.set(s, objs);
+      chunks.push(piece);
+      if (built.roam) roamExtras(g, piece);
+    }
+    // A free ride's side roads and houses for a piece. The last piece also has
+    // those past the end of the road, so they are made again when it grows.
+    function roamExtras(g, piece) {
+      for (const o of piece.extra) drop(o);
+      piece.extra = [];
+      const { s, e } = piece, add = o => { world.add(o); piece.extra.push(o); };
+      const side = sideRoads(g, s, e, built.roam, world.userData.mats);
+      if (side) add(side);
+      if (REAL) { const h = houses(g, REAL, built.roam.rec.osm, [s, e === g.n - 1 ? e + 1 : e]); for (const o of h) add(o); scatter.push(...h); }
     }
     // Take something out of the world for good, keeping the materials other
     // pieces share.
@@ -2389,15 +2425,17 @@ void main() {`);
       if (pieces.includes(o)) pieces = pieces.filter(m => m !== o);
       if (scatter.includes(o)) scatter = scatter.filter(m => m !== o);
     }
-    // A free ride's road grew (or turned round): the pieces from just before
-    // the change are built again for the new road and the land round them
-    // made again; everything before stays as it is, paint and all.
+    // A free ride's road grew (or turned round): new pieces for the new road;
+    // everything already built stays as it is, paint and all, so nothing
+    // round the rider flickers or changes.
     function grow(route) {
-      const rec = route.roam.rec, from = Math.max(0, Math.min(route.changedFrom, route.res.length - 1));
-      route.changedFrom = Infinity; builtVer = route.ver;
-      const g = geometryOf(route);
+      const rec = route.roam.rec, old = world.userData.g;
+      // The road ridden so far stays as it is; after a U-turn, up to where he turned.
+      const turned = route.turnedAt != null, keep = Math.max(1, Math.min(old.n, turned ? route.turnedAt : old.n));
+      route.turnedAt = null; route.changedFrom = Infinity; builtVer = route.ver;
+      const g = geometryOf(route, old, keep);
       world.userData.g = g;
-      if (rec.near) useTerrain(g, rec.near);
+      if (rec.near) useTerrain(g, rec.near, old, keep);
       const newArea = rec.area !== builtArea;
       builtArea = rec.area;
       if (REAL) {
@@ -2409,19 +2447,28 @@ void main() {`);
           if (wt.length) world.userData.water.add(...wt);
         }
       }
-      // Pieces from 80 points before the change (the land and the road's
-      // smoothing reach that far back), built again.
-      const c0 = Math.max(0, Math.floor((from - 80) / CHUNK) * CHUNK);
-      for (const [s0, objs] of [...chunks]) if (s0 >= c0) { for (const o of objs) drop(o); chunks.delete(s0); }
-      for (let s0 = c0; s0 < g.n - 1; s0 += CHUNK) buildChunk(g, s0);
-      // The land tiles round the new road: made again where the road comes
-      // within 400 m, added where there were none.
-      const fresh = landTiles(g, c0);
+      // Nothing already built is taken away: after a U-turn the road on
+      // ahead is still there (it is a real road), just not where you go now.
+      // The piece that ended where the road went on gets its side roads and
+      // houses again (the new road is no longer a side road), and the new
+      // road gets pieces of its own.
+      for (const c of chunks) if (!c.gone && c.e >= keep) {
+        // Its land keeps the paint it has: its point numbers now mean the road back.
+        c.gone = true;
+        pieces = pieces.filter(m => !c.objs.includes(m));
+        if (job && c.objs.includes(job.m)) job = null;
+      }
+      const last = chunks.find(c => !c.gone && c.e === keep - 1);
+      if (last) roamExtras(g, last);
+      for (let s0 = turned ? keep : keep - 1; s0 < g.n - 1;) { const e = Math.min(g.n - 1, s0 + CHUNK); buildChunk(g, s0, e); s0 = e; }
+      // The land tiles round the new road: new where there were none; where
+      // the new road crosses one, made again and swapped in under its paint.
+      const fresh = landTiles(g, Math.max(0, keep - 3));
       tiles = tiles.filter(t => !fresh.some(f => f.key === t.key));
       for (const t of fresh) {
-        const old = tileOf.get(t.key);
-        if (old && t.near > 400) continue;
-        if (old) { drop(old); tileOf.delete(t.key); }
+        const was = tileOf.get(t.key);
+        if (was && t.near > TILE * 0.71 + NEAR + 30) continue;
+        t.swap = was || null;
         tiles.push(t);
       }
       sortedAt = null;
@@ -2456,7 +2503,7 @@ void main() {`);
             if (u.hi === 'loading' && (u.mpp || d < 120)) continue;
             again = u.hi === 'in' && !u.hiDone && u.mpp === 1;
           }
-          if ((!u.mpp || want < u.mpp || again) && (!best || d < best.d) && job?.m !== m) best = { m, d, want };
+          if ((!u.mpp || want < u.mpp || again || u.stale) && (!best || d < best.d) && job?.m !== m) best = { m, d, want };
         }
         if (best && (!job || best.d < job.d - 100)) job = { ...best, hi: best.m.userData.hi, gen: paintLand(world.userData.g, best.m, best.want) };
       }
@@ -2467,7 +2514,7 @@ void main() {`);
         tex.anisotropy = maxAniso;
         unpaint(m);
         m.material = grained(new T.MeshLambertMaterial({ map: tex }), grain);
-        m.userData.mpp = job.want;
+        m.userData.mpp = job.want; m.userData.stale = false;
         m.userData.hiDone = job.hi === 'in'; // the photos were all in when this paint began
         job = null; paintTick = 0; // straight on to the next
       }
@@ -2548,7 +2595,15 @@ void main() {`);
           for (const t of tiles) t.d = Math.hypot(t.x - here.x, t.z - here.z);
           tiles.sort((p, q) => p.d - q.d);
         }
-        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) { const t = tiles.shift(), m = t.build(tileMat); world.add(m); pieces.push(m); tileOf.set(t.key, m); }
+        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) {
+          const t = tiles.shift(), m = t.build(tileMat);
+          if (t.swap && t.swap.parent) { // the same tile with a new road through it: new shape, same paint for now
+            const u = t.swap.userData;
+            t.swap.geometry.dispose(); t.swap.geometry = m.geometry; u.c = null; u.stale = true;
+            continue;
+          }
+          world.add(m); pieces.push(m); tileOf.set(t.key, m);
+        }
       }
       paintGround(dt);
       // Glide between the ride's 4 ticks a second, then ease onto the real distance.

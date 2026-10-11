@@ -253,6 +253,10 @@
   .turnbox svg { width: 26px; height: 26px; }
   .turnbox .nm { max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .turnbox .back { flex-direction: row; gap: 6px; margin: 6px auto 0; background: transparent; color: #c9cfda; font-weight: 500; padding: 3px 8px; }
+  /* No junction close: only a small Turn round button, out of the way. */
+  .turnbox.quiet { background: rgba(12, 14, 18, 0.45); padding: 2px 4px; }
+  .turnbox.quiet .t, .turnbox.quiet .opts { display: none; }
+  .turnbox.quiet .back { margin: 0; min-width: 0; font-size: 12px; opacity: 0.8; }
 </style>
 </head>
 <body>
@@ -3710,7 +3714,8 @@ const roamUi = (() => {
     const box = $('turnBox');
     if (!route?.roam) { if (!box.classList.contains('hidden')) box.classList.add('hidden'); shown = ''; return; }
     box.classList.remove('hidden');
-    const n = route.roam.next(routeState.dist);
+    const n0 = route.roam.next(routeState.dist), n = n0 && n0.dist < 150 ? n0 : null; // the next junction, once it is close
+    box.classList.toggle('quiet', !n && !route.roam.loading);
     $('turnT').textContent = n ? `Junction in ${Math.max(0, Math.round(n.dist / 10) * 10)} m` : route.roam.loading ? 'Loading the map ahead…' : 'Road ahead';
     const key = n ? `${n.sel}|${n.options.map(o => Math.round(o.turn)).join()}` : '';
     if (key === shown) return;
