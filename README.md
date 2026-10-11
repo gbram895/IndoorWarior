@@ -189,7 +189,20 @@ A dual-sided power meter that sends pedal power balance (the flag in the
 Cycling Power Measurement) shows a **Balance left / right** tile; it is
 recorded every second and saved in the .fit, so Garmin Connect shows it too.
 A meter that does not say which pedal its share belongs to is labelled "side
-not given". Bluetooth power meters do not report standing or seated.
+not given".
+
+**Out of the saddle (estimated).** Bluetooth power meters do not send seated
+or standing (Assioma reports it only over ANT+, which a browser cannot read),
+so it is guessed once a second from the power meter's power and cadence:
+cadence dropping below what you were just holding while the force per pedal
+stroke rises above your seated norm (learned over the first minute and kept up
+to date while seated), a hard sprint, or a steep ramp slowing your legs. Three
+seconds of that and you are standing; three without and you sit. For 15 s
+after a workout target changes nothing counts, since ERG changes force and
+cadence seated too. The rider in the 3D view stands up with it (without a
+power meter he still stands on steep road), the summary shows the time out of
+the saddle, and the .fit carries rider position events for Garmin Connect.
+The simulator has a **Stand up** button to try it.
 
 Battery levels (the standard Battery service 0x180F) show next to the
 trainer, strap, power meter and Di2 once connected, and a warning appears
@@ -213,6 +226,32 @@ off, the trainer gets the gradient under you through FTMS Indoor Bike
 Simulation, scaled by **Trainer difficulty** (50% by default, like Zwift);
 while ERG is on, ERG wins. Rides on a route are saved with position and
 elevation as a virtual ride, so Strava shows the map.
+
+Gravel and dirt come from the map: the roads under the route (OpenStreetMap
+`surface`, `tracktype`, tracks and paths, within 25 m and running the same way
+as the route) mark each 10 m of it as tarmac, gravel or dirt, ignoring
+stretches under 50 m. In the 3D view gravel is a narrower stony road without
+lines and dirt a two-track with grass up the middle; the ride view says
+"gradient · gravel". They also roll slower: rolling resistance 0.004 on
+tarmac, 0.009 on gravel and 0.014 on dirt, in the road speed and in the Crr
+sent to the trainer. This needs the real world (World: real) and its map.
+
+### Your routes, ride history and Strava routes
+
+Under the Route buttons, three tabs (kept in this browser, IndexedDB
+`iw-library`):
+
+- **Your routes**: every GPX or Strava route you load is kept, newest ridden
+  first, to ride again with one click.
+- **From Strava**: your Strava cycling routes (starred first marked ★),
+  through Gradient (`GET /api/health/strava/routes` and
+  `/api/health/strava/routes/:id/gpx`). Strava has to grant Gradient its read
+  scopes once; the tab links to Reconnect Strava until it has.
+- **Ride history**: every finished ride with its summary (the last 300).
+  Open one to see the full summary, save its .fit again, ride its route again,
+  or ride it again **against** that ride: the ride view then shows how far
+  ahead (green) or behind (amber) you are, in time at the same distance.
+  A ride whose route was removed from Your routes is ridden on its own track.
 
 ### Ride anywhere
 
