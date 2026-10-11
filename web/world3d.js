@@ -1955,6 +1955,61 @@ void main() {`);
     const cranks = [0, 1].map(() => add(loft([[-0.12, 0.012, 0.01], [0, 0.016, 0.012], [0.5, 0.012, 0.01], [1, 0.011, 0.01], [1.1, 0.008, 0.008]], 10), M.carbon));
     const pedals = [0, 1].map(() => add(new T.BoxGeometry(0.075, 0.014, 0.085), M.dark));
 
+    const builtBike = root.children.slice(); // hidden when a bike model is loaded
+    // A bike model of his own (glTF, rigged with wheel, chainring and pedal
+    // bones, as Sketchfab's often are): set in place of the built bike, sized
+    // so its wheels fall on ours, and its bones turned by pose().
+    let own = null;
+    const XA = V(1, 0, 0), q1 = new T.Quaternion();
+    function useBike(model) {
+      if (own) { root.remove(own.holder); own = null; }
+      for (const o of builtBike) o.visible = !model;
+      if (!model) return;
+      const holder = new T.Group(); holder.add(model); root.add(holder);
+      holder.updateMatrixWorld(true);
+      const find = re => { let b = null; model.traverse(o => { if (!b && o.isBone && re.test(o.name)) b = o; }); return b; };
+      const B = { rear: find(/back.?wheel|rear.?wheel/i), front: find(/front.?wheel/i), ring: find(/chain.?ring|crank/i), right: find(/right.?ped/i), left: find(/left.?ped/i) };
+      if (!B.rear || !B.front) throw new Error('This model has no wheel bones, so its wheels could not turn.');
+      // Which way it faces, from its wheels, and how big it is.
+      const at = b => root.worldToLocal(b.getWorldPosition(new T.Vector3())); // in the rider's own frame
+      const r = at(B.rear), f = at(B.front), along = f.clone().sub(r).setY(0);
+      const scale = (FRONT.z - REAR.z) / -along.length();
+      holder.rotation.y = Math.atan2(along.x, along.z); // its front to our -z
+      holder.scale.setScalar(scale);
+      holder.updateMatrixWorld(true);
+      const r2 = at(B.rear);
+      holder.position.set(-r2.x, REAR.y - r2.y, REAR.z - r2.z);
+      holder.updateMatrixWorld(true);
+      model.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+      // Where its saddle and hoods are: the highest points over the seat post
+      // and out on the bars, so the rider sits on the one and holds the other.
+      let seatY = -1, hood = null; const v = new T.Vector3();
+      model.traverse(o => {
+        if (!o.isMesh) return;
+        const pos = o.geometry.attributes.position, step = Math.max(1, Math.floor(pos.count / 60000));
+        for (let i = 0; i < pos.count; i += step) {
+          v.fromBufferAttribute(pos, i); if (o.isSkinnedMesh) o.boneTransform(i, v); // r149 skins the vector it is given
+          root.worldToLocal(v.applyMatrix4(o.matrixWorld));
+          if (Math.abs(v.x) < 0.06 && v.z > 0.15 && v.z < 0.45) seatY = Math.max(seatY, v.y);
+          if (Math.abs(v.x) > 0.12 && Math.abs(v.x) < 0.3 && v.z < -0.38 && v.z > -0.75 && (!hood || v.y > hood.y)) hood = v.clone();
+        }
+      });
+      // Each moving bone turns about our x axis, seen from its parent.
+      const spin = b => {
+        if (!b) return null;
+        const pq = b.parent.getWorldQuaternion(new T.Quaternion()).premultiply(root.getWorldQuaternion(new T.Quaternion()).invert());
+        return { b, q0: b.quaternion.clone(), axis: XA.clone().applyQuaternion(pq.invert()) };
+      };
+      own = { holder, rear: spin(B.rear), front: spin(B.front), ring: spin(B.ring), pedals: [spin(B.left), spin(B.right)], wheel: 0,
+        lift: seatY > 0.75 && seatY < 1.1 ? seatY - SEAT.y - 0.005 : 0, hood: hood && hood.y > 0.8 && hood.y < 1.15 ? hood : V(0.21, 0.945, -0.53) };
+      if (B.ring && B.right) { // the cranks: centre, length, and the right one's angle as it was modelled
+        const c = at(B.ring), pr = at(B.right), pl = B.left ? at(B.left) : pr.clone().setX(-pr.x);
+        own.bb = c; own.crank = Math.hypot(pr.y - c.y, pr.z - c.z); own.a0 = Math.atan2(-(pr.z - c.z), pr.y - c.y);
+        own.px = [pl.x, pr.x];
+      }
+    }
+    const turn = (j, angle) => { if (j) j.b.quaternion.copy(q1.setFromAxisAngle(j.axis, angle)).multiply(j.q0); };
+
     // ---- Rider. Lengths in metres for a 1.80 m rider.
     const THIGH = 0.45, SHIN = 0.44, UPPER = 0.29, FORE = 0.27, FOOT = 0.28;
     // Cross-sections, measured off photos of riders: quads in front of the
@@ -2033,11 +2088,16 @@ void main() {`);
 
     function pose(pedal, climb, roll) {
       for (const w of wheels) w.rotation.x -= roll;
+      if (own) {
+        own.wheel -= roll; turn(own.rear, own.wheel); turn(own.front, own.wheel);
+        if (own.bb) turn(own.ring, -(pedal + Math.PI - own.a0));
+      }
       // Seated hips on the saddle; standing, they rise and come forward over
       // the cranks. Seated, the hips rock a little with each stroke.
       const rock = Math.sin(pedal) * 0.006 * (1 - climb);
-      const hipC = V(rock, 1.0 + 0.13 * climb, 0.27 - 0.2 * climb);
-      const shC = V(-rock * 0.5, 1.37 + 0.1 * climb, -0.16 - 0.1 * climb);
+      const up = own ? own.lift : 0;
+      const hipC = V(rock, 1.0 + up + 0.13 * climb, 0.27 - 0.2 * climb);
+      const shC = V(-rock * 0.5, 1.37 + up + 0.1 * climb, -0.16 - 0.1 * climb);
       const spine = shC.clone().sub(hipC), chest = FWD.clone().addScaledVector(V(0, -1, 0), 0.3);
       orient(torso, hipC, shC, chest);
       const neckTop = shC.clone().add(V(0, 0.075, -0.075));
@@ -2047,7 +2107,8 @@ void main() {`);
       [0, 1].forEach(k => {
         const sgn = k ? 1 : -1, a = pedal + (k ? Math.PI : 0);
         // Crank and pedal.
-        const pd = V(sgn * 0.09, BB.y + Math.cos(a) * 0.17, BB.z - Math.sin(a) * 0.17);
+        const cb = own?.bb || BB, cl = own?.bb ? own.crank : 0.17;
+        const pd = V(own?.bb ? own.px[k] - Math.sign(own.px[k]) * 0.02 : sgn * 0.09, cb.y + Math.cos(a) * cl, cb.z - Math.sin(a) * cl);
         orient(cranks[k], BB.clone().setX(sgn * 0.075), pd.clone().setX(sgn * 0.08), V(1, 0, 0));
         pedals[k].position.copy(pd).setX(sgn * 0.11);
         // Foot: the ball over the pedal, the toe dropping as it comes round
@@ -2055,6 +2116,7 @@ void main() {`);
         const toeDown = 0.33 - 0.18 * Math.sin(a);
         dir.set(0, -Math.sin(toeDown), -Math.cos(toeDown)); fup.set(0, Math.cos(toeDown), -Math.sin(toeDown));
         pedals[k].rotation.x = toeDown;
+        if (own?.bb) turn(own.pedals[k], pedal + Math.PI - own.a0 - toeDown); // the pedal stays under the shoe
         ball.copy(pd).setX(sgn * 0.1).addScaledVector(fup, 0.02);
         heel.copy(ball).addScaledVector(dir, -0.68 * FOOT); toe.copy(ball).addScaledVector(dir, 0.32 * FOOT);
         ank.copy(heel).addScaledVector(dir, 0.2 * FOOT).addScaledVector(fup, 0.085);
@@ -2070,20 +2132,20 @@ void main() {`);
         orient(L.shin, j, ank, knee); orient(L.sock, j, ank, knee);
         // Arm: shoulder -> elbow -> wrist, hands over the hoods.
         sh.copy(hipC).addScaledVector(spine, 0.9).add(V(sgn * 0.175, -0.01, 0.0));
-        wrist.set(sgn * 0.2, 0.935, -0.475);
+        if (own) wrist.set(sgn * Math.abs(own.hood.x) * 0.92, own.hood.y + 0.005, own.hood.z + 0.045); else wrist.set(sgn * 0.2, 0.935, -0.475);
         const A = arms[k], elbowPole = V(sgn * 0.6, -0.2, 0.8).normalize();
         ik(sh, wrist, UPPER, FORE, elbowPole, j);
         const armFwd = V(0, -0.4, -1);
         orient(A.upper, sh, j, armFwd); orient(A.sleeve, sh, j, armFwd); orient(A.cuff, sh, j, armFwd);
         orient(A.fore, j, wrist, armFwd);
-        hand.set(sgn * 0.2, 0.9, -0.6);
+        if (own) hand.set(wrist.x, wrist.y - 0.03, wrist.z - 0.11); else hand.set(sgn * 0.2, 0.9, -0.6);
         orient(A.hand, wrist, hand, V(0, 1, 0.3));
         tip.copy(wrist).add(V(-sgn * 0.035, -0.02, -0.06));
         orient(A.thumb, wrist.clone().add(V(-sgn * 0.02, -0.005, -0.02)), tip, V(0, 1, 0));
       });
     }
     pose(0, 0, 0);
-    return { root, pose };
+    return { root, pose, useBike, get bikeOn() { return !!own; } };
   }
 
   const VIEWS = {
@@ -2968,6 +3030,14 @@ void main() {`);
       set look(v) { const on = v === 'video' && !!post; if (on !== look) { look = on; if (post) post.reset(); } },
       get canLook() { return !!post; },
       get google() { return gl3 ? (gl3.map ? 'on' : 'loading') : glFail ? `fail:${glFail}` : ''; },
+      // Your own bike: a .glb file's ArrayBuffer (needs THREE.GLTFLoader), or
+      // null for the built-in one. Resolves to the model's title, if it has one.
+      setBike(buf) {
+        if (!buf) { bike.useBike(null); return Promise.resolve(null); }
+        return new Promise((ok, fail) => new THREE.GLTFLoader().parse(buf, '', g => {
+          try { bike.useBike(g.scene); ok(g.asset?.extras?.title || g.parser?.json?.asset?.extras?.title || ''); } catch (e) { bike.useBike(null); fail(e); }
+        }, e => fail(new Error(`That file could not be read as a 3D model (${e?.message || e}).`))));
+      },
       set googleLift(m) { googleLift = Number.isFinite(+m) ? +m : 25; },
     };
   }

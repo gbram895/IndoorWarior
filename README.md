@@ -241,7 +241,24 @@ cadence (two-bone IK from the hip to the ankle), the feet ankle through the
 stroke, the arms reach the hoods, and the body parts are lofted from
 cross-sections (quads, calves, glutes, a rounded back) rather than drawn as
 cylinders. On a real gradient above 6% the rider gets out of the saddle and rocks
-the bike. **Camera** switches between behind, close behind, the roadside and
+the bike.
+
+**Bike** swaps the built-in bike for a 3D model of your own: pick a `.glb`
+file (or drop one on the 3D view to replace it) and the button then switches
+between it and the built-in bike. The file is kept in this browser
+(IndexedDB) and is never uploaded or put in this repository, because models
+bought or downloaded under a licence such as Sketchfab's Standard licence may
+not be handed out as files from a public site. The model is turned to face
+down the road, scaled so its wheelbase matches, and the rider sits on its
+saddle and holds its hoods (found as the highest points over the seat post
+and out on the bars). If the model has bones for its wheels, chainring and
+pedals (named like `Back_Wheel`, `Front_Wheel`, `ChainRing`, `RightPeddle`,
+`LeftPeddle`), they turn with your speed and cadence; a model without wheel
+bones is refused. Draco-compressed files are not read. The loader
+(`web/vendor/GLTFLoader.js`, three.js r149, MIT) loads only when a model is
+used.
+
+**Camera** switches between behind, close behind, the roadside and
 free: drag to go round the rider, the mouse wheel or two fingers to zoom
 (from 2.5 m to 450 m away), double-click to put it back behind him;
 **Weather** between clear, cloudy, rain (falling rain, a wet road), fog and

@@ -56,8 +56,8 @@
   .hud3d b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .hud3d i { font-style: normal; font-size: 11px; color: var(--muted); }
   .route3d:fullscreen .hud3d b { font-size: 34px; }
-  .r3dbtns { position: absolute; right: 10px; top: 10px; display: flex; gap: 6px; }
-  .r3dbtn { background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; }
+  .r3dbtns { position: absolute; right: 10px; top: 10px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: max(45%, calc(100% - 330px)); } /* wraps beside the readouts rather than over them */
+  .r3dbtn { background: rgba(15, 17, 21, 0.72); color: var(--text); padding: 6px 10px; font-size: 13px; white-space: nowrap; }
   .r3dshoot { top: auto; bottom: 30px; }
   .r3dbtn.rec { background: rgba(200, 30, 30, 0.85); color: #fff; }
   .r3dflash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 400ms ease-out; }
@@ -486,7 +486,7 @@
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
       <div id="route3d" class="route3d hidden">
         <div class="hud3d"><div><b id="h3Power">--</b><i>watts</i></div><div><b id="h3Speed">--</b><i>km/h</i></div><div><b id="h3Grade">--</b><i>gradient</i></div><div><b id="h3Dist">--</b><i>km</i></div></div>
-        <div class="r3dbtns"><button class="r3dbtn hidden" id="r3dWorld">World: real</button><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dLook">Look: video</button><button class="r3dbtn" id="r3dFull">Full screen</button></div>
+        <div class="r3dbtns"><button class="r3dbtn hidden" id="r3dWorld">World: real</button><button class="r3dbtn" id="r3dCam">Camera: behind</button><button class="r3dbtn" id="r3dWeather">Weather: clear</button><button class="r3dbtn" id="r3dLook">Look: video</button><button class="r3dbtn" id="r3dBike" title="Use a 3D bike model (.glb) from this computer. Drop another .glb on the 3D view to replace it.">Bike: add model</button><button class="r3dbtn" id="r3dFull">Full screen</button><input type="file" id="r3dBikeFile" accept=".glb,model/gltf-binary" class="hidden"></div>
         <div class="r3dbtns r3dshoot"><button class="r3dbtn" id="r3dPhoto">Screenshot</button><button class="r3dbtn" id="r3dRec">Record</button></div>
         <div class="r3dflash" id="r3dFlash"></div>
         <div class="r3dnote" id="r3dNote"></div>
@@ -3630,7 +3630,7 @@ function clearRoute() {
 $('gpxInput').addEventListener('change', e => loadGpxFile(e.target.files[0]));
 $('courseBtn').addEventListener('click', () => loadCourse('island'));
 $('routePanel').addEventListener('dragover', e => e.preventDefault());
-$('routePanel').addEventListener('drop', e => { e.preventDefault(); loadGpxFile(e.dataTransfer.files[0]); });
+$('routePanel').addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (/\.glb$/i.test(f?.name || '')) view3d.dropBike(f); else loadGpxFile(f); }); // a .glb is a bike model
 $('routeClear').addEventListener('click', clearRoute);
 // ---- Ride anywhere (roam.js): pick a spot on a map, start on the nearest
 // road and choose your way at every junction. The map is Leaflet with
@@ -3787,6 +3787,7 @@ const view3d = (() => {
     try { world = await loading; } catch (e) { loading = null; throw e; }
     world.view = cam; world.look = look; applyWeather();
     $('r3dLook').classList.toggle('hidden', !world.canLook); // WebGL 1: plain only
+    applyBike();
     return world;
   }
   // World: for a GPX route or a free ride, the real land, woods, water and
@@ -3868,6 +3869,55 @@ const view3d = (() => {
   };
   setLook(look);
   $('r3dLook').addEventListener('click', () => setLook(look === 'video' ? 'plain' : 'video'));
+  // Bike: the built-in one, or a 3D model (.glb) you pick from this computer.
+  // The file stays in this browser (IndexedDB) and is never uploaded: models
+  // bought or downloaded under a licence can't be put on a public site.
+  // Its wheels, cranks and pedals turn when it has bones named for them.
+  let bikeOn = false, bikeName = '', bikeShown = null;
+  try { bikeOn = localStorage.getItem('bike3d') === 'mine'; } catch {}
+  const bikeDb = () => new Promise((ok, fail) => {
+    const req = indexedDB.open('iw-models', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('models');
+    req.onsuccess = () => ok(req.result); req.onerror = () => fail(req.error);
+  });
+  const bikeStore = async (mode, fn) => {
+    const d = await bikeDb();
+    return new Promise((ok, fail) => { const t = d.transaction('models', mode), r = fn(t.objectStore('models')); t.oncomplete = () => ok(r.result); t.onerror = () => fail(t.error); });
+  };
+  const bikeLabel = () => { $('r3dBike').textContent = bikeOn && bikeName ? `Bike: ${bikeName}` : bikeName ? 'Bike: built in' : 'Bike: add model'; };
+  bikeStore('readonly', st => st.get('bike')).then(r => { bikeName = r?.name || ''; if (!bikeName) bikeOn = false; bikeLabel(); applyBike(); }).catch(() => { bikeOn = false; bikeLabel(); });
+  let bikeQ = Promise.resolve();
+  function applyBike() { bikeQ = bikeQ.then(applyBikeNow); } // one change at a time, however fast the clicks
+  async function applyBikeNow() { // puts the chosen bike in the 3D view (once it is open)
+    if (!world) return;
+    const want = bikeOn && bikeName ? bikeName : null;
+    if (want === bikeShown) return;
+    try {
+      if (want) {
+        if (!THREE.GLTFLoader) await loadScript('vendor/GLTFLoader.js');
+        const rec = await bikeStore('readonly', st => st.get('bike'));
+        const title = (await world.setBike(rec.buf) || '').split('|')[0].trim().slice(0, 30); // Sketchfab files carry the model's name
+        if (title && title !== bikeName) { bikeName = title; bikeLabel(); bikeStore('readwrite', st => st.put({ ...rec, name: title }, 'bike')).catch(() => {}); }
+        bikeShown = bikeName; return;
+      } else await world.setBike(null);
+      bikeShown = want;
+    } catch (e) {
+      bikeOn = false; bikeShown = null; bikeLabel(); world.setBike(null);
+      routeMsg(`Your bike model could not be used: ${e.message}`, 'bad');
+    }
+  }
+  const setBikeOn = on => { bikeOn = on; bikeLabel(); try { localStorage.setItem('bike3d', on ? 'mine' : 'built'); } catch {} applyBike(); };
+  const dropBike = f => addBike(f).catch(err => routeMsg(`Could not keep that bike model: ${err.message}`, 'bad'));
+  async function addBike(file) {
+    if (!file) return;
+    if (!/\.glb$/i.test(file.name)) { routeMsg('Pick a .glb file: one file with the model and its textures inside.', 'bad'); return; }
+    const name = file.name.replace(/\.glb$/i, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 30) || 'my bike';
+    const buf = await file.arrayBuffer();
+    await bikeStore('readwrite', st => st.put({ name, buf }, 'bike'));
+    bikeName = name; bikeShown = null; setBikeOn(true);
+  }
+  $('r3dBike').addEventListener('click', () => { if (bikeOn) setBikeOn(false); else if (bikeName) setBikeOn(true); else $('r3dBikeFile').click(); });
+  $('r3dBikeFile').addEventListener('change', e => { dropBike(e.target.files[0]); e.target.value = ''; });
   // Weather: clear, cloudy, rain, fog or snow, or real: the weather at the
   // route's start right now (Open-Meteo), fetched once per route. Remembered.
   const WEATHERS = ['clear', 'cloudy', 'rain', 'fog', 'snow', 'real'];
@@ -3977,7 +4027,7 @@ const view3d = (() => {
   })();
   stopRec = shot.stopRec;
 
-  return { show, hud, stopRec: () => stopRec(), refresh: () => show(mode), riding: v => { riding = v; }, get mode() { return mode; }, get info() { return world?.info; }, get scenery() { return world?.scenery; }, get real() { return world?.real; } };
+  return { show, hud, dropBike, stopRec: () => stopRec(), refresh: () => show(mode), riding: v => { riding = v; }, get mode() { return mode; }, get info() { return world?.info; }, get scenery() { return world?.scenery; }, get real() { return world?.real; } };
 })();
 
 
