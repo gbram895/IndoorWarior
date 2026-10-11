@@ -300,13 +300,16 @@ a vented helmet and wraparound glasses; the bike has deep carbon rims and a
 bottle.
 
 **World: Google 3D** (the World button in the 3D view, for a GPX route or
-Ride anywhere): Google's photoreal 3D world instead of ours. Google draws it
-in its own map element (Map3DElement); the rider is drawn on a see-through
-canvas over it, with his shadow, and every frame Google's camera is set to
-the one the view would use (the point looked at, how far back, how far
-tipped, which way), so all four cameras work, the free one included. The
-height under him comes from the same terrain tiles as the real world, so
-he can sit a metre or two off Google's road. It uses your own Google Maps
+Ride anywhere): a hybrid. Up close it is our world as before (road, verges,
+trees, houses, the rider on them); from about 160 m it fades into Google's
+photoreal 3D world, which supplies the far land, towns, mountains and sky.
+Google draws its part in its own map element (Map3DElement) behind our
+canvas, and every frame Google's camera is set to the one the view uses (the
+point looked at, how far back, how far tipped, which way), so all four
+cameras work; the fade moves out with the free camera so he never fades
+away. Because he rides on our road, he can't float over, sink into or sit
+beside Google's: an earlier version drew him straight onto Google's world
+and its ground differed from our terrain heights by up to 20 m. It uses your own Google Maps
 key (the one the test page below saved, or it asks); if Google refuses it,
 the view goes back to the real world and says why. No screenshots or
 recordings here: Google's picture can't be copied out of its map. Pricing
