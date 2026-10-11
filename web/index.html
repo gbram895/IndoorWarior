@@ -78,6 +78,16 @@
   .sensor .label { color: var(--muted); font-size: 13px; }
   .sensor-state { font-size: 15px; }
   .sensor-state.ok { color: var(--ok); } .sensor-state.bad { color: var(--bad); }
+  .rllist { max-height: 420px; overflow: auto; }
+  .rlrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #262b35; }
+  .rlrow .rlmain { flex: 1; min-width: 0; cursor: pointer; }
+  .rlrow .rlname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rlrow .rlmeta { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rlrow button { padding: 6px 12px; font-size: 14px; }
+  .rlrow .rlx { background: none; color: var(--muted); padding: 6px 8px; }
+  .rldetail { padding: 10px 0 14px; border-bottom: 1px solid #262b35; }
+  .rv-ghost { display: block; font-style: normal; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rv-ghost.ahead { color: var(--ok); } .rv-ghost.behind { color: var(--warn); }
   .stat .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .sumtitle { font-weight: 600; margin-bottom: 10px; }
   .sumgrid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
@@ -501,6 +511,8 @@
       </div>
     </div>
     <p class="muted" style="margin:8px 0 0">Ride the built-in 12 km island loop, load a GPX file (a Strava or Komoot route export works) or drop one here, or ride anywhere: pick a road on a map and choose your way at every junction.</p>
+    <div class="seg" id="rlSeg"><button data-tab="routes">Your routes</button><button data-tab="strava">From Strava</button><button data-tab="history">Ride history</button></div>
+    <div id="rlBox" class="hidden"><div id="rlList" class="rllist"></div><div id="rlMsg" class="muted"></div></div>
     <div id="routeBox" class="hidden">
       <div class="wname" id="routeName"></div>
       <div class="seg" id="routeViewSeg"><button data-view="3d">3D</button><button data-view="2d">Map</button></div>
@@ -517,7 +529,7 @@
             <div class="rv-row"><span><b id="rv3s">--</b><i>3s</i></span><span><b id="rvAvg">--</b><i>avg</i></span><span><b id="rvLapP">--</b><i id="rvLapL">lap</i></span><span><b id="rvWkg">--</b><i>W/kg</i></span></div>
             <div class="rv-row"><span><b id="rvCad">--</b><i>rpm</i></span><span><b id="rvSpd">--</b><i>km/h</i></span><span><b id="rvGear">--</b><i>gear</i></span></div>
           </div>
-          <div class="rv-box rv-mid"><div class="rv-time" id="rvTime">0:00</div><i id="rvLapT"></i><div class="rv-step" id="rvStep"></div><canvas id="rvWk" class="rv-wk hidden" aria-label="Workout"></canvas></div>
+          <div class="rv-box rv-mid"><div class="rv-time" id="rvTime">0:00</div><i id="rvLapT"></i><i id="rvGhost" class="rv-ghost hidden"></i><div class="rv-step" id="rvStep"></div><canvas id="rvWk" class="rv-wk hidden" aria-label="Workout"></canvas></div>
           <div class="rv-box rv-right">
             <div class="rv-big"><b id="rvHr">--</b><i>bpm</i></div>
             <div class="rv-row"><span><b id="rvHrAvg">--</b><i>avg</i></span><span><b id="rvHrMax">--</b><i>max</i></span></div>
@@ -2770,6 +2782,7 @@ function finishRide() {
   else if (route && ERG.connected) ERG.setGrade(0).catch(() => {});
   saveUnsaved();
   renderRide();
+  myRoutes.saveRide(ride);
   rideMedia.finished(ride);
   // A simulator ride never goes to Strava by itself.
   if (SIM) stravaMsg('Simulator ride, so it was not sent to Strava. Discard it, or press Upload to Strava to send it anyway.');
@@ -3676,7 +3689,9 @@ function parseGpx(text, fileName) {
   }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   if (raw.length < 2) throw new Error('No track points found in that GPX file.');
   const name = doc.getElementsByTagNameNS('*', 'name')[0]?.textContent?.trim() || fileName.replace(/\.gpx$/i, '');
-  return routeFromPoints(raw, name);
+  const r = routeFromPoints(raw, name);
+  r.points = raw; // kept, so the route can be saved and ridden again
+  return r;
 }
 
 // A route from points with lat, lon and (maybe) ele: from a GPX file or a built-in course.
@@ -3909,7 +3924,9 @@ function renderRoute() {
 async function loadGpxFile(file) {
   if (!file) return;
   try {
-    useRoute(parseGpx(await file.text(), file.name));
+    const r = parseGpx(await file.text(), file.name);
+    useRoute(r);
+    myRoutes.saveRoute(r, 'gpx');
   } catch (e) {
     routeMsg(e.message, 'bad');
   }
@@ -3934,6 +3951,7 @@ async function loadCourse(id) {
 
 function useRoute(next) {
   if (ride.status === 'riding' || ride.status === 'paused') return routeMsg('Finish this ride before loading another route.', 'bad');
+  if (ghost && ghost.route !== next) ghost = null; // racing an old ride only on its own route
   route = next;
   Object.assign(routeState, { dist: 0, lap: 0, speed: 0, lastGrade: null, finished: false });
   $('routeBox').classList.remove('hidden');
@@ -3958,6 +3976,180 @@ $('courseBtn').addEventListener('click', () => loadCourse('island'));
 $('routePanel').addEventListener('dragover', e => e.preventDefault());
 $('routePanel').addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (/\.glb$/i.test(f?.name || '')) view3d.dropBike(f); else loadGpxFile(f); }); // a .glb is a bike model
 $('routeClear').addEventListener('click', clearRoute);
+// ---- Your routes, ride history and Strava routes, kept in this browser
+// (IndexedDB 'iw-library'). A GPX or Strava route is saved as it is loaded; a
+// finished ride is saved with its samples, so it can be looked at again,
+// its route ridden again, and raced: the gap to that ride shows while riding.
+let ghost = null; // { samples, route, label }
+const myRoutes = (() => {
+  let dbp = null, tab = null, open = null;
+  const db = () => dbp || (dbp = new Promise((ok, fail) => {
+    const req = indexedDB.open('iw-library', 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore('routes', { keyPath: 'id' }); req.result.createObjectStore('rides', { keyPath: 'id' }); };
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => fail(req.error);
+  }));
+  const tx = async (name, mode, fn) => {
+    const d = await db();
+    return new Promise((ok, fail) => {
+      const t = d.transaction(name, mode), r = fn(t.objectStore(name));
+      t.oncomplete = () => ok(r.result); t.onerror = () => fail(t.error);
+    });
+  };
+  const all = name => tx(name, 'readonly', s => s.getAll()).catch(() => []);
+  const get = (name, id) => tx(name, 'readonly', s => s.get(id)).catch(() => null);
+  const put = (name, rec) => tx(name, 'readwrite', s => s.put(rec));
+  const del = (name, id) => tx(name, 'readwrite', s => s.delete(id));
+  const msg = (text, cls = '') => { $('rlMsg').textContent = text; $('rlMsg').style.color = cls === 'bad' ? 'var(--bad)' : cls === 'ok' ? 'var(--ok)' : ''; };
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const day = t => new Date(t * 1000).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const climbOf = r => Math.round(r.climb[r.climb.length - 1]);
+
+  // A route is known by its name and length, so loading it twice keeps one.
+  const routeId = r => `${r.name}|${Math.round(r.total / 100)}`;
+  async function saveRoute(r, source, extra = {}) {
+    if (!r.points) return;
+    const id = routeId(r), old = await get('routes', id);
+    // Points to 6 decimals (10 cm) and whole decimetres of height.
+    const points = r.points.map(p => [Math.round(p.lat * 1e6) / 1e6, Math.round(p.lon * 1e6) / 1e6, Number.isFinite(p.ele) ? Math.round(p.ele * 10) / 10 : null]);
+    await put('routes', { id, name: r.name, source, points, total: r.total, climb: climbOf(r), savedAt: old?.savedAt || Date.now(), riddenAt: old?.riddenAt || null, ...extra }).catch(() => {});
+    r.libId = id;
+    if (tab === 'routes') render();
+  }
+  function routeOf(rec) {
+    const r = routeFromPoints(rec.points.map(([lat, lon, ele]) => ({ lat, lon, ele: ele ?? NaN })), rec.name);
+    r.points = rec.points.map(([lat, lon, ele]) => ({ lat, lon, ele: ele ?? NaN }));
+    r.libId = rec.id;
+    return r;
+  }
+
+  // ---- A finished ride into the history (the newest 300 are kept).
+  async function saveRide(r) {
+    if (!r.samples || r.samples.length < 30) return;
+    const a = analyseRide(r);
+    const id = r.samples[0].t;
+    const routeRec = route && !route.scenery && !route.roam ? { routeId: route.libId || null, routeName: route.name } : route?.scenery ? { course: route.course, routeName: route.name } : {};
+    await put('rides', {
+      id, name: r.name, samples: r.samples, events: r.events, ftp: r.ftp || null, lrLeft: r.lrLeft ?? null, stepCount: r.stepCount || 0,
+      ...routeRec, sum: { secs: a.secs, dist: a.dist, avg: a.sum.avg, np: a.np, tss: a.tss, climb: a.climb },
+    }).catch(() => {});
+    if (route?.libId) { const rec = await get('routes', route.libId); if (rec) put('routes', { ...rec, riddenAt: Date.now() }).catch(() => {}); }
+    const rides = await all('rides');
+    for (const old of rides.sort((x, y) => y.id - x.id).slice(300)) del('rides', old.id).catch(() => {});
+    if (tab === 'history') render();
+  }
+
+  // ---- Lists.
+  async function render() {
+    $('rlSeg').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    $('rlBox').classList.toggle('hidden', !tab);
+    if (!tab) return;
+    const list = $('rlList');
+    if (tab === 'routes') {
+      const recs = (await all('routes')).sort((x, y) => (y.riddenAt || y.savedAt) - (x.riddenAt || x.savedAt));
+      list.innerHTML = recs.map(r => `<div class="rlrow" data-id="${esc(r.id)}"><div class="rlmain" data-act="ride"><div class="rlname">${esc(r.name)}</div>
+        <div class="rlmeta">${fmtKm(r.total)} km · ${r.climb} m up${r.source === 'strava' ? ' · from Strava' : ''}${r.riddenAt ? ` · ridden ${day(r.riddenAt / 1000)}` : ''}</div></div>
+        <button data-act="ride">Ride</button><button class="rlx" data-act="del" title="Remove from your routes">✕</button></div>`).join('');
+      msg(recs.length ? '' : 'Routes you load (GPX or from Strava) are kept here.');
+    } else if (tab === 'history') {
+      const recs = (await all('rides')).sort((x, y) => y.id - x.id);
+      list.innerHTML = recs.map(r => `<div class="rlrow" data-id="${r.id}"><div class="rlmain" data-act="open"><div class="rlname">${esc(day(r.id))} · ${esc(r.name || 'Ride')}${r.routeName ? ` · ${esc(r.routeName)}` : ''}</div>
+        <div class="rlmeta">${fmtTime(r.sum.secs)}${r.sum.dist >= 50 ? ` · ${fmtKm(r.sum.dist)} km` : ''} · ${r.sum.avg} W avg · load ${r.sum.tss}</div></div>
+        <button class="rlx" data-act="del" title="Delete this ride">✕</button></div>${open === r.id ? '<div class="rldetail" id="rlDetail"></div>' : ''}`).join('');
+      if (open != null) { const r = recs.find(x => x.id === open); if (r) detail(r); }
+      msg(recs.length ? '' : 'Rides you finish are kept here, to look back on and ride again.');
+    } else if (tab === 'strava') {
+      if (!gradient.token) { list.innerHTML = ''; return msg('Sign in to Gradient (under Today’s ride) to load your Strava routes.'); }
+      list.innerHTML = ''; msg('Asking Strava for your routes…');
+      try {
+        const { routes } = await gradientApi('/api/health/strava/routes');
+        const rides = routes.filter(r => r.sport === 'ride');
+        list.innerHTML = rides.map(r => `<div class="rlrow" data-id="${esc(r.id)}" data-name="${esc(r.name)}"><div class="rlmain" data-act="strava"><div class="rlname">${r.starred ? '★ ' : ''}${esc(r.name)}</div>
+          <div class="rlmeta">${fmtKm(r.distance)} km · ${Math.round(r.elevationGain)} m up${r.surface && r.surface !== 'road' ? ` · ${{ mtb: 'MTB', cx: 'gravel', trail: 'trail', mixed: 'mixed surface' }[r.surface] || r.surface}` : ''}</div></div>
+          <button data-act="strava">Ride</button></div>`).join('');
+        msg(rides.length ? '' : 'No cycling routes on your Strava account yet.');
+      } catch (e) {
+        if (e.reconnect) {
+          const url = `${(gradient.url || GRADIENT_DEFAULT).replace(/\/+$/, '')}/api/health/strava/connect?token=${encodeURIComponent(gradient.token || '')}`;
+          $('rlMsg').innerHTML = `Strava has to let Gradient read your routes. <a href="${url}" target="_blank" rel="noopener" style="color:var(--accent)">Reconnect Strava</a> once, then open this tab again.`;
+        } else msg(e.status === 404 ? 'Gradient needs its latest update before it can load Strava routes.' : e.message, 'bad');
+      }
+    }
+  }
+
+  // A ride from the history: its summary, and riding it again.
+  function detail(r) {
+    const el = $('rlDetail');
+    if (!el) return;
+    const onRoute = r.routeId || r.course || r.samples.some(s => s.lat != null);
+    el.innerHTML = summaryHtml(r, `${r.name || 'Ride'} · ${new Date(r.id * 1000).toLocaleString()}`) +
+      `<div class="row" style="margin-top:10px">${onRoute ? '<button data-act="race">Ride this route again, against this ride</button><button class="secondary" data-act="again">Ride this route again</button>' : ''}<button class="secondary" data-act="fit">Save .fit</button></div>`;
+  }
+
+  async function routeOfRide(r) {
+    if (r.course) { await loadCourse(r.course); return route?.course === r.course ? route : null; }
+    const rec = r.routeId && (await get('routes', r.routeId));
+    if (rec) return routeOf(rec);
+    // No saved route (removed, or ridden before routes were kept): the ride's own track.
+    const pts = r.samples.filter(s => s.lat != null).map(s => ({ lat: s.lat, lon: s.lon, ele: s.alt ?? NaN }));
+    if (pts.length < 2) return null;
+    const out = routeFromPoints(pts, r.routeName || r.name || 'Ride again');
+    out.points = pts;
+    return out;
+  }
+
+  async function onClick(e) {
+    const b = e.target.closest('[data-act]');
+    const row = e.target.closest('.rlrow') || e.target.closest('.rldetail')?.previousElementSibling;
+    if (!b || !row) return;
+    const id = row.dataset.id, act = b.dataset.act;
+    try {
+      if (act === 'ride') { const rec = await get('routes', id); if (rec) { useRoute(routeOf(rec)); msg(`Loaded ${rec.name}. Start a ride when you are ready.`, 'ok'); } }
+      else if (act === 'del' && tab === 'routes') { await del('routes', id); render(); }
+      else if (act === 'del' && tab === 'history') { if (confirm('Delete this ride from the history?')) { await del('rides', Number(id)); if (open === Number(id)) open = null; render(); } }
+      else if (act === 'open') { open = open === Number(id) ? null : Number(id); render(); }
+      else if (act === 'race' || act === 'again') {
+        const r = await get('rides', Number(id)), next = r && (await routeOfRide(r));
+        if (!next) return msg('This ride has no route to ride again.', 'bad');
+        if (route !== next) useRoute(next);
+        if (route !== next) return; // a ride in progress kept the old route
+        ghost = act === 'race' ? { samples: r.samples, route: next, label: day(r.id) } : null;
+        msg(act === 'race' ? `Loaded ${next.name}. Start a ride to race your ride of ${day(r.id)}; the gap shows in the ride view.` : `Loaded ${next.name}.`, 'ok');
+      } else if (act === 'fit') {
+        const r = await get('rides', Number(id));
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([buildFit(r)], { type: 'application/octet-stream' }));
+        a.download = `IndoorWarior-${new Date(r.id * 1000).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.fit`;
+        document.body.append(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      } else if (act === 'strava') {
+        msg(`Loading ${row.dataset.name} from Strava…`);
+        const base = (gradient.url || GRADIENT_DEFAULT).replace(/\/+$/, '');
+        const res = await fetch(`${base}/api/health/strava/routes/${encodeURIComponent(id)}/gpx`, { headers: { Authorization: `Bearer ${gradient.token}` } });
+        if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Gradient answered ${res.status}.`);
+        const r = parseGpx(await res.text(), row.dataset.name);
+        r.name = row.dataset.name;
+        useRoute(r);
+        if (route === r) { saveRoute(r, 'strava', { stravaId: id }); msg(`Loaded ${r.name}. It is in Your routes now too.`, 'ok'); }
+      }
+    } catch (err) { msg(err.message, 'bad'); }
+  }
+
+  $('rlSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; tab = tab === b.dataset.tab ? null : b.dataset.tab; render(); });
+  $('rlList').addEventListener('click', onClick);
+  return { saveRoute, saveRide, render };
+})();
+
+// The gap to the ride being raced, at the distance ridden: + behind, − ahead.
+function ghostGap() {
+  if (!ghost || ghost.route !== route || !ride.samples.length) return null;
+  const d = routeRidden(), S = ghost.samples;
+  let lo = 0, hi = S.length - 1;
+  if ((S[hi].d ?? 0) < d) return { done: true };
+  while (lo < hi) { const m = (lo + hi) >> 1; if ((S[m].d ?? 0) < d) lo = m + 1; else hi = m; }
+  return { gap: ride.samples.length - lo };
+}
+
 // ---- Ride anywhere (roam.js): pick a spot on a map, start on the nearest
 // road and choose your way at every junction. The map is Leaflet with
 // OpenStreetMap's tiles; places come from OpenStreetMap's Nominatim search.
@@ -4908,6 +5100,14 @@ const rideView = (() => {
     put('rvHr', num(x.hr)); put('rvHrAvg', num(x.hrAvg)); put('rvHrMax', num(x.hrMax));
     put('rvGrade', x.grade == null ? '--' : fmtGrade(x.grade)); put('rvGradeL', route && surfaceAt(routeState.dist) ? `gradient · ${SURFACES[surfaceAt(routeState.dist)].name.toLowerCase()}` : 'gradient'); put('rvDist', x.dist == null ? '--' : fmtKm(x.dist)); put('rvUp', num(x.up));
     put('rvTime', fmtTime(x.time)); put('rvLapT', `${x.lapLabel} ${fmtTime(x.lapTime)}`);
+    { // racing an earlier ride on this route
+      const g = ghostGap(), el = $('rvGhost');
+      el.classList.toggle('hidden', !g);
+      if (g) {
+        el.textContent = g.done ? `${ghost.label}: you are past where it ended` : `${g.gap > 0 ? '+' : g.gap < 0 ? '−' : '±'}${fmtTime(Math.abs(g.gap))} on ${ghost.label}`;
+        el.className = `rv-ghost ${g.done ? '' : g.gap > 0 ? 'behind' : 'ahead'}`;
+      }
+    }
     put('rvStep', x.step ? `${x.step.w == null ? 'Free' : `${x.step.w} W`} · ${fmtTime(x.step.left)} left` : workout ? 'Workout done' : '');
     put('rvPause', ride.status === 'paused' ? 'Resume' : 'Pause');
     $('rvErg').classList.toggle('on', ERG.on); $('rvErg').disabled = !ERG.connected;

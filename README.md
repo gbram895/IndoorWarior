@@ -236,6 +236,23 @@ lines and dirt a two-track with grass up the middle; the ride view says
 tarmac, 0.009 on gravel and 0.014 on dirt, in the road speed and in the Crr
 sent to the trainer. This needs the real world (World: real) and its map.
 
+### Your routes, ride history and Strava routes
+
+Under the Route buttons, three tabs (kept in this browser, IndexedDB
+`iw-library`):
+
+- **Your routes**: every GPX or Strava route you load is kept, newest ridden
+  first, to ride again with one click.
+- **From Strava**: your Strava cycling routes (starred first marked ★),
+  through Gradient (`GET /api/health/strava/routes` and
+  `/api/health/strava/routes/:id/gpx`). Strava has to grant Gradient its read
+  scopes once; the tab links to Reconnect Strava until it has.
+- **Ride history**: every finished ride with its summary (the last 300).
+  Open one to see the full summary, save its .fit again, ride its route again,
+  or ride it again **against** that ride: the ride view then shows how far
+  ahead (green) or behind (amber) you are, in time at the same distance.
+  A ride whose route was removed from Your routes is ridden on its own track.
+
 ### Ride anywhere
 
 **Ride anywhere** in the Route panel opens a map (OpenStreetMap, with a place
