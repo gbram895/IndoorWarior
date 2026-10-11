@@ -316,6 +316,7 @@
     <span class="muted">Di2</span>
     <button class="secondary sm" id="simDown">Gear −1</button>
     <button class="secondary sm" id="simUp">Gear +1</button>
+    <button class="secondary sm" id="simStand">Stand up</button>
     <span class="muted" style="margin-left:12px">Zwift Click</span>
     <button class="secondary sm" id="simClickMinus">−</button>
     <button class="secondary sm" id="simClickPlus">+</button>
@@ -876,12 +877,12 @@ const SIM = (() => {
   setInterval(() => {
     world.t += DT;
     // During a spin-down the virtual rider does as told: sprint, then coast.
-    const cadence = world.spin === 'coast' ? 0 : cfg.cadence > 0 ? cfg.cadence + (Math.random() - 0.5) * 3 : 0;
+    const cadence = world.spin === 'coast' ? 0 : cfg.cadence > 0 ? cfg.cadence - (world.standing ? 18 : 0) + (Math.random() - 0.5) * 3 : 0;
     const k = 1 + cfg.bias / 100;
     // ERG holds the trainer's OWN reading at the target; the real watts at
     // the pedals are what the power meter sees.
     let want = 0;
-    if (cadence > 0) want = world.spin === 'up' ? Math.max(cfg.power, 320) : world.mode === 'erg' && trainer.gatt.connected ? world.target / k : cfg.power;
+    if (cadence > 0) want = world.spin === 'up' ? Math.max(cfg.power, 320) : world.mode === 'erg' && trainer.gatt.connected ? world.target / k : cfg.power * (world.standing ? 1.3 : 1);
     world.power += (want - world.power) * (1 - Math.exp(-DT / 1.5));
     const pedals = Math.max(0, world.power * (1 + (Math.random() - 0.5) * 0.04));
     world.trainerReads = pedals * k;
@@ -928,6 +929,11 @@ const SIM = (() => {
   };
   $s('simDown').addEventListener('click', () => shift(-1));
   $s('simUp').addEventListener('click', () => shift(1));
+  // Out of the saddle: slower legs, more force, a little more power.
+  $s('simStand').addEventListener('click', () => {
+    world.standing = !world.standing;
+    $s('simStand').textContent = world.standing ? 'Sit down' : 'Stand up';
+  });
   $s('simClickPlus').addEventListener('click', () => press(true));
   $s('simClickMinus').addEventListener('click', () => press(false));
   document.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => devices[b.dataset.drop].gatt.disconnect()));
@@ -2718,6 +2724,7 @@ async function startRide() {
     gradientApi('/api/settings/thresholds').then(t => { if (t?.ftpWatts && ride.events === mine) ride.ftp = t.ftpWatts; }).catch(() => {});
   }
   Object.assign(ext.hr, { waitFront: 0, waitBack: 0 });
+  standing.reset();
   Object.assign(trainerWait, { front: 0, back: 0 });
   renderHrGaps();
   countdown.unlock(); // sound needs a click to be allowed
@@ -2769,6 +2776,40 @@ function finishRide() {
   else uploadToStrava(true);
 }
 
+// ---- Out of the saddle, estimated. Bluetooth power meters (Assioma
+// included) do not send seated/standing; Assioma reports it only over ANT+.
+// So it is guessed, once a second, from what standing does to the pedalling:
+// cadence drops below what you were just holding while the force on each
+// stroke jumps above your seated norm, or you sprint hard, or a steep ramp
+// slows your legs. A few seconds of that in a row and you are standing; a
+// few without and you sit back down. Needs power and cadence from a meter.
+const standing = (() => {
+  // A new workout target changes force and cadence seated too, so for 15 s
+  // after one nothing counts and the seated norm catches up quickly.
+  let torque = null, cad = null, score = 0, quiet = 0, on = false, ready = 0, target = null, settle = 0;
+  const reset = () => { torque = cad = target = null; score = quiet = ready = settle = 0; on = false; };
+  function update(p, c, gradePct, ftp, tgt) {
+    if (tgt !== target) { target = tgt; settle = 15; on = false; score = 0; }
+    if (!isFresh(ext.pm.cadenceAt) || !c || c < 30 || !p) { score = 0; if (on && ++quiet >= 3) on = false; return on; }
+    const tq = p / ((c * 2 * Math.PI) / 60);
+    if (torque == null) { torque = tq; cad = c; }
+    if (settle > 0) { settle--; torque += (tq - torque) / 4; cad += (c - cad) / 4; return false; }
+    const tRatio = tq / torque, cDrop = cad - c;
+    let ev = 0;
+    if ((cDrop >= 6 && tRatio >= 1.3) || (cDrop >= 10 && tRatio >= 1.12)) ev += 2; // ERG holds the watts, so there only the legs slow
+    if (tRatio >= 1.7) ev += 1;
+    if (p >= 1.6 * ftp && c >= 80) ev += 2;          // a sprint
+    if (gradePct >= 7 && cDrop >= 4) ev += 1;          // a steep ramp
+    if (ev >= 2) { score++; quiet = 0; } else { score = 0; quiet++; }
+    if (!on && score >= 3 && ready >= 60) on = true;   // a minute to learn the seated norm first
+    else if (on && quiet >= 3) on = false;
+    // The seated norm follows only seated riding, slowly.
+    if (!on && ev === 0) { torque += (tq - torque) / 90; cad += (c - cad) / 45; ready++; }
+    return on;
+  }
+  return { update, reset, get on() { return on; } };
+})();
+
 function recordSample() {
   const t = Math.floor(Date.now() / 1000);
   const last = ride.samples[ride.samples.length - 1];
@@ -2788,6 +2829,11 @@ function recordSample() {
     tw: currentStep() ? stepWatts(currentStep()) : null, // the step's target, ERG or not, for the summary
     lr: isFresh(ext.pm.balanceAt) ? ext.pm.balance.pct : null, // pedal balance (left share when lrLeft)
   });
+  {
+    const s = ride.samples[ride.samples.length - 1];
+    const grade = route ? gradeBetween(routeState.dist - 25, routeState.dist + 25) : 0;
+    if (standing.update(s.p, s.c, grade, ride.ftp || 200, s.tw ?? s.tg)) s.sd = 1; // out of the saddle (estimated)
+  }
   if (isFresh(ext.pm.balanceAt)) ride.lrLeft = ext.pm.balance.left;
   // Why heart rate is missing, so a gap in the chart can be explained.
   const s = ride.samples[ride.samples.length - 1];
@@ -2993,8 +3039,13 @@ function analyseRide(r) {
     if (a && b) drift = ((a - b) / a) * 100;
   }
 
+  // Out of the saddle (estimated): the time, and how many times.
+  let standSec = 0, stands = 0;
+  S.forEach((s, i) => { if (s.sd) { standSec++; if (!S[i - 1]?.sd) stands++; } });
+  const standW = standSec ? Math.round(mean(S.filter(s => s.sd).map(s => s.p || 0))) : null;
+
   return { ftp, secs, sum, np, IF, tss, dist, climb, hrAvg: mean(hrs), hrMax: hrs.length ? Math.max(...hrs) : null,
-    cad: mean(cads), zones, bests, balance, steps, drift, stepCount: r.stepCount || 0 };
+    cad: mean(cads), zones, bests, balance, steps, drift, stepCount: r.stepCount || 0, standSec, stands, standW };
 }
 
 // The verdict: a few plain sentences, each marked good, so-so or worth a look.
@@ -3025,6 +3076,8 @@ function judgeRide(a) {
       : `Heart rate drifted ${d.toFixed(1)}% against your power from the first half to the second. Over 5% at this effort usually means heat, too little fuel or drink, or endurance still to build.`);
   }
 
+  if (a.standSec >= 10) say('', `Out of the saddle about ${fmtTime(a.standSec)} over ${a.stands} effort${a.stands > 1 ? 's' : ''}, at ${a.standW} W on average (estimated from your cadence and pedal force).`);
+
   if (a.balance) {
     const b = a.balance, l = Math.round(b.all);
     const side = b.left ? (l < 50 ? 'right' : 'left') : null;
@@ -3051,6 +3104,7 @@ function summaryHtml(r, title) {
     a.hrAvg ? tile('Heart rate', `${Math.round(a.hrAvg)} bpm`, `max ${a.hrMax} bpm`) : '',
     a.cad ? tile('Cadence', `${Math.round(a.cad)} rpm`, 'while pedalling') : '',
     a.balance ? tile(a.balance.left ? 'Balance L / R' : 'Balance', balanceText(a.balance.all), a.balance.left ? '' : 'side not given') : '',
+    a.standSec ? tile('Out of the saddle', fmtTime(a.standSec), `${a.stands} time${a.stands > 1 ? 's' : ''} · estimated`) : '',
   ].join('');
   const verdicts = judgeRide(a).map(v => `<li class="${v.cls}">${esc(v.text)}</li>`).join('');
   const total = a.zones.reduce((x, y) => x + y, 0) || 1;
@@ -3192,6 +3246,7 @@ function buildFit(r) {
   write(0, [4, 255, 0, 1, ft(start)]); // activity, manufacturer "development"
 
   define(1, 21, [[253, T.uint32], [0, T.enum], [1, T.enum]]); // event: timer start/stop
+  define(6, 21, [[253, T.uint32], [0, T.enum], [1, T.enum], [3, T.uint32]]); // event: rider position (seated 0, standing 1)
   define(2, 20, [[253, T.uint32], [7, T.uint16], [4, T.uint8], [6, T.uint16], [3, T.uint8], [5, T.uint32],
     [0, T.sint32], [1, T.sint32], [2, T.uint16], [30, T.uint8]]); // record
   // left_right_balance: a percentage, with 0x80 set when it is the RIGHT pedal's.
@@ -3202,6 +3257,7 @@ function buildFit(r) {
       write(1, [ft(r.events[e].t), 0, r.events[e].type === 'start' ? 0 : 4]);
       e++;
     }
+    if (!!s.sd !== !!samples[i - 1]?.sd && (i || s.sd)) write(6, [ft(s.t), 44, 3, s.sd ? 1 : 0]); // rider_position_change, marker
     write(2, [ft(s.t), s.p, s.c, s.s != null ? (s.s / 3.6) * 1000 : null, s.hr, distAt[i] * 100,
       semi(s.lat), semi(s.lon), s.alt != null ? (s.alt + 500) * 5 : null, lrb(s)]);
   });
@@ -4043,7 +4099,8 @@ const view3d = (() => {
   });
   const state = () => {
     const d = route?.loop ? routeRidden() : routeState.dist, cad = parseInt($('cadence').textContent, 10); // laps: the 3D view rides on round
-    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0, real: realWorld, google: worldKind === 'google' && !route?.scenery ? googleKey() : null };
+    return { route, dist: d, speed: routeState.speed, cadence: Number.isFinite(cad) ? cad : 0,
+      standing: isFresh(ext.pm.cadenceAt) && ride.status === 'riding' ? standing.on : null, real: realWorld, google: worldKind === 'google' && !route?.scenery ? googleKey() : null };
   };
   async function ensure() {
     if (world) return world;

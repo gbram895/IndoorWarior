@@ -3135,7 +3135,10 @@ void main() {`);
       // Out of the saddle on a steep bit: up off the seat, bike rocking with the
       // pedals. Eased in and out so a short ramp doesn't make him jump up.
       const grade = (at(disp + 15, new T.Vector3()).y - at(disp - 15, new T.Vector3()).y) / 30 / LIFT; // real gradient
-      climb += ((grade > 0.06 ? Math.min(1, (grade - 0.06) / 0.03) : 0) - climb) * Math.min(1, dt * 2);
+      // With a power meter the ride says when you are out of the saddle
+      // (estimated from cadence and pedal force); without one, steep road does.
+      const stand = s.standing != null ? (s.standing ? 1 : 0) : grade > 0.06 ? Math.min(1, (grade - 0.06) / 0.03) : 0;
+      climb += (stand - climb) * Math.min(1, dt * 2);
       bike.root.rotation.set(0, heading, 0); bike.root.rotateX(pitch); // the model faces -z
       bike.root.rotateZ(Math.sin(pedal) * 0.09 * climb);
       bike.pose(pedal, climb, (s.speed / 0.34) * dt);

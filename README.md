@@ -189,7 +189,20 @@ A dual-sided power meter that sends pedal power balance (the flag in the
 Cycling Power Measurement) shows a **Balance left / right** tile; it is
 recorded every second and saved in the .fit, so Garmin Connect shows it too.
 A meter that does not say which pedal its share belongs to is labelled "side
-not given". Bluetooth power meters do not report standing or seated.
+not given".
+
+**Out of the saddle (estimated).** Bluetooth power meters do not send seated
+or standing (Assioma reports it only over ANT+, which a browser cannot read),
+so it is guessed once a second from the power meter's power and cadence:
+cadence dropping below what you were just holding while the force per pedal
+stroke rises above your seated norm (learned over the first minute and kept up
+to date while seated), a hard sprint, or a steep ramp slowing your legs. Three
+seconds of that and you are standing; three without and you sit. For 15 s
+after a workout target changes nothing counts, since ERG changes force and
+cadence seated too. The rider in the 3D view stands up with it (without a
+power meter he still stands on steep road), the summary shows the time out of
+the saddle, and the .fit carries rider position events for Garmin Connect.
+The simulator has a **Stand up** button to try it.
 
 Battery levels (the standard Battery service 0x180F) show next to the
 trainer, strap, power meter and Di2 once connected, and a warning appears
