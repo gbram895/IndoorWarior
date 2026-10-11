@@ -287,7 +287,7 @@ out tags qt;`;
 
   // Sorts the Overpass answer into what the 3D view draws.
   function sort(json) {
-    const out = { water: [], rivers: [], woods: [], towns: [], fields: [], rock: [], glacier: [], buildings: [], places: [], passes: [], countries: {}, borders: [], start: null };
+    const out = { roads: [], water: [], rivers: [], woods: [], towns: [], fields: [], rock: [], glacier: [], buildings: [], places: [], passes: [], countries: {}, borders: [], start: null };
     const borderIds = new Map(); // way id -> the countries it divides
     const pts = g => (g || []).map(p => [p.lat, p.lon]);
     for (const e of json.elements || []) {
@@ -306,6 +306,7 @@ out tags qt;`;
         continue;
       }
       if (e.type === 'way' && borderIds.has(e.id)) { out.borders.push({ line: pts(e.geometry), between: borderIds.get(e.id) }); continue; }
+      if (e.type === 'way' && t.highway) { if (e.nodes && e.geometry) out.roads.push({ id: e.id, nodes: e.nodes, line: pts(e.geometry), tags: t }); continue; }
       let shape;
       if (e.type === 'way') {
         if (t.waterway && t.waterway !== 'riverbank') { out.rivers.push({ kind: t.waterway, line: pts(e.geometry), width: parseFloat(t.width) || 0 }); continue; }
@@ -331,14 +332,14 @@ out tags qt;`;
 
   // The map along a route. Cached by the browser (where it can) so opening the
   // same route again is instant and spares the free servers.
-  async function osm(pts) {
-    const q = query(pts);
+  async function osm(pts) { return sort(await overpass(query(pts))); }
+  async function overpass(q) {
     let key = 0;
     for (let i = 0; i < q.length; i++) key = (Math.imul(key, 31) + q.charCodeAt(i)) | 0;
     const cacheUrl = `https://indoorwarior.invalid/osm/v1/${(key >>> 0).toString(36)}`;
     let cache = null;
     try { cache = window.caches && (await caches.open('iw-places')); } catch {}
-    try { const hit = cache && (await cache.match(cacheUrl)); if (hit) return sort(await hit.json()); } catch {}
+    try { const hit = cache && (await cache.match(cacheUrl)); if (hit) return await hit.json(); } catch {}
     let last = null;
     for (const url of OVERPASS) {
       try {
@@ -347,11 +348,53 @@ out tags qt;`;
         const text = await r.text(), json = JSON.parse(text);
         if (json.remark && /error|timed out|runtime/i.test(json.remark)) throw new Error('the map server ran out of time');
         try { await cache?.put(cacheUrl, new Response(text, { headers: { 'content-type': 'application/json' } })); } catch {}
-        return sort(json);
+        return json;
       } catch (e) { last = e; }
     }
     throw last || new Error('no map server answered');
   }
+
+  // ---- The map of a square of land, for riding where you like (roam.js):
+  // the roads a bike can use, with which nodes they share (the junctions),
+  // and the same woods, water, towns and cols as along a route. Buildings
+  // only near those roads, which keeps a town's answer to a sensible size.
+  const RIDE = 'trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|road|track|cycleway|path|bridleway|footway|busway';
+  function areaQuery([s, w, n, e], [lat0, lon0]) {
+    const b = `(${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)})`;
+    return `[out:json][timeout:180][maxsize:536870912];
+way["highway"~"^(${RIDE})$"]${b}->.r;
+.r out geom qt;
+(
+  way["natural"="water"]${b};
+  relation["natural"="water"]${b};
+  way["landuse"="reservoir"]${b};
+  way["waterway"="riverbank"]${b};
+  way["waterway"~"^(river|stream|canal)$"]${b};
+  way["landuse"="forest"]${b};
+  way["natural"="wood"]${b};
+  relation["landuse"="forest"]${b};
+  relation["natural"="wood"]${b};
+  way["landuse"~"^(residential|vineyard|orchard|meadow|farmland)$"]${b};
+  way["natural"~"^(bare_rock|scree|glacier|grassland)$"]${b};
+  way["building"]${b}(around.r:90);
+);
+out geom qt;
+node["place"~"^(city|town|village|hamlet|suburb)$"]["name"]${b};
+out qt;
+(
+  node["mountain_pass"="yes"]["name"]${b};
+  node["natural"="saddle"]["name"]${b};
+);
+out qt;
+relation["boundary"="administrative"]["admin_level"="2"]${b}->.c;
+.c out body qt;
+way(r.c)${b};
+out geom qt;
+is_in(${lat0.toFixed(5)},${lon0.toFixed(5)})->.s;
+area.s["admin_level"="2"]["boundary"="administrative"];
+out tags qt;`;
+  }
+  async function area(box, centre) { return sort(await overpass(areaQuery(box, centre))); }
 
   // ---- The weather there now, as one of the 3D view's weathers.
   // WMO weather codes: 0-1 clear, 2-3 cloud, 45/48 fog, drizzle/rain/showers/
@@ -372,5 +415,5 @@ out tags qt;`;
     return { kind: weatherKind(c.weather_code, c.cloud_cover), temp: c.temperature_2m, wind: c.wind_speed_10m, code: c.weather_code };
   }
 
-  window.IW_PLACES = { terrain, imagery, aerial, osm, weather, merc, weatherKind, sort };
+  window.IW_PLACES = { terrain, imagery, aerial, osm, area, weather, merc, weatherKind, sort };
 })();
