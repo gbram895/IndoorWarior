@@ -2985,7 +2985,7 @@ void main() {`);
       // Real land for a GPX route (the built-in course is the made-up world).
       const rec = (realWant || route.roam) && !route.scenery ? placesFor(route) : null; // a free ride is always the real place
       // Gravel and dirt from the map; the ride's road speed reads it too.
-      route.surface = rec?.osm ? surfacesOf(route.res, rec.osm) : null;
+      route.surface = rec?.osm ? surfacesOf(route.res, rec.osm) : route.stage ? route.surface : null; // a game stage brings its own sectors
       const g = geometryOf(route);
       world.userData.g = g;
       builtV = rec ? rec.v : null; note = noteOf(rec); noteRec = rec;
