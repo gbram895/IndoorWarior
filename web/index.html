@@ -525,7 +525,7 @@
         <button id="roamBtn" class="secondary">Ride anywhere</button>
         <button id="buildBtn" class="secondary">Build a route</button>
         <button id="raceBtn" class="secondary">Race</button>
-        <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,application/gpx+xml"><span>Load GPX</span></label>
+        <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,.cds,application/gpx+xml"><span>Load GPX</span></label>
       </div>
     </div>
     <p class="muted" style="margin:8px 0 0">Ride the built-in 12 km island loop, load a GPX file (a Strava or Komoot route export works) or drop one here, ride anywhere (pick a road on a map and choose your way at every junction), or build your own route on a map.</p>
@@ -4068,6 +4068,93 @@ function parseGpx(text, fileName) {
   return r;
 }
 
+// ---- A Pro Cycling Manager stage (.cds, the game's stage data). It holds
+// the stage's height profile (a point every 200 m) and its sectors, but not
+// where the road goes, so the road is made up here: a winding line with the
+// game's own heights, in a made-up world. The game's 3D landscape (.zces)
+// is not read.
+function parseStageData(buf, fileName) {
+  const dv = new DataView(buf), n = buf.byteLength, u8 = new Uint8Array(buf);
+  const str = (o, len) => String.fromCharCode(...u8.subarray(o, o + len));
+  if (n < 64 || str(16, 11) !== 'CTStageData') throw new Error('That is not a Pro Cycling Manager stage file (.cds).');
+  const f32 = o => dv.getFloat32(o, true), u32 = o => dv.getUint32(o, true);
+  // The profile: a count, then (distance, height) pairs in tens of metres, 20 apart from 0.
+  let prof = null;
+  for (let o = 32; o + 28 < n && !prof; o++) {
+    if (f32(o) !== 0 || f32(o + 8) !== 20 || f32(o + 16) !== 40) continue;
+    const cnt = u32(o - 4);
+    if (cnt < 3 || o + cnt * 8 > n) continue;
+    const pts = [];
+    for (let i = 0; i < cnt; i++) pts.push([f32(o + i * 8) * 10, f32(o + i * 8 + 4) * 10]);
+    if (pts.every((p, i) => Number.isFinite(p[1]) && Math.abs(p[1]) < 9000 && (!i || p[0] > pts[i - 1][0]))) prof = { pts, end: o + cnt * 8 };
+  }
+  if (!prof) throw new Error('No height profile found in that stage file.');
+  const total = prof.pts[prof.pts.length - 1][0];
+  // The stage's name: the first readable string after the class name.
+  let name = '';
+  for (let o = 27; o < 200 && !name; o++) {
+    const len = u32(o);
+    if (len >= 4 && len <= 80 && o + 4 + len <= n && /^[\x20-\x7e\xa0-\xff]+$/.test(str(o + 4, len)) && /[a-z]{3}/i.test(str(o + 4, len))) name = str(o + 4, len);
+  }
+  // The sectors (cobbles, gravel): a count, then name, kind and start and end in tens of metres.
+  let sectors = [];
+  for (let o = prof.end; o + 8 < n && !sectors.length; o++) {
+    const cnt = u32(o);
+    if (cnt < 1 || cnt > 300) continue;
+    const list = [];
+    let q = o + 4;
+    for (let i = 0; i < cnt; i++) {
+      const len = q + 4 <= n ? u32(q) : 0;
+      if (len < 2 || len > 60 || q + 16 + len > n) break;
+      const nm = str(q + 4, len);
+      if (!/^[\x20-\x7e\xa0-\xff]+$/.test(nm)) break;
+      const kind = u32(q + 4 + len), a = f32(q + 8 + len) * 10, b = f32(q + 12 + len) * 10;
+      if (!(kind < 16 && a >= 0 && b > a && b <= total + 50)) break;
+      list.push({ name: nm, kind, from: a, to: b });
+      q += 16 + len;
+    }
+    if (list.length === cnt) sectors = list;
+  }
+  return stageRoute({ name: name || fileName.replace(/\.cds$/i, ''), profile: prof.pts, sectors });
+}
+
+// The made-up road for a stage: it wanders with gentle bends and the odd
+// sharper corner, from the same seed each time so a stage always looks the
+// same. Placed out in the North Sea, like the island, so a ride on it never
+// lands on someone's real roads.
+function stageRoute(stage) {
+  const { profile, sectors } = stage, total = profile[profile.length - 1][0];
+  let seed = 0;
+  for (const ch of stage.name) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const waves = [0, 1, 2, 3].map(k => ({ len: [2600, 1100, 480, 9000][k], amp: [0.0016, 0.0024, 0.0028, 0.0008][k], ph: rnd() * 6.28 }));
+  const eleAt = d => {
+    let i = 0;
+    while (i < profile.length - 2 && profile[i + 1][0] < d) i++;
+    const [d0, e0] = profile[i], [d1, e1] = profile[i + 1], f = Math.min(1, Math.max(0, (d - d0) / (d1 - d0 || 1)));
+    return e0 + (e1 - e0) * f;
+  };
+  const LAT0 = 52.2, LON0 = 2.9, M = 111320, cosL = Math.cos((LAT0 * Math.PI) / 180), STEP = 20;
+  const points = [];
+  let x = 0, y = 0, h = rnd() * 6.28, corner = 0, turn = 0;
+  for (let d = 0; d <= total + 0.1; d += STEP) {
+    points.push({ lat: LAT0 + y / M, lon: LON0 + x / (M * cosL), ele: eleAt(Math.min(d, total)) });
+    let k = 0; // bend: radians per metre
+    for (const w of waves) k += w.amp * Math.sin((2 * Math.PI * d) / w.len + w.ph);
+    if (corner <= 0 && rnd() < STEP / 2500) { corner = 40 + rnd() * 30; turn = rnd() < 0.5 ? -1 : 1; } // a junction: 75-125 degrees over 40-70 m
+    if (corner > 0) { k += turn * (Math.PI / 2) / 55; corner -= STEP; }
+    h += k * STEP;
+    x += Math.sin(h) * STEP; y += Math.cos(h) * STEP;
+  }
+  const r = routeFromPoints(points, stage.name);
+  r.points = points;
+  r.stage = stage; // kept with the route, so it is built the same again from Your routes
+  r.scenery = { arch: [[25, 'START'], [-25, 'FINISH']], woods: [0, 0], flags: [], clearings: [] };
+  // The sectors' rougher road, here and on the trainer.
+  r.surface = r.res.map(p => (sectors.some(s => p.d >= s.from && p.d <= s.to) ? 1 : 0));
+  return r;
+}
+
 // A route from points with lat, lon and (maybe) ele: from a GPX file or a built-in course.
 function routeFromPoints(raw, name) {
   const hasEle = raw.some(p => Number.isFinite(p.ele));
@@ -4302,9 +4389,10 @@ function renderRoute() {
 async function loadGpxFile(file) {
   if (!file) return;
   try {
-    const r = parseGpx(await file.text(), file.name);
+    const r = /\.cds$/i.test(file.name) ? parseStageData(await file.arrayBuffer(), file.name) : parseGpx(await file.text(), file.name);
     useRoute(r);
-    myRoutes.saveRoute(r, 'gpx');
+    myRoutes.saveRoute(r, r.stage ? 'stage' : 'gpx', r.stage ? { stage: r.stage } : {});
+    if (r.stage?.sectors.length) routeMsg(`${r.name}: ${fmtKm(r.total)} km, ${r.stage.sectors.length} sectors (${[...new Set(r.stage.sectors.map(x => x.name))].slice(0, 6).join(', ')}${new Set(r.stage.sectors.map(x => x.name)).size > 6 ? '…' : ''}). The heights are the game's; the road and land around it are made up.`, 'ok');
   } catch (e) {
     routeMsg(e.message, 'bad');
   }
@@ -4396,6 +4484,7 @@ const myRoutes = (() => {
     if (tab === 'routes') render();
   }
   function routeOf(rec) {
+    if (rec.stage) { const r = stageRoute(rec.stage); r.libId = rec.id; return r; }
     const r = routeFromPoints(rec.points.map(([lat, lon, ele]) => ({ lat, lon, ele: ele ?? NaN })), rec.name);
     r.points = rec.points.map(([lat, lon, ele]) => ({ lat, lon, ele: ele ?? NaN }));
     r.libId = rec.id;
@@ -4427,7 +4516,7 @@ const myRoutes = (() => {
     if (tab === 'routes') {
       const recs = (await all('routes')).sort((x, y) => (y.riddenAt || y.savedAt) - (x.riddenAt || x.savedAt));
       list.innerHTML = recs.map(r => `<div class="rlrow" data-id="${esc(r.id)}"><div class="rlmain" data-act="ride"><div class="rlname">${esc(r.name)}</div>
-        <div class="rlmeta">${fmtKm(r.total)} km · ${r.climb} m up${r.source === 'strava' ? ' · from Strava' : r.source === 'built' ? ' · built here' : ''}${r.riddenAt ? ` · ridden ${day(r.riddenAt / 1000)}` : ''}</div></div>
+        <div class="rlmeta">${fmtKm(r.total)} km · ${r.climb} m up${r.source === 'strava' ? ' · from Strava' : r.source === 'built' ? ' · built here' : r.source === 'stage' ? ' · game stage' : ''}${r.riddenAt ? ` · ridden ${day(r.riddenAt / 1000)}` : ''}</div></div>
         <button data-act="ride">Ride</button><button class="rlx" data-act="del" title="Remove from your routes">✕</button></div>`).join('');
       msg(recs.length ? '' : 'Routes you load (GPX or from Strava) are kept here.');
     } else if (tab === 'history') {
