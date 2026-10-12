@@ -647,7 +647,14 @@
       if (L < 1.5 || Wd < 1.2 || L > 120) continue;
       const mx = cx + ux * (l0 + L) - uz * (w0 + Wd), mz = cz + uz * (l0 + L) + ux * (w0 + Wd);
       const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([p, q]) => [mx + ux * L * p - uz * Wd * q, mz + uz * L * p + ux * Wd * q]);
-      if (corners.concat([[mx, mz]]).some(([x, z]) => roadDist(g, x, z) < ROAD_HALF + 1.2)) continue; // the map and the GPX disagree by a few metres
+      // Clear of the road all round, not just at the corners: a long house
+      // beside a bend could otherwise stand across the road between them.
+      const rim = [[mx, mz]];
+      for (let c = 0; c < 4; c++) {
+        const [ax, az] = corners[c], [bx, bz] = corners[(c + 1) % 4], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 3));
+        for (let t = 0; t < n; t++) rim.push([ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n]);
+      }
+      if (rim.some(([x, z]) => roadDist(g, x, z) < ROAD_HALF + 2)) continue; // the map and the GPX disagree by a few metres
       const near = nearRoad(g, mx, mz, 260); if (!near.length) continue;
       let low = Infinity, i0 = near[0];
       for (const [x, z] of corners) low = Math.min(low, groundAt(g, x, z, 260).y);
@@ -1069,7 +1076,7 @@ void main() {`);
   function nearLand(g, s, e, mat) {
     const OFF = [-80, -55, -35, -20, -11, -6, -3.2, 3.2, 6, 11, 20, 35, 55, 80];
     const rowsAt = [];
-    for (let i = s; i < e; i += 2) rowsAt.push(i);
+    for (let i = s; i < e; i += Math.abs(g.bend[i]) > 0.015 ? 1 : 2) rowsAt.push(i); // every point round a hairpin, or the strip cuts the corner over the road
     rowsAt.push(e);
     const pos = [], col = [], uv = [], idx = [], c = new T.Color();
     for (let r = 0; r < rowsAt.length; r++) {
@@ -1078,8 +1085,24 @@ void main() {`);
       let inner = Infinity;
       for (let j = Math.max(0, i - 8); j <= Math.min(g.n - 1, i + 8); j++) inner = Math.min(inner, 0.8 / (Math.abs(g.bend[j]) || 1e-9));
       const insideSign = Math.sign(g.bend[i]) || 1;
+      // Another part of the route close by (the next hairpin up or down): the
+      // strip stops halfway there and that road's own strip takes over. Laid
+      // across it, the strip buried that road under a ramp of grass.
+      const stop = { [-1]: Infinity, [1]: Infinity }, there = o => [g.xz[i][0] + g.side[i][0] * o, g.xz[i][1] + g.side[i][1] * o];
+      for (const sg of [-1, 1]) {
+        let ok = 3.2;
+        for (const a of OFF) {
+          if (Math.sign(a) !== sg || Math.abs(a) < 6) continue;
+          const [x, z] = there(a);
+          if (landAt(g, x, z, cand).d > Math.abs(a) - 2) { ok = Math.abs(a); continue; }
+          let lo = ok, hi = Math.abs(a); // where the two roads are about as near
+          for (let k = 0; k < 5; k++) { const m = (lo + hi) / 2, [mx, mz] = there(sg * m); if (landAt(g, mx, mz, cand).d > m - 2) lo = m; else hi = m; }
+          stop[sg] = lo + 1.5; break; // a little overlap rather than a crack between them
+        }
+      }
       for (let o of OFF) {
         if (Math.sign(o) === insideSign && Math.abs(o) > inner) o = Math.sign(o) * Math.max(3.4, inner);
+        if (Math.abs(o) > stop[Math.sign(o)]) o = Math.sign(o) * stop[Math.sign(o)];
         const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
         const p = landAt(g, x, z, cand);
         pos.push(x, p.y, z);
@@ -1137,7 +1160,7 @@ void main() {`);
       const pos = [], col = [], uv = [], idx = [];
       for (let r = 0; r <= CELLS; r++) for (let q = 0; q <= CELLS; q++) {
         const x = x0 + q * step, z = z0 + r * step, p = landAt(g, x, z, cand);
-        const y = p.y - 3 * (1 - smooth(NEAR - 10, NEAR + 8, p.d));
+        const y = p.y - 6 * (1 - smooth(NEAR - 10, NEAR + 8, p.d)); // 20 m cells on a steep hillside can bulge a few metres
         pos.push(x, y, z); uv.push((x - x0) / TILE, 1 - (z - z0) / TILE);
         landColour(c, x, z, p.y, p.road, p.d); col.push(c.r, c.g, c.b);
         if (r && q) { const i0 = (r - 1) * (CELLS + 1) + q - 1, i1 = i0 + CELLS + 1; idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1); }
