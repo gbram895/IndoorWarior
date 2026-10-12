@@ -1986,7 +1986,7 @@ const race = (() => {
   function botPower(b, riders, dt) {
     const tot = R.finish - R.start, left = tot - b.d, abs = R.start + b.d;
     const g = gradeAt(abs), crr = crrAt(abs), draft = draftFor(b.d, riders, b), cda = b.cda * (1 - draft);
-    if (b.done != null) return { p: b.ftp * 0.45, cda, crr, g };
+    if (b.done != null) return { p: b.ftp * 0.62, cda, crr, g }; // over the line: an easy ride on
     let own;
     if (R.ev.type === 'tt' || R.ev.type === 'climb') own = R.ifTT * b.form * (g > 2 ? 1.05 : g < -2 ? 0.7 : 1);
     else {
@@ -2061,14 +2061,17 @@ const race = (() => {
     render();
   }
 
+  // After the race the field rides on (round the loop again with you) rather
+  // than stopping dead on the line; the results are already settled.
   function tick(dt) {
-    if (!R || R.results) return;
+    if (!R) return;
     R.t += dt;
     const was = R.you.d;
     R.you.d = routeRidden() - R.start; R.you.v = routeState.speed;
     if (R.you.d > was) mark(R.you, Math.max(0, was));
     const riders = [R.you, ...R.field];
     for (let s = 0, n = Math.ceil(dt / 0.25); s < n; s++) step(riders, dt / n);
+    if (R.results) return;
     if (R.you.done == null && R.you.d >= R.finish - R.start) { R.you.done = R.t; finish(true); }
     render();
   }
@@ -2103,8 +2106,7 @@ const race = (() => {
   // ---- What the 3D view draws: riders within sight, at their distance on the route.
   function rivals() {
     if (!R || !route) return null;
-    const base = route.loop ? 0 : 0;
-    return R.field.filter(b => !b.gone && Math.abs(b.d - R.you.d) < 400).map(b => ({ id: b.name, d: base + R.start + b.d, speed: b.v, cadence: b.cad, lane: b.lane, kit: b.kit, standing: b.p > b.ftp * 1.25 && b.v < 9, name: b.name }));
+    return R.field.filter(b => !b.gone && Math.abs(b.d - R.you.d) < 400).map(b => ({ id: b.name, d: R.start + b.d, speed: b.v, cadence: b.cad, lane: b.lane, kit: b.kit, standing: b.p > b.ftp * 1.25 && b.v < 9, name: b.name }));
   }
   const userDraft = () => (R && !R.results ? draftFor(R.you.d, R.field, R.you) : 0);
 

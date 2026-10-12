@@ -647,7 +647,14 @@
       if (L < 1.5 || Wd < 1.2 || L > 120) continue;
       const mx = cx + ux * (l0 + L) - uz * (w0 + Wd), mz = cz + uz * (l0 + L) + ux * (w0 + Wd);
       const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([p, q]) => [mx + ux * L * p - uz * Wd * q, mz + uz * L * p + ux * Wd * q]);
-      if (corners.concat([[mx, mz]]).some(([x, z]) => roadDist(g, x, z) < ROAD_HALF + 1.2)) continue; // the map and the GPX disagree by a few metres
+      // Clear of the road all round, not just at the corners: a long house
+      // beside a bend could otherwise stand across the road between them.
+      const rim = [[mx, mz]];
+      for (let c = 0; c < 4; c++) {
+        const [ax, az] = corners[c], [bx, bz] = corners[(c + 1) % 4], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 3));
+        for (let t = 0; t < n; t++) rim.push([ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n]);
+      }
+      if (rim.some(([x, z]) => roadDist(g, x, z) < ROAD_HALF + 2)) continue; // the map and the GPX disagree by a few metres
       const near = nearRoad(g, mx, mz, 260); if (!near.length) continue;
       let low = Infinity, i0 = near[0];
       for (const [x, z] of corners) low = Math.min(low, groundAt(g, x, z, 260).y);
@@ -1069,7 +1076,7 @@ void main() {`);
   function nearLand(g, s, e, mat) {
     const OFF = [-80, -55, -35, -20, -11, -6, -3.2, 3.2, 6, 11, 20, 35, 55, 80];
     const rowsAt = [];
-    for (let i = s; i < e; i += 2) rowsAt.push(i);
+    for (let i = s; i < e; i += Math.abs(g.bend[i]) > 0.015 ? 1 : 2) rowsAt.push(i); // every point round a hairpin, or the strip cuts the corner over the road
     rowsAt.push(e);
     const pos = [], col = [], uv = [], idx = [], c = new T.Color();
     for (let r = 0; r < rowsAt.length; r++) {
@@ -1078,8 +1085,24 @@ void main() {`);
       let inner = Infinity;
       for (let j = Math.max(0, i - 8); j <= Math.min(g.n - 1, i + 8); j++) inner = Math.min(inner, 0.8 / (Math.abs(g.bend[j]) || 1e-9));
       const insideSign = Math.sign(g.bend[i]) || 1;
+      // Another part of the route close by (the next hairpin up or down): the
+      // strip stops halfway there and that road's own strip takes over. Laid
+      // across it, the strip buried that road under a ramp of grass.
+      const stop = { [-1]: Infinity, [1]: Infinity }, there = o => [g.xz[i][0] + g.side[i][0] * o, g.xz[i][1] + g.side[i][1] * o];
+      for (const sg of [-1, 1]) {
+        let ok = 3.2;
+        for (const a of OFF) {
+          if (Math.sign(a) !== sg || Math.abs(a) < 6) continue;
+          const [x, z] = there(a);
+          if (landAt(g, x, z, cand).d > Math.abs(a) - 2) { ok = Math.abs(a); continue; }
+          let lo = ok, hi = Math.abs(a); // where the two roads are about as near
+          for (let k = 0; k < 5; k++) { const m = (lo + hi) / 2, [mx, mz] = there(sg * m); if (landAt(g, mx, mz, cand).d > m - 2) lo = m; else hi = m; }
+          stop[sg] = lo + 1.5; break; // a little overlap rather than a crack between them
+        }
+      }
       for (let o of OFF) {
         if (Math.sign(o) === insideSign && Math.abs(o) > inner) o = Math.sign(o) * Math.max(3.4, inner);
+        if (Math.abs(o) > stop[Math.sign(o)]) o = Math.sign(o) * stop[Math.sign(o)];
         const x = g.xz[i][0] + g.side[i][0] * o, z = g.xz[i][1] + g.side[i][1] * o;
         const p = landAt(g, x, z, cand);
         pos.push(x, p.y, z);
@@ -1137,7 +1160,7 @@ void main() {`);
       const pos = [], col = [], uv = [], idx = [];
       for (let r = 0; r <= CELLS; r++) for (let q = 0; q <= CELLS; q++) {
         const x = x0 + q * step, z = z0 + r * step, p = landAt(g, x, z, cand);
-        const y = p.y - 3 * (1 - smooth(NEAR - 10, NEAR + 8, p.d));
+        const y = p.y - 6 * (1 - smooth(NEAR - 10, NEAR + 8, p.d)); // 20 m cells on a steep hillside can bulge a few metres
         pos.push(x, y, z); uv.push((x - x0) / TILE, 1 - (z - z0) / TILE);
         landColour(c, x, z, p.y, p.road, p.d); col.push(c.r, c.g, c.b);
         if (r && q) { const i0 = (r - 1) * (CELLS + 1) + q - 1, i1 = i0 + CELLS + 1; idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1); }
@@ -1944,7 +1967,7 @@ void main() {`);
       }
       cx.putImageData(px, 0, 0);
       const t = new T.CanvasTexture(cv); t.anisotropy = 4;
-      mat.map?.dispose(); mat.map = t; mat.needsUpdate = true;
+      mat.map = t; mat.needsUpdate = true; // the plain one is shared, so it stays
     };
     img.src = src;
   }
@@ -2184,14 +2207,18 @@ void main() {`);
     const real = window.IW_RIDER ? realBody(window.IW_RIDER) : null;
     function realBody(D) {
       const dec = (str, A) => { const b = atob(str), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return new A(u.buffer); };
-      const g = new T.BufferGeometry();
+      // Decoded once and shared by every rider (race rivals too): each has
+      // its own bones, the shape is the same.
+      const g = D.geo || (D.geo = new T.BufferGeometry());
+      if (!g.index) {
       g.setAttribute('position', new T.BufferAttribute(Float32Array.from(dec(D.pos, Int16Array), x => x / 10000), 3));
       g.setAttribute('normal', new T.BufferAttribute(Float32Array.from(dec(D.nrm, Int8Array), x => x / 127), 3));
       g.setAttribute('uv', new T.BufferAttribute(Float32Array.from(dec(D.uv, Uint16Array), x => x / 65535), 2));
       g.setAttribute('skinIndex', new T.Uint16BufferAttribute(Uint16Array.from(dec(D.si, Uint8Array)), 4));
       g.setAttribute('skinWeight', new T.BufferAttribute(Float32Array.from(dec(D.sw, Uint8Array), x => x / 255), 4));
       g.setIndex(new T.BufferAttribute(dec(D.idx, Uint16Array), 1));
-      const tex = new T.TextureLoader().load(D.tex); tex.anisotropy = 4;
+      }
+      const tex = D.texture || (D.texture = new T.TextureLoader().load(D.tex)); tex.anisotropy = 4;
       const mesh = new T.SkinnedMesh(g, new T.MeshStandardMaterial({ map: tex, roughness: 0.66 }));
       if (kit) recolor(D.tex, kit[0], mesh.material); // a rival's kit
       mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; // skinned: its box is the rest pose's
@@ -2648,36 +2675,50 @@ void main() {`);
       sp.scale.set(1.6, 0.3, 1); sp.position.set(0, 2.15, 0); sp.renderOrder = 5;
       return sp;
     }
+    // Only the nearest RIVALS_SHOWN within RIVALS_FAR are drawn; past 60 m
+    // they are posed every third frame (too small to tell); none casts a
+    // shadow (each would be drawn again for the sun).
+    const RIVALS_SHOWN = 8, RIVALS_FAR = 250;
+    let rivalTick = 0;
     function drawRivals(list, dt) {
       const seen = new Set();
       let made = false;
-      for (const o of list || []) {
+      rivalTick++;
+      const near = (list || []).filter(o => Math.abs(o.d - disp) < RIVALS_FAR).sort((a, b) => Math.abs(a.d - disp) - Math.abs(b.d - disp)).slice(0, RIVALS_SHOWN);
+      for (const o of near) {
         let e = rivalsOn.get(o.id);
         if (!e) {
           if (made) continue; // one new rider a frame
           made = true;
-          const r = rider(o.kit); r.root.traverse(m => { if (m.isMesh) m.castShadow = true; });
+          const r = rider(o.kit); r.root.traverse(m => { if (m.isMesh) m.castShadow = false; });
           const tag = nameTag(o.name); r.root.add(tag);
-          e = { r, disp: o.d, pedal: Math.random() * 6, climb: 0, tag };
+          e = { r, disp: o.d, pedal: Math.random() * 6, climb: 0, tag, k: rivalsOn.size };
           rivalsOn.set(o.id, e); scene.add(r.root);
         }
         seen.add(o.id);
         e.r.root.visible = true;
         e.disp += o.speed * dt; e.disp += (o.d - e.disp) * Math.min(1, dt * 2.5);
         if (Math.abs(o.d - e.disp) > 50) e.disp = o.d;
+        e.dt = (e.dt || 0) + dt;
+        if (Math.abs(e.disp - disp) > 60 && (rivalTick + e.k) % 3) continue; // far: every third frame
+        const edt = e.dt; e.dt = 0;
         const p = at(e.disp, new T.Vector3()), f = at(e.disp + 4, new T.Vector3()).sub(at(e.disp - 4, new T.Vector3()));
         const fl = Math.hypot(f.x, f.z) || 1, side = KEEP + o.lane;
         e.r.root.position.copy(p).add(new T.Vector3(-f.z / fl * side, 0, f.x / fl * side));
         e.r.root.rotation.set(0, Math.atan2(-f.x, -f.z), 0); e.r.root.rotateX(Math.atan2(f.y, fl));
-        e.pedal += (o.cadence / 60) * Math.PI * 2 * dt;
-        e.climb += ((o.standing ? 1 : 0) - e.climb) * Math.min(1, dt * 2);
+        e.pedal += (o.cadence / 60) * Math.PI * 2 * edt;
+        e.climb += ((o.standing ? 1 : 0) - e.climb) * Math.min(1, edt * 2);
         e.r.root.rotateZ(Math.sin(e.pedal) * 0.09 * e.climb);
-        e.r.pose(e.pedal, e.climb, (o.speed / 0.34) * dt);
+        e.r.pose(e.pedal, e.climb, (o.speed / 0.34) * edt);
         e.tag.visible = camPos.distanceTo(e.r.root.position) < 60;
       }
       for (const [id, e] of rivalsOn) if (!seen.has(id)) e.r.root.visible = false;
       if (!list && rivalsOn.size) { // the race is over and gone: let them go
-        for (const e of rivalsOn.values()) { scene.remove(e.r.root); e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { m.geometry?.dispose(); m.material?.map?.dispose(); m.material?.dispose(); } }); }
+        const D = window.IW_RIDER || {}; // the body's shape and plain skin are shared with him
+        for (const e of rivalsOn.values()) {
+          scene.remove(e.r.root);
+          e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { if (m.geometry !== D.geo) m.geometry?.dispose(); if (m.material?.map !== D.texture) m.material?.map?.dispose(); m.material?.dispose(); } });
+        }
         rivalsOn.clear();
       }
     }
