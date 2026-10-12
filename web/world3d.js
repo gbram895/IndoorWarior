@@ -1944,7 +1944,7 @@ void main() {`);
       }
       cx.putImageData(px, 0, 0);
       const t = new T.CanvasTexture(cv); t.anisotropy = 4;
-      mat.map?.dispose(); mat.map = t; mat.needsUpdate = true;
+      mat.map = t; mat.needsUpdate = true; // the plain one is shared, so it stays
     };
     img.src = src;
   }
@@ -2184,14 +2184,18 @@ void main() {`);
     const real = window.IW_RIDER ? realBody(window.IW_RIDER) : null;
     function realBody(D) {
       const dec = (str, A) => { const b = atob(str), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return new A(u.buffer); };
-      const g = new T.BufferGeometry();
+      // Decoded once and shared by every rider (race rivals too): each has
+      // its own bones, the shape is the same.
+      const g = D.geo || (D.geo = new T.BufferGeometry());
+      if (!g.index) {
       g.setAttribute('position', new T.BufferAttribute(Float32Array.from(dec(D.pos, Int16Array), x => x / 10000), 3));
       g.setAttribute('normal', new T.BufferAttribute(Float32Array.from(dec(D.nrm, Int8Array), x => x / 127), 3));
       g.setAttribute('uv', new T.BufferAttribute(Float32Array.from(dec(D.uv, Uint16Array), x => x / 65535), 2));
       g.setAttribute('skinIndex', new T.Uint16BufferAttribute(Uint16Array.from(dec(D.si, Uint8Array)), 4));
       g.setAttribute('skinWeight', new T.BufferAttribute(Float32Array.from(dec(D.sw, Uint8Array), x => x / 255), 4));
       g.setIndex(new T.BufferAttribute(dec(D.idx, Uint16Array), 1));
-      const tex = new T.TextureLoader().load(D.tex); tex.anisotropy = 4;
+      }
+      const tex = D.texture || (D.texture = new T.TextureLoader().load(D.tex)); tex.anisotropy = 4;
       const mesh = new T.SkinnedMesh(g, new T.MeshStandardMaterial({ map: tex, roughness: 0.66 }));
       if (kit) recolor(D.tex, kit[0], mesh.material); // a rival's kit
       mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; // skinned: its box is the rest pose's
@@ -2648,36 +2652,50 @@ void main() {`);
       sp.scale.set(1.6, 0.3, 1); sp.position.set(0, 2.15, 0); sp.renderOrder = 5;
       return sp;
     }
+    // Only the nearest RIVALS_SHOWN within RIVALS_FAR are drawn; past 60 m
+    // they are posed every third frame (too small to tell); none casts a
+    // shadow (each would be drawn again for the sun).
+    const RIVALS_SHOWN = 8, RIVALS_FAR = 250;
+    let rivalTick = 0;
     function drawRivals(list, dt) {
       const seen = new Set();
       let made = false;
-      for (const o of list || []) {
+      rivalTick++;
+      const near = (list || []).filter(o => Math.abs(o.d - disp) < RIVALS_FAR).sort((a, b) => Math.abs(a.d - disp) - Math.abs(b.d - disp)).slice(0, RIVALS_SHOWN);
+      for (const o of near) {
         let e = rivalsOn.get(o.id);
         if (!e) {
           if (made) continue; // one new rider a frame
           made = true;
-          const r = rider(o.kit); r.root.traverse(m => { if (m.isMesh) m.castShadow = true; });
+          const r = rider(o.kit); r.root.traverse(m => { if (m.isMesh) m.castShadow = false; });
           const tag = nameTag(o.name); r.root.add(tag);
-          e = { r, disp: o.d, pedal: Math.random() * 6, climb: 0, tag };
+          e = { r, disp: o.d, pedal: Math.random() * 6, climb: 0, tag, k: rivalsOn.size };
           rivalsOn.set(o.id, e); scene.add(r.root);
         }
         seen.add(o.id);
         e.r.root.visible = true;
         e.disp += o.speed * dt; e.disp += (o.d - e.disp) * Math.min(1, dt * 2.5);
         if (Math.abs(o.d - e.disp) > 50) e.disp = o.d;
+        e.dt = (e.dt || 0) + dt;
+        if (Math.abs(e.disp - disp) > 60 && (rivalTick + e.k) % 3) continue; // far: every third frame
+        const edt = e.dt; e.dt = 0;
         const p = at(e.disp, new T.Vector3()), f = at(e.disp + 4, new T.Vector3()).sub(at(e.disp - 4, new T.Vector3()));
         const fl = Math.hypot(f.x, f.z) || 1, side = KEEP + o.lane;
         e.r.root.position.copy(p).add(new T.Vector3(-f.z / fl * side, 0, f.x / fl * side));
         e.r.root.rotation.set(0, Math.atan2(-f.x, -f.z), 0); e.r.root.rotateX(Math.atan2(f.y, fl));
-        e.pedal += (o.cadence / 60) * Math.PI * 2 * dt;
-        e.climb += ((o.standing ? 1 : 0) - e.climb) * Math.min(1, dt * 2);
+        e.pedal += (o.cadence / 60) * Math.PI * 2 * edt;
+        e.climb += ((o.standing ? 1 : 0) - e.climb) * Math.min(1, edt * 2);
         e.r.root.rotateZ(Math.sin(e.pedal) * 0.09 * e.climb);
-        e.r.pose(e.pedal, e.climb, (o.speed / 0.34) * dt);
+        e.r.pose(e.pedal, e.climb, (o.speed / 0.34) * edt);
         e.tag.visible = camPos.distanceTo(e.r.root.position) < 60;
       }
       for (const [id, e] of rivalsOn) if (!seen.has(id)) e.r.root.visible = false;
       if (!list && rivalsOn.size) { // the race is over and gone: let them go
-        for (const e of rivalsOn.values()) { scene.remove(e.r.root); e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { m.geometry?.dispose(); m.material?.map?.dispose(); m.material?.dispose(); } }); }
+        const D = window.IW_RIDER || {}; // the body's shape and plain skin are shared with him
+        for (const e of rivalsOn.values()) {
+          scene.remove(e.r.root);
+          e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { if (m.geometry !== D.geo) m.geometry?.dispose(); if (m.material?.map !== D.texture) m.material?.map?.dispose(); m.material?.dispose(); } });
+        }
         rivalsOn.clear();
       }
     }

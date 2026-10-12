@@ -2,7 +2,7 @@
 // Gradient's server is asleep) and installs like a program.
 // Pages and app files are fetched fresh when online and the copy is kept for
 // offline use, so a new version shows up on the next open without any step.
-const CACHE = 'indoorwarior-v1';
+const CACHE = 'indoorwarior-v2';
 const APP = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './world3d.js', './places.js', './vendor/three.min.js', './vendor/photos.js', './course.js', './roam.js', './vendor/leaflet/leaflet.js', './vendor/leaflet/leaflet.css'];
 
 self.addEventListener('install', e => {
@@ -15,8 +15,11 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   // Only this app's own files; Gradient and Strava calls go straight to the network.
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  // no-cache: always ask the server whether a file changed (a quick "not
+  // modified" when it hasn't), so the page and its scripts are never a mix
+  // of a new index.html and an older world3d.js from the browser's cache.
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); } return res; })
       .catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('./index.html')))
   );
