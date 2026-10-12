@@ -265,6 +265,36 @@ say. Distance and climbing update as you go. **Save .gpx** downloads it;
 **Save and ride** loads it and keeps it in Your routes. If BRouter cannot be
 reached, that leg is drawn straight and the page says why.
 
+### Races
+
+**Race** (Route panel) races you against a field of computer riders:
+
+- On IndoorWarior Island: **Island Criterium** (road race, 2 laps), **Island
+  Classic** (road race, 4 laps), **Island Time Trial** (1 lap, no drafting)
+  and **Island Summit** (hill climb up the island's climb).
+- On your own route (a GPX, one of Your routes, a built or Strava route):
+  road race, time trial, or a hill climb up the route's biggest climb (500 m
+  or more at 3% or more). A loop can be raced over 1 to 6 laps.
+- Opponents: **Easier**, **Even** or **Harder**, set from your FTP and
+  weight, with 5, 11 or 19 riders.
+
+Each rider has an FTP, a weight and a type (climber, rouleur or sprinter) and
+rides the same physics you do. Above FTP it spends a store of work (W′, about
+20 kJ) that only comes back below FTP; once that is gone it can only ride at
+threshold, so a climb or an attack that is too hard drops it. In a road race
+or hill climb everyone, you included, saves up to a third of the air drag
+riding close behind someone (nothing from 15 m back). The bunch chases
+whoever is up the road, riders attack now and then, and road races end in a
+sprint. Your speed in someone's wheel goes up; the trainer's resistance
+follows the gradient as usual.
+
+During the race a board under the power box shows your place, the distance
+to go, and time gaps to the leader and the riders round you. The riders ride
+past in their own kits in the 3D view, with their names over them. When you
+cross the line the rest of the field is ridden to the finish for their times,
+and the results go under the ride summary and into Ride history. Finishing
+the ride before the line counts as not finishing.
+
 ### Ride anywhere
 
 **Ride anywhere** in the Route panel opens a map (OpenStreetMap, with a place
