@@ -1076,7 +1076,11 @@ void main() {`);
   function nearLand(g, s, e, mat) {
     const OFF = [-80, -55, -35, -20, -11, -6, -3.2, 3.2, 6, 11, 20, 35, 55, 80];
     const rowsAt = [];
-    for (let i = s; i < e; i += Math.abs(g.bend[i]) > 0.015 ? 1 : 2) rowsAt.push(i); // every point round a hairpin, or the strip cuts the corner over the road
+    // Every point round a hairpin or where the slope changes sharply (the
+    // foot of a steep ramp): over two points the strip cut the corner and
+    // lay over the road.
+    const kink = i => i > 0 && i < g.n - 1 && Math.abs(g.y[i + 1] - 2 * g.y[i] + g.y[i - 1]) > 0.15;
+    for (let i = s; i < e; i += Math.abs(g.bend[i]) > 0.015 || kink(i) || kink(i + 1) ? 1 : 2) rowsAt.push(i);
     rowsAt.push(e);
     const pos = [], col = [], uv = [], idx = [], c = new T.Color();
     for (let r = 0; r < rowsAt.length; r++) {
@@ -1948,28 +1952,48 @@ void main() {`);
   // The real body's painted kit in another colour: its orange (strongly
   // coloured, orange-hued pixels; skin is too pale to count) turned to this
   // colour at the same brightness.
-  // Put on mat once made (a texture's size is fixed at its first upload, so
-  // it is a new texture, not the old one redrawn).
+  // The image is read back once (getImageData is slow, and was a hitch every
+  // time a race rider came into view); each colour is made once and shared by
+  // every rider in it. A texture's size is fixed at its first upload, so each
+  // colour is a new texture on its own canvas, not the plain one redrawn.
+  const kitBase = new Map(), kitTex = new Map(), kitMaps = new Set();
   function recolor(src, color, mat) {
-    const cv = document.createElement('canvas'), img = new Image();
+    const key = src.length + ':' + src.slice(-32) + ':' + color;
+    const done = kitTex.get(key);
+    if (done) { if (done.tex) { mat.map = done.tex; mat.needsUpdate = true; } else done.wait.push(mat); return; }
+    const job = { tex: null, wait: [mat] };
+    kitTex.set(key, job);
+    let base = kitBase.get(src);
+    if (!base) {
+      base = new Promise(ok => {
+        const img = new Image();
+        img.onload = () => {
+          const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+          const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0);
+          const px = cx.getImageData(0, 0, cv.width, cv.height), a = px.data, at = [], val = [];
+          for (let i = 0; i < a.length; i += 4) {
+            const r = a[i], g = a[i + 1], b = a[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+            if (mx < 80 || (mx - mn) / mx < 0.55 || r !== mx || b > g) continue;
+            const hue = ((g - b) / (mx - mn)) * 60;
+            if (hue < 8 || hue > 42) continue;
+            at.push(i); val.push(mx / 255);
+          }
+          ok({ px, at: Int32Array.from(at), val: Float32Array.from(val) });
+        };
+        img.src = src;
+      });
+      kitBase.set(src, base);
+    }
     const tr = (color >> 16) & 255, tg = (color >> 8) & 255, tb = color & 255;
-    img.onload = () => {
-      cv.width = img.width; cv.height = img.height;
-      const cx = cv.getContext('2d'); cx.drawImage(img, 0, 0);
-      const px = cx.getImageData(0, 0, cv.width, cv.height), a = px.data;
-      for (let i = 0; i < a.length; i += 4) {
-        const r = a[i], g = a[i + 1], b = a[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-        if (mx < 80 || (mx - mn) / mx < 0.55 || r !== mx || b > g) continue;
-        const hue = ((g - b) / (mx - mn)) * 60;
-        if (hue < 8 || hue > 42) continue;
-        const v = mx / 255;
-        a[i] = tr * v; a[i + 1] = tg * v; a[i + 2] = tb * v;
-      }
-      cx.putImageData(px, 0, 0);
-      const t = new T.CanvasTexture(cv); t.anisotropy = 4;
-      mat.map = t; mat.needsUpdate = true; // the plain one is shared, so it stays
-    };
-    img.src = src;
+    base.then(({ px, at, val }) => {
+      const out = new ImageData(new Uint8ClampedArray(px.data), px.width, px.height), a = out.data;
+      for (let k = 0; k < at.length; k++) { const i = at[k], v = val[k]; a[i] = tr * v; a[i + 1] = tg * v; a[i + 2] = tb * v; }
+      const cv = document.createElement('canvas'); cv.width = px.width; cv.height = px.height;
+      cv.getContext('2d').putImageData(out, 0, 0);
+      job.tex = new T.CanvasTexture(cv); job.tex.anisotropy = 4; kitMaps.add(job.tex);
+      for (const m of job.wait) { m.map = job.tex; m.needsUpdate = true; } // the plain one is shared, so it stays
+      job.wait = null;
+    });
   }
 
   function rider(kit) {
@@ -2541,9 +2565,9 @@ void main() {`);
         float vl = length(v); if (vl > 0.035) v *= 0.035 / vl;
         if (texture2D(rider, uv).r > 0.5) v = vec2(0.0);
         vec3 col = vec3(0.0); float n = 0.0;
-        for (int i = 0; i < 9; i++) {
-          vec2 q = uv + v * (float(i) / 8.0 - 0.5);
-          float k = (i == 4 || texture2D(rider, q).r < 0.5) ? 1.0 : 0.0; // never smear the rider over the road
+        for (int i = 0; i < 6; i++) { // six taps: as smooth at video speeds, a third less reading per pixel
+          vec2 q = uv + v * (float(i) / 5.0 - 0.5);
+          float k = (i == 0 || texture2D(rider, q).r < 0.5) ? 1.0 : 0.0; // never smear the rider over the road
           col += texture2D(src, q).rgb * k; n += k;
         }
         col /= n;
@@ -2628,7 +2652,12 @@ void main() {`);
     let renderer;
     try { renderer = new T.WebGLRenderer({ antialias: true, alpha: true }); } // see-through where Google 3D shows behind
     catch (e) { throw new Error('This browser cannot draw 3D here (WebGL is off).'); }
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    // Drawn at fewer pixels when the frames can't keep up (see pace()), and
+    // back up to full sharpness once they can: a steady picture matters more
+    // on a trainer than a sharp one, and the video look hides the softness.
+    const fullRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    let resScale = 1, paceT = 0, paceN = 0, paceSum = 0, paceGood = 0;
+    renderer.setPixelRatio(fullRatio);
     renderer.toneMapping = T.CustomToneMapping; renderer.toneMappingExposure = 1;
     container.prepend(renderer.domElement);
     const post = lens(renderer);
@@ -2717,7 +2746,7 @@ void main() {`);
         const D = window.IW_RIDER || {}; // the body's shape and plain skin are shared with him
         for (const e of rivalsOn.values()) {
           scene.remove(e.r.root);
-          e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { if (m.geometry !== D.geo) m.geometry?.dispose(); if (m.material?.map !== D.texture) m.material?.map?.dispose(); m.material?.dispose(); } });
+          e.r.root.traverse(m => { if (m.isMesh || m.isSprite) { if (m.geometry !== D.geo) m.geometry?.dispose(); if (m.material?.map !== D.texture && !kitMaps.has(m.material?.map)) m.material?.map?.dispose(); m.material?.dispose(); } });
         }
         rivalsOn.clear();
       }
@@ -2738,7 +2767,7 @@ void main() {`);
     let pieces = [], paintTick = 0, job = null, chunks = [], tileOf = new Map(), builtVer = null, builtArea = null;
     const grassPhoto = photo('grass', renderer), grain = grassPhoto ? { photo: true, grass: grassPhoto, soil: photo('dirt', renderer) } : { grass: surface('grass', renderer) };
     const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    let built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
+    let spare = 1, built = null, world = null, disp = 0, last = performance.now(), pedal = 0, raf = 0, running = false, climb = 0, view = 'chase', tiles = [], tileMat = null, sortedAt = null, sky2 = null, drift = 0;
     const camPos = new T.Vector3(), camLook = new T.Vector3(), tmp = new T.Vector3(), ahead = new T.Vector3();
     // The free camera: drag to go round the rider (and up and down), the
     // wheel or two fingers to come closer or go further out, double-click
@@ -2966,9 +2995,14 @@ void main() {`);
       // or past the fog are skipped instead of drawn every frame.
       const tarmac = photo('asphalt', renderer);
       tarmac?.repeat.set(2, 2); // a 2 m tile
-      const asphalt = worn(new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x2f3236 : 0x4a4e55, map: tarmac || surface('road', renderer) }));
+      // The road and its lines lie only centimetres over the land, which far off
+      // (or from a free camera pulled well back) is closer than the depth
+      // buffer can tell apart: the land showed through in bands. The offsets
+      // keep them on top at any distance; the lines over the tarmac.
+      const onTop = { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 }, lines = { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -8 };
+      const asphalt = worn(new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x2f3236 : 0x4a4e55, map: tarmac || surface('road', renderer), ...onTop }));
       roadMat = asphalt;
-      const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6 });
+      const paint = new T.MeshLambertMaterial({ color: 0xf2f4f6, ...lines });
       const land = grained(new T.MeshLambertMaterial({ vertexColors: true }), grain); // until a piece's paint is in
       // Side roads (a free ride): tarmac and dirt, drawn over the land.
       const lane = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x34373c : 0x50545b, map: tarmac || null, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
@@ -2976,9 +3010,9 @@ void main() {`);
       // The route itself where it is gravel or dirt: lighter, narrower, no lines.
       const loose = surface('gravel', renderer), soil = photo('dirt', renderer);
       soil?.repeat.set(0.5, 0.5);
-      const gravel = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x8a8170 : 0xb9ad94, map: loose });
-      const track = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x5e4c38 : 0x8d7454, map: soil || loose });
-      const mid = new T.MeshLambertMaterial({ color: 0x5c7440, map: surface('grass', renderer), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      const gravel = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x8a8170 : 0xb9ad94, map: loose, ...onTop });
+      const track = new T.MeshLambertMaterial({ color: WEATHER[weather].wet ? 0x5e4c38 : 0x8d7454, map: soil || loose, ...onTop });
+      const mid = new T.MeshLambertMaterial({ color: 0x5c7440, map: surface('grass', renderer), ...lines });
       world.userData.mats = { asphalt, paint, land, lane, dirt, gravel, track, mid };
       world.userData.seed = Math.round(route.total) + route.res.length;
       scatter = []; pieces = []; job = null; chunks = []; tileOf = new Map();
@@ -3149,7 +3183,7 @@ void main() {`);
         }
         if (best && (!job || best.d < job.d - 100)) job = { ...best, hi: best.m.userData.hi, gen: paintLand(world.userData.g, best.m, best.want) };
       }
-      for (const t0 = performance.now(); job && performance.now() - t0 < 4;) {
+      for (const t0 = performance.now(); job && performance.now() - t0 < 3 * spare;) {
         const r = job.gen.next();
         if (!r.done) continue;
         const m = job.m, tex = new T.CanvasTexture(r.value);
@@ -3194,6 +3228,20 @@ void main() {`);
       return out.set(a[0] + (b[0] - a[0]) * t, g.y[i] + (g.y[i + 1] - g.y[i]) * h, a[1] + (b[1] - a[1]) * t);
     }
 
+    // Average frame time over each second: below 45 frames a second, a
+    // tenth fewer pixels (down to 55%); steady above 57 for three seconds,
+    // a tenth more. A hidden tab's long gaps don't count.
+    function pace(raw) {
+      if (raw > 0.25) return;
+      paceSum += raw; paceN++;
+      if ((paceT += raw) < 1) return;
+      const avg = paceSum / paceN; paceT = paceSum = paceN = 0;
+      let next = resScale;
+      if (avg > 1 / 45 && resScale > 0.55) { next = Math.max(0.55, resScale - 0.1); paceGood = 0; }
+      else if (avg < 1 / 57) { if (++paceGood >= 3 && resScale < 1) { next = Math.min(1, resScale + 0.1); paceGood = 0; } }
+      else paceGood = 0;
+      if (next !== resScale) { resScale = next; renderer.setPixelRatio(fullRatio * resScale); resize(); }
+    }
     function resize() {
       const w = container.clientWidth, h = container.clientHeight;
       if (!w || !h) return;
@@ -3222,7 +3270,13 @@ void main() {`);
 
     function frame(now) {
       raf = running ? requestAnimationFrame(frame) : 0;
-      const dt = Math.min(0.1, (now - last) / 1000); last = now;
+      const raw = (now - last) / 1000, dt = Math.min(0.1, raw); last = now;
+      pace(raw);
+      // Building the land round the rider shares the frame with drawing it.
+      // While frames come on time it gets a few ms; when they are already
+      // late it takes only a sliver, so the picture keeps a steady pace
+      // rather than hitching every time a tile or a painted piece is made.
+      spare = dt < 0.021 ? 1 : 0.3;
       const s = getState();
       const want = s.real !== false || !!s.google; // Google 3D wants the real heights too
       if (s.route !== built || want !== realWant) { realWant = want; setRoute(s.route); }
@@ -3240,7 +3294,7 @@ void main() {`);
           for (const t of tiles) t.d = Math.hypot(t.x - here.x, t.z - here.z);
           tiles.sort((p, q) => p.d - q.d);
         }
-        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 6;) {
+        for (const t0 = performance.now(); tiles.length && performance.now() - t0 < 4 * spare;) {
           const t = tiles.shift(), m = t.build(tileMat);
           if (t.swap && t.swap.parent) { // the same tile with a new road through it: new shape, same paint for now
             const u = t.swap.userData;
