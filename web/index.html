@@ -525,7 +525,7 @@
         <button id="roamBtn" class="secondary">Ride anywhere</button>
         <button id="buildBtn" class="secondary">Build a route</button>
         <button id="raceBtn" class="secondary">Race</button>
-        <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,.cds,application/gpx+xml"><span>Load GPX</span></label>
+        <label class="filebtn"><input type="file" id="gpxInput" accept=".gpx,.cds,.zces,application/gpx+xml" multiple><span>Load GPX</span></label>
       </div>
     </div>
     <p class="muted" style="margin:8px 0 0">Ride the built-in 12 km island loop, load a GPX file (a Strava or Komoot route export works) or drop one here, ride anywhere (pick a road on a map and choose your way at every junction), or build your own route on a map.</p>
@@ -1374,17 +1374,34 @@ function onSensorValue(kind, view) {
   }
 }
 
+// A strap can drop the link a moment after it connects (Chrome on Windows
+// does this a lot), so a lost link while setting up is tried again here
+// rather than reported. A drop in that window is ours to retry, so the
+// reconnect loop leaves it alone while s.linking is set.
 async function subscribeSensor(kind) {
   const s = ext[kind];
   sensorState(kind, 'Connecting…');
-  const server = await s.device.gatt.connect();
-  const service = await server.getPrimaryService(kind === 'hr' ? 0x180d : 0x1818);
-  const ch = await service.getCharacteristic(kind === 'hr' ? 0x2a37 : 0x2a63);
-  s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
-  ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
-  await ch.startNotifications();
-  sensorState(kind, sensorStateText(kind), 'ok');
-  watchBattery(server, kind);
+  s.linking = true;
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const server = await s.device.gatt.connect();
+        const service = await server.getPrimaryService(kind === 'hr' ? 0x180d : 0x1818);
+        const ch = await service.getCharacteristic(kind === 'hr' ? 0x2a37 : 0x2a63);
+        s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
+        ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
+        await ch.startNotifications();
+        sensorState(kind, sensorStateText(kind), 'ok');
+        watchBattery(server, kind);
+        return;
+      } catch (e) {
+        if (e.name !== 'NetworkError' || attempt >= 3 || s.manual || !s.device) throw e;
+        await new Promise(r => setTimeout(r, 700 * attempt));
+      }
+    }
+  } finally {
+    s.linking = false;
+  }
 }
 
 function forgetSensor(kind) {
@@ -1423,25 +1440,35 @@ async function toggleSensor(kind) {
     await subscribeSensor(kind);
   } catch (e) {
     if (e.name === 'NotFoundError') sensorState(kind, s.device ? sensorStateText(kind) : 'Not connected');
+    // The strap was found but the link kept dropping: keep trying it, as after a dropout mid-ride.
+    else if (e.name === 'NetworkError' && s.device) onSensorDisconnected(kind, s.device);
     else { sensorState(kind, `Could not connect: ${e.message}`, 'bad'); if (s.device) { s.manual = true; s.device.gatt.disconnect(); forgetSensor(kind); } }
   }
 }
 
 function sensorStateText(kind) { return (ext[kind].device?.name || 'Connected') + batteryText(kind); }
 
-// Straps and power meters drop out now and then; try to get them back.
+// Straps and power meters drop out now and then; try to get them back,
+// for about a minute and a half before asking for a press of Connect.
+const SENSOR_RETRIES = 8;
 async function onSensorDisconnected(kind, which) {
   const s = ext[kind];
-  if (s.device !== which) return;
+  if (s.device !== which || s.linking || s.retrying) return;
   if (s.manual) { forgetSensor(kind); sensorState(kind, 'Not connected'); return; }
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    sensorState(kind, `Connection lost. Reconnecting (${attempt} of 3)…`, 'bad');
-    await new Promise(r => setTimeout(r, 2000 * attempt));
-    if (s.device !== which || s.manual) return;
-    try { await subscribeSensor(kind); return; } catch { /* next attempt */ }
+  s.retrying = true;
+  try {
+    for (let attempt = 1; attempt <= SENSOR_RETRIES; attempt++) {
+      sensorState(kind, `Connection lost. Reconnecting (${attempt} of ${SENSOR_RETRIES})…`, 'bad');
+      await new Promise(r => setTimeout(r, 2000 * Math.min(attempt, 6)));
+      if (s.device !== which) return;
+      if (s.manual) { forgetSensor(kind); sensorState(kind, 'Not connected'); return; }
+      try { await subscribeSensor(kind); return; } catch { /* next attempt */ }
+    }
+    forgetSensor(kind);
+    sensorState(kind, `Connection lost. Press Connect to try again${kind === 'hr' ? ', and check the strap is not connected to another app or watch' : ''}.`, 'bad');
+  } finally {
+    s.retrying = false;
   }
-  forgetSensor(kind);
-  sensorState(kind, 'Connection lost. Press Connect to try again.', 'bad');
 }
 
 function onValue(uuid, view) {
@@ -4068,11 +4095,11 @@ function parseGpx(text, fileName) {
   return r;
 }
 
-// ---- A Pro Cycling Manager stage (.cds, the game's stage data). It holds
+// ---- A Pro Cycling Manager stage. The .cds (the game's stage data) holds
 // the stage's height profile (a point every 200 m) and its sectors, but not
-// where the road goes, so the road is made up here: a winding line with the
-// game's own heights, in a made-up world. The game's 3D landscape (.zces)
-// is not read.
+// where the road goes. The .zces (the stage's 3D scene) holds the roads and
+// the race route through them; with it the road is the game's own, without
+// it a winding road is made up. Either way the land around it is made up.
 function parseStageData(buf, fileName) {
   const dv = new DataView(buf), n = buf.byteLength, u8 = new Uint8Array(buf);
   const str = (o, len) => String.fromCharCode(...u8.subarray(o, o + len));
@@ -4115,7 +4142,209 @@ function parseStageData(buf, fileName) {
     }
     if (list.length === cnt) sectors = list;
   }
-  return stageRoute({ name: name || fileName.replace(/\.cds$/i, ''), profile: prof.pts, sectors });
+  return { name: name || fileName.replace(/\.cds$/i, ''), profile: prof.pts, sectors };
+}
+
+// The .zces: zlib blocks, each after a 20-byte header (sizes, then 0x12345678).
+async function inflateScene(buf) {
+  const dv = new DataView(buf), parts = [];
+  for (let o = 4; o + 20 <= buf.byteLength;) {
+    const comp = dv.getUint32(o + 8, true);
+    if (dv.getUint32(o + 16, true) !== 0x12345678 || o + 20 + comp > buf.byteLength) break;
+    const ds = new Blob([new Uint8Array(buf, o + 20, comp)]).stream().pipeThrough(new DecompressionStream('deflate'));
+    parts.push(new Uint8Array(await new Response(ds).arrayBuffer()));
+    o += 20 + comp;
+  }
+  if (!parts.length) throw new Error('That is not a Pro Cycling Manager stage scene (.zces).');
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+
+// The race route out of the scene, as [x, y, z] in metres. The scene starts
+// with one type name per object (an object's id is its place in that list),
+// then the objects, each opening with the bytes AD CE. A road is a chain of
+// curves; a curve is two knots (position and tangent) between two road
+// points, and the route is a list of road points to pass, a few hundred
+// metres apart. Between them the way is found along the roads.
+function sceneRoute(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), n = u8.length;
+  const u32 = o => dv.getUint32(o, true), f32 = o => dv.getFloat32(o, true);
+  if (n < 64 || String.fromCharCode(...u8.subarray(16, 23)) !== 'CTStage') throw new Error('That stage scene has no roads in it.');
+  const count = u32(8), type = [];
+  let o = 12;
+  for (let i = 0; i < count && o < n; i++) { const len = u32(o); type.push(String.fromCharCode(...u8.subarray(o + 4, o + 4 + len))); o += 4 + len; }
+  const knotIds = [], isKnot = new Set(), isNode = new Set();
+  type.forEach((t, i) => {
+    if (t === 'CTRoadTangentControlPoint') { knotIds.push(i); isKnot.add(i); }
+    if (t === 'CTRoadPoint' || t === 'CTRoadIntersection') isNode.add(i);
+  });
+  const knots = new Map(), points = [], ends = new Map();
+  let route = [];
+  const zeros = (a, len) => { for (let i = 0; i < len; i++) if (u8[a + i]) return false; return true; };
+  const xyz = a => [f32(a), f32(a + 4), f32(a + 8)];
+  for (let i = o; i + 48 < n; i++) {
+    if (u8[i] !== 0xad || u8[i + 1] !== 0xce) continue;
+    if (zeros(i + 14, 12)) {
+      const p = xyz(i + 2);
+      if (p.every(v => Math.abs(v) < 1e5) && Math.abs(p[0]) >= 1) {
+        // A road point: position, 12 zero bytes, then a count and the first
+        // knots of the curves that meet there.
+        const cnt = u32(i + 26);
+        if (cnt >= 1 && cnt <= 12 && i + 30 + cnt * 4 <= n) {
+          const ks = [];
+          for (let j = 0; j < cnt; j++) ks.push(u32(i + 30 + j * 4));
+          // (Some lists also carry the ids of other road objects.)
+          if (ks.some(k => isKnot.has(k)) && ks.every(k => k >= knotIds[0] && k < count)) { points.push({ p, ks }); continue; }
+        }
+        // A knot: position, 12 zero bytes, tangent, the id of its pair's first knot.
+        if (knots.size < knotIds.length && u8[i + 42] === 0 && u8[i + 43] === 0) {
+          const id = knotIds[knots.size], ref = u32(i + 38);
+          if (ref === id || ref === id - 1) { knots.set(id, { p, t: xyz(i + 26), ref }); continue; }
+        }
+      }
+    }
+    // A curve: from road point a to b; its own knots are r0 - 1 and r0.
+    if (u8[i + 2] === 1 && u8[i + 3] === 0 && u8[i + 4] === 0xad && u8[i + 5] === 0xce && u8[i + 6] === 1) {
+      const r0 = u32(i + 15);
+      if (r0) ends.set(r0 - 1, [u32(i + 7), u32(i + 11)]);
+      continue;
+    }
+    // The route: a count, then that many road points.
+    const len = u32(i + 2);
+    if (len > route.length && len >= 5 && len < 5000 && i + 6 + len * 4 <= n) {
+      let ok = true;
+      for (let j = 0; j < len && ok; j++) ok = isNode.has(u32(i + 6 + j * 4));
+      if (ok) { route = []; for (let j = 0; j < len; j++) route.push(u32(i + 6 + j * 4)); }
+    }
+  }
+  if (knots.size < knotIds.length || !points.length || !ends.size || route.length < 2) throw new Error('Could not find the race route in that stage scene.');
+
+  // The road graph. Knots come in pairs, each pair a bezier curve. A road
+  // point joins the nearer knot of every curve listed at it, and a knot at a
+  // loose end joins the nearest knots within 70 units (the scene is in tens
+  // of metres), which is how roads meet at junctions.
+  const adj = new Map(), link = (u, v, pts) => {
+    let L = 0;
+    for (let j = 1; j < pts.length; j++) L += Math.hypot(pts[j][0] - pts[j - 1][0], pts[j][1] - pts[j - 1][1]);
+    if (!adj.has(u)) adj.set(u, []);
+    if (!adj.has(v)) adj.set(v, []);
+    adj.get(u).push({ v, L, pts }); adj.get(v).push({ v: u, L, pts: pts.slice().reverse() });
+  };
+  const bezier = (a, b) => {
+    const A = knots.get(a), B = knots.get(b), dvec = A.p.map((x, j) => B.p[j] - x);
+    const dot = (t, s) => t[0] * s[0] + t[1] * s[1] + t[2] * s[2];
+    const t0 = dot(A.t, dvec) >= 0 ? A.t : A.t.map(x => -x), t3 = dot(B.t, dvec) <= 0 ? B.t : B.t.map(x => -x);
+    const out = [];
+    for (let s = 0; s <= 1.0001; s += 1 / 16) {
+      const w = [(1 - s) ** 3, 3 * (1 - s) ** 2 * s, 3 * (1 - s) * s * s, s ** 3];
+      out.push([0, 1, 2].map(j => w[0] * A.p[j] + w[1] * (A.p[j] + t0[j]) + w[2] * (B.p[j] + t3[j]) + w[3] * B.p[j]));
+    }
+    return out;
+  };
+  const dist2 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+  const partner = new Map();
+  for (const [k, K] of knots) if (K.ref !== k && knots.has(K.ref)) { partner.set(k, K.ref); partner.set(K.ref, k); link(K.ref, k, bezier(K.ref, k)); }
+  // Which road point is which: the curve records name the points at their
+  // two ends, and a point sits next to one end of each curve listed at it.
+  const pointOf = new Map();
+  points.forEach((P, j) => {
+    const votes = new Map();
+    for (const X of P.ks) {
+      const e = ends.get(X);
+      if (!e || !knots.has(X) || !knots.has(X + 1)) continue;
+      const v = dist2(knots.get(X).p, P.p) < dist2(knots.get(X + 1).p, P.p) ? e[0] : e[1];
+      if (v) votes.set(v, (votes.get(v) || 0) + 1);
+    }
+    let best = 0, top = 0;
+    for (const [v, c] of votes) if (c > top) { best = v; top = c; }
+    if (best) pointOf.set(best, j);
+    const node = 'p' + j;
+    for (const X of P.ks) {
+      if (!partner.has(X)) continue;
+      const k = [X, partner.get(X)].sort((x, y) => dist2(knots.get(x).p, P.p) - dist2(knots.get(y).p, P.p))[0];
+      link(node, k, [P.p, knots.get(k).p]);
+    }
+  });
+  const all = [...knots.keys()];
+  for (const k of all) {
+    if ((adj.get(k) || []).length > 1) continue;
+    const p = knots.get(k).p;
+    all.map(j => [j, Math.hypot(knots.get(j).p[0] - p[0], knots.get(j).p[1] - p[1])])
+      .filter(([j, d]) => d < 70 && j !== k && j !== partner.get(k)).sort((x, y) => x[1] - y[1]).slice(0, 12)
+      .forEach(([j]) => link(k, j, [p, knots.get(j).p]));
+  }
+  // Along the roads from one route point to the next (Dijkstra with a
+  // binary heap; a few thousand corners).
+  const leg = (from, to) => {
+    const dist = new Map([[from, 0]]), prev = new Map(), heap = [[0, from]];
+    const push = e => { heap.push(e); for (let i = heap.length - 1; i;) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => {
+      const top = heap[0], last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        for (let i = 0; ;) {
+          let m = i; const l = 2 * i + 1, r = l + 1;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === i) break;
+          [heap[m], heap[i]] = [heap[i], heap[m]]; i = m;
+        }
+      }
+      return top;
+    };
+    while (heap.length) {
+      const [du, u] = pop();
+      if (u === to) {
+        const legs = [];
+        for (let x = u; prev.has(x); x = prev.get(x).u) legs.push(prev.get(x).pts);
+        return legs.reverse().flat();
+      }
+      if (du > dist.get(u)) continue;
+      for (const e of adj.get(u) || []) if (du + e.L < (dist.get(e.v) ?? Infinity)) { dist.set(e.v, du + e.L); prev.set(e.v, { u, pts: e.pts }); push([du + e.L, e.v]); }
+    }
+    return null;
+  };
+  const stops = route.filter(id => pointOf.has(id)).map(id => 'p' + pointOf.get(id));
+  if (stops.length < 2) throw new Error('Could not find the race route in that stage scene.');
+  const path = [];
+  for (let i = 1; i < stops.length; i++) {
+    if (stops[i] === stops[i - 1]) continue;
+    const r = leg(stops[i - 1], stops[i]);
+    if (!r) throw new Error('Could not follow the race route along the roads in that stage scene.');
+    path.push(...r);
+  }
+  // Tens of metres, as in the .cds; y is north.
+  const out = [];
+  for (const q of path) {
+    const m = [q[0] * 10, q[1] * 10, q[2] * 10], last = out[out.length - 1];
+    if (!last || Math.hypot(m[0] - last[0], m[1] - last[1]) > 1) out.push(m);
+  }
+  return out;
+}
+
+// One stage out of the files picked together: a .cds, a .zces, or both.
+async function readStage(files) {
+  const cds = files.find(f => /\.cds$/i.test(f.name)), zces = files.find(f => /\.zces$/i.test(f.name));
+  const stage = cds ? parseStageData(await cds.arrayBuffer(), cds.name) : { name: zces.name.replace(/\.zces$/i, '').replace(/^c\d+_/, '').replace(/_/g, ' '), profile: null, sectors: [] };
+  if (zces) {
+    const path = sceneRoute(await inflateScene(await zces.arrayBuffer()));
+    // The scene's road runs a few per cent longer than the .cds says the
+    // stage is; it is squeezed to fit, so the heights and sectors land in
+    // their places along it.
+    let len = 0;
+    for (let i = 1; i < path.length; i++) len += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+    const f = stage.profile ? stage.profile[stage.profile.length - 1][0] / len : 1;
+    stage.path = path.map(([x, y, z]) => [Math.round(x * f * 10) / 10, Math.round(y * f * 10) / 10, Math.round(z * 10) / 10]);
+    if (!stage.profile) {
+      // No .cds: the heights are the scene's own.
+      stage.profile = [];
+      let d = 0;
+      stage.path.forEach((p, i) => { if (i) d += Math.hypot(p[0] - stage.path[i - 1][0], p[1] - stage.path[i - 1][1]); stage.profile.push([d, p[2]]); });
+    }
+  }
+  return stage;
 }
 
 // The made-up road for a stage: it wanders with gentle bends and the odd
@@ -4136,8 +4365,16 @@ function stageRoute(stage) {
   };
   const LAT0 = 52.2, LON0 = 2.9, M = 111320, cosL = Math.cos((LAT0 * Math.PI) / 180), STEP = 20;
   const points = [];
+  if (stage.path) {
+    // The game's own road.
+    let d = 0;
+    stage.path.forEach(([x, y], i) => {
+      if (i) d += Math.hypot(x - stage.path[i - 1][0], y - stage.path[i - 1][1]);
+      points.push({ lat: LAT0 + y / M, lon: LON0 + x / (M * cosL), ele: eleAt(Math.min(d, total)) });
+    });
+  }
   let x = 0, y = 0, h = rnd() * 6.28, corner = 0, turn = 0;
-  for (let d = 0; d <= total + 0.1; d += STEP) {
+  for (let d = 0; !stage.path && d <= total + 0.1; d += STEP) {
     points.push({ lat: LAT0 + y / M, lon: LON0 + x / (M * cosL), ele: eleAt(Math.min(d, total)) });
     let k = 0; // bend: radians per metre
     for (const w of waves) k += w.amp * Math.sin((2 * Math.PI * d) / w.len + w.ph);
@@ -4386,13 +4623,22 @@ function renderRoute() {
   view3d.hud();
 }
 
-async function loadGpxFile(file) {
-  if (!file) return;
+async function loadGpxFile(list) {
+  const files = [...(list || [])];
+  if (!files.length) return;
   try {
-    const r = /\.cds$/i.test(file.name) ? parseStageData(await file.arrayBuffer(), file.name) : parseGpx(await file.text(), file.name);
+    const game = files.some(f => /\.(cds|zces)$/i.test(f.name));
+    if (game) routeMsg('Reading the stage…');
+    const r = game ? stageRoute(await readStage(files)) : parseGpx(await files[0].text(), files[0].name);
     useRoute(r);
     myRoutes.saveRoute(r, r.stage ? 'stage' : 'gpx', r.stage ? { stage: r.stage } : {});
-    if (r.stage?.sectors.length) routeMsg(`${r.name}: ${fmtKm(r.total)} km, ${r.stage.sectors.length} sectors (${[...new Set(r.stage.sectors.map(x => x.name))].slice(0, 6).join(', ')}${new Set(r.stage.sectors.map(x => x.name)).size > 6 ? '…' : ''}). The heights are the game's; the road and land around it are made up.`, 'ok');
+    if (r.stage) {
+      const names = [...new Set(r.stage.sectors.map(x => x.name))];
+      const sectors = names.length ? `, ${r.stage.sectors.length} sectors (${names.slice(0, 6).join(', ')}${names.length > 6 ? '…' : ''})` : '';
+      routeMsg(`${r.name}: ${fmtKm(r.total)} km${sectors}. ` + (r.stage.path
+        ? 'The road is the game\'s own; the land around it is made up.'
+        : 'The heights are the game\'s; the road and land around it are made up. Pick the .zces file with it to ride the game\'s own road.'), 'ok');
+    }
   } catch (e) {
     routeMsg(e.message, 'bad');
   }
@@ -4438,10 +4684,10 @@ function clearRoute() {
   routeMsg('');
 }
 
-$('gpxInput').addEventListener('change', e => loadGpxFile(e.target.files[0]));
+$('gpxInput').addEventListener('change', e => loadGpxFile(e.target.files));
 $('courseBtn').addEventListener('click', () => loadCourse('island'));
 $('routePanel').addEventListener('dragover', e => e.preventDefault());
-$('routePanel').addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (/\.glb$/i.test(f?.name || '')) view3d.dropBike(f); else loadGpxFile(f); }); // a .glb is a bike model
+$('routePanel').addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (/\.glb$/i.test(f?.name || '')) view3d.dropBike(f); else loadGpxFile(e.dataTransfer.files); }); // a .glb is a bike model
 $('routeClear').addEventListener('click', clearRoute);
 // ---- Your routes, ride history and Strava routes, kept in this browser
 // (IndexedDB 'iw-library'). A GPX or Strava route is saved as it is loaded; a
