@@ -1374,17 +1374,34 @@ function onSensorValue(kind, view) {
   }
 }
 
+// A strap can drop the link a moment after it connects (Chrome on Windows
+// does this a lot), so a lost link while setting up is tried again here
+// rather than reported. A drop in that window is ours to retry, so the
+// reconnect loop leaves it alone while s.linking is set.
 async function subscribeSensor(kind) {
   const s = ext[kind];
   sensorState(kind, 'Connecting…');
-  const server = await s.device.gatt.connect();
-  const service = await server.getPrimaryService(kind === 'hr' ? 0x180d : 0x1818);
-  const ch = await service.getCharacteristic(kind === 'hr' ? 0x2a37 : 0x2a63);
-  s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
-  ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
-  await ch.startNotifications();
-  sensorState(kind, sensorStateText(kind), 'ok');
-  watchBattery(server, kind);
+  s.linking = true;
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const server = await s.device.gatt.connect();
+        const service = await server.getPrimaryService(kind === 'hr' ? 0x180d : 0x1818);
+        const ch = await service.getCharacteristic(kind === 'hr' ? 0x2a37 : 0x2a63);
+        s.handler = s.handler || (e => onSensorValue(kind, e.target.value));
+        ch.addEventListener('characteristicvaluechanged', s.handler); // same function: never added twice
+        await ch.startNotifications();
+        sensorState(kind, sensorStateText(kind), 'ok');
+        watchBattery(server, kind);
+        return;
+      } catch (e) {
+        if (e.name !== 'NetworkError' || attempt >= 3 || s.manual || !s.device) throw e;
+        await new Promise(r => setTimeout(r, 700 * attempt));
+      }
+    }
+  } finally {
+    s.linking = false;
+  }
 }
 
 function forgetSensor(kind) {
@@ -1423,25 +1440,35 @@ async function toggleSensor(kind) {
     await subscribeSensor(kind);
   } catch (e) {
     if (e.name === 'NotFoundError') sensorState(kind, s.device ? sensorStateText(kind) : 'Not connected');
+    // The strap was found but the link kept dropping: keep trying it, as after a dropout mid-ride.
+    else if (e.name === 'NetworkError' && s.device) onSensorDisconnected(kind, s.device);
     else { sensorState(kind, `Could not connect: ${e.message}`, 'bad'); if (s.device) { s.manual = true; s.device.gatt.disconnect(); forgetSensor(kind); } }
   }
 }
 
 function sensorStateText(kind) { return (ext[kind].device?.name || 'Connected') + batteryText(kind); }
 
-// Straps and power meters drop out now and then; try to get them back.
+// Straps and power meters drop out now and then; try to get them back,
+// for about a minute and a half before asking for a press of Connect.
+const SENSOR_RETRIES = 8;
 async function onSensorDisconnected(kind, which) {
   const s = ext[kind];
-  if (s.device !== which) return;
+  if (s.device !== which || s.linking || s.retrying) return;
   if (s.manual) { forgetSensor(kind); sensorState(kind, 'Not connected'); return; }
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    sensorState(kind, `Connection lost. Reconnecting (${attempt} of 3)…`, 'bad');
-    await new Promise(r => setTimeout(r, 2000 * attempt));
-    if (s.device !== which || s.manual) return;
-    try { await subscribeSensor(kind); return; } catch { /* next attempt */ }
+  s.retrying = true;
+  try {
+    for (let attempt = 1; attempt <= SENSOR_RETRIES; attempt++) {
+      sensorState(kind, `Connection lost. Reconnecting (${attempt} of ${SENSOR_RETRIES})…`, 'bad');
+      await new Promise(r => setTimeout(r, 2000 * Math.min(attempt, 6)));
+      if (s.device !== which) return;
+      if (s.manual) { forgetSensor(kind); sensorState(kind, 'Not connected'); return; }
+      try { await subscribeSensor(kind); return; } catch { /* next attempt */ }
+    }
+    forgetSensor(kind);
+    sensorState(kind, `Connection lost. Press Connect to try again${kind === 'hr' ? ', and check the strap is not connected to another app or watch' : ''}.`, 'bad');
+  } finally {
+    s.retrying = false;
   }
-  forgetSensor(kind);
-  sensorState(kind, 'Connection lost. Press Connect to try again.', 'bad');
 }
 
 function onValue(uuid, view) {
