@@ -255,6 +255,16 @@
   .rv-climb .s { font-size: 13px; color: #c9cfda; margin-top: 2px; }
   .rv-climb canvas { display: block; width: 100%; height: 70px; margin-top: 6px; }
   .rv-climb.soon { border: 2px solid #f5b84b; }
+  /* The map: the route with you on it, bottom left above the screenshot buttons. M hides it. */
+  .rv-map { left: 12px; bottom: 240px; padding: 6px; pointer-events: auto; }
+  .rv-map canvas { display: block; width: clamp(150px, 26vh, 230px); height: clamp(150px, 26vh, 230px); }
+  .rv:has(#rvRace:not(.hidden)) .rv-map canvas { width: clamp(110px, calc(100vh - 620px), 230px); height: clamp(110px, calc(100vh - 620px), 230px); } /* under the race board on a short screen */
+  .rv-maphead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .rv-mapseg { display: flex; gap: 4px; }
+  .rv-mapseg button, .rv-mapx, .rv-mapshow { background: rgba(255, 255, 255, 0.08); color: #c9cfda; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
+  .rv-mapseg button.on { background: #f2f4f8; color: #111; }
+  .rv-mapx { font-size: 14px; line-height: 1; padding: 1px 7px 3px; }
+  .rv-mapshow { position: absolute; left: 12px; bottom: 240px; background: rgba(12, 14, 18, 0.74); padding: 5px 10px; font-size: 12px; }
   .rv-bottom { position: absolute; left: 0; right: 0; bottom: 0; height: 180px; background: linear-gradient(transparent, rgba(8, 10, 14, 0.82) 22%); padding: 22px 12px 8px; box-sizing: border-box; }
   .rv-elevbar { position: relative; height: 62px; }
   .rv-bottom canvas { display: block; width: 100%; }
@@ -555,6 +565,8 @@
           </div>
           <div class="rv-box rv-race hidden" id="rvRace"></div>
           <div class="rv-box rv-climb hidden" id="rvClimb"><div class="t" id="rvClimbT"></div><div class="s" id="rvClimbS"></div><canvas id="rvClimbC"></canvas></div>
+          <div class="rv-box rv-map" id="rvMap"><div class="rv-maphead"><div class="rv-mapseg" id="rvMapSeg"><button data-m="route" title="The whole route">Route</button><button data-m="near" title="2 km round you, the way you ride at the top">Near</button></div><button class="rv-mapx" id="rvMapHide" title="Hide the map (M)">×</button></div><canvas id="rvMapC" aria-label="Map of the route with your position"></canvas></div>
+          <button class="rv-mapshow hidden" id="rvMapShow" title="Show the map (M)">Map</button>
           <div class="rv-ctrl">
             <button id="rvErg" title="ERG on or off (E)">ERG</button><button id="rvMinus" title="Target −5 W (↓)">−5</button><button id="rvPlus" title="Target +5 W (↑)">+5</button>
             <button id="rvLap" title="New lap (L)">Lap</button><button id="rvPause">Pause</button><button id="rvFinish">Finish</button><button id="rvMini" title="A small window that stays on top">Mini</button><button id="rvExit" title="Back to the setup page (Esc)">Setup</button>
@@ -6000,6 +6012,115 @@ const rideView = (() => {
     ctx.fillStyle = '#fff'; ctx.fillRect(Math.min(w - 2, (done / total) * w), 0, 2, h);
   }
 
+  // The map: the route from above with you on it. "Route" fits the whole
+  // route, north up; "Near" shows 2 km round you, turned so the road you ride
+  // goes up the screen. The road is drawn from the route's own points, so it
+  // works on a GPX, the island, a game stage or Ride anywhere alike.
+  const MAP_MODES = ['route', 'near', 'off'];
+  let mapMode = MAP_MODES.includes(store.get('rideMap', 'route')) ? store.get('rideMap', 'route') : 'route';
+  let mapLast = mapMode === 'off' ? 'route' : mapMode; // what M brings back
+  let mapXY = null, mapHeading = null;
+  function setMap(m) {
+    if (m !== 'off') mapLast = m;
+    mapMode = m; store.set('rideMap', m);
+    $('rvMap').classList.toggle('hidden', m === 'off');
+    $('rvMapShow').classList.toggle('hidden', m !== 'off');
+    document.querySelectorAll('#rvMapSeg button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+    if (on()) drawMap();
+  }
+  // The route in metres east (x) and north (y) of its first point, worked out
+  // again only when the route changes (Ride anywhere adds road as you go).
+  function mapPoints() {
+    const res = route.res;
+    if (mapXY && mapXY.route === route && mapXY.n === res.length) return mapXY;
+    const lat0 = res[0].lat, lon0 = res[0].lon, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+    const x = new Float64Array(res.length), y = new Float64Array(res.length);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    res.forEach((p, i) => {
+      x[i] = (p.lon - lon0) * kx; y[i] = (p.lat - lat0) * ky;
+      minX = Math.min(minX, x[i]); maxX = Math.max(maxX, x[i]); minY = Math.min(minY, y[i]); maxY = Math.max(maxY, y[i]);
+    });
+    mapXY = { route, n: res.length, x, y, minX, maxX, minY, maxY, at: d => { const p = routeAt(d); return [(p.lon - lon0) * kx, (p.lat - lat0) * ky]; } };
+    return mapXY;
+  }
+  function drawMap() {
+    if (!route || mapMode === 'off') return;
+    const { ctx, w, h } = setupCanvas($('rvMapC'));
+    const M = mapPoints(), n = M.n, T = route.total;
+    const wrap = d => (route.loop ? ((d % T) + T) % T : Math.max(0, Math.min(T, d)));
+    const here = routeState.dist, [hx, hy] = M.at(here);
+    // Which way the road goes here, from a little behind to a little ahead, eased so the map does not swing.
+    const [ax, ay] = M.at(wrap(here - 30)), [bx, by] = M.at(wrap(here + 60));
+    const want = Math.atan2(bx - ax, by - ay); // 0 is north, clockwise
+    if (mapHeading == null || !Number.isFinite(mapHeading)) mapHeading = want;
+    else { let dA = want - mapHeading; dA = Math.atan2(Math.sin(dA), Math.cos(dA)); mapHeading += dA * 0.3; }
+    const near = mapMode === 'near';
+    let S, cx, cy, rot, px, py;
+    if (near) {
+      S = Math.min(w, h) / 2000; rot = -mapHeading; cx = hx; cy = hy; px = w / 2; py = h * 0.62;
+    } else {
+      const pad = 12, under = 14; // room for the scale at the bottom
+      S = Math.min((w - 2 * pad) / (M.maxX - M.minX || 1), (h - 2 * pad - under) / (M.maxY - M.minY || 1));
+      rot = 0; cx = (M.minX + M.maxX) / 2; cy = (M.minY + M.maxY) / 2; px = w / 2; py = (h - under) / 2;
+    }
+    const cr = Math.cos(rot), sr = Math.sin(rot);
+    const X = (x, y) => px + ((x - cx) * cr - (y - cy) * sr) * S;
+    const Y = (x, y) => py - ((x - cx) * sr + (y - cy) * cr) * S;
+    // Only the points that land on the map, and in Route view only one every pixel or so.
+    const hi = Math.min(n - 1, Math.floor(here / ROUTE_STEP));
+    const reach = near ? 1600 : Infinity, minGap = near ? 0 : 1.2 / S;
+    const line = (from, to, color, width) => {
+      ctx.beginPath();
+      let pen = false, lx = 0, ly = 0;
+      for (let i = from; i <= to; i++) {
+        const x = M.x[i], y = M.y[i];
+        if (Math.abs(x - hx) > reach || Math.abs(y - hy) > reach) { pen = false; continue; }
+        if (pen && i < to && Math.abs(x - lx) < minGap && Math.abs(y - ly) < minGap) continue;
+        const sx = X(x, y), sy = Y(x, y);
+        pen ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); pen = true; lx = x; ly = y;
+      }
+      if (to === hi && pen) ctx.lineTo(X(hx, hy), Y(hx, hy));
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+    };
+    ctx.lineJoin = ctx.lineCap = 'round';
+    line(0, n - 1, 'rgba(0, 0, 0, 0.55)', near ? 7 : 5.5);
+    line(0, n - 1, '#8b93a7', near ? 4 : 3);
+    if (hi > 0) line(0, hi, '#ff7a1a', near ? 4 : 3);
+    // Start (and finish, when it is not a loop).
+    const dot = (x, y, color, r) => { ctx.beginPath(); ctx.arc(X(x, y), Y(x, y), r, 0, 7); ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#111'; ctx.stroke(); };
+    if (!route.roam) {
+      dot(M.x[0], M.y[0], '#3ecf8e', 4);
+      if (!route.loop) dot(M.x[n - 1], M.y[n - 1], '#ff5d5d', 4);
+    }
+    // The race field, in their kit colours.
+    const R = race.state;
+    if (R && !R.results) for (const b of R.field) {
+      if (b.gone) continue;
+      const [x, y] = M.at(wrap(R.start + b.d));
+      if (near && (Math.abs(x - hx) > 1200 || Math.abs(y - hy) > 1200)) continue;
+      dot(x, y, `#${(b.kit?.[0] ?? 0xc9cfda).toString(16).padStart(6, '0')}`, near ? 3.5 : 2.5);
+    }
+    // You: an arrow the way you ride.
+    const sx = X(hx, hy), sy = Y(hx, hy), a = mapHeading + rot;
+    ctx.save(); ctx.translate(sx, sy); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(6.5, 6.5); ctx.lineTo(0, 3); ctx.lineTo(-6.5, 6.5); ctx.closePath();
+    ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#ff7a1a'; ctx.stroke();
+    ctx.restore();
+    // Which way is north, when the map is turned; and the scale.
+    ctx.font = '600 10px "Segoe UI", system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (near) {
+      const nx = w - 12, ny = 12;
+      ctx.save(); ctx.translate(nx, ny); ctx.rotate(rot);
+      ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(3.5, 1); ctx.lineTo(-3.5, 1); ctx.closePath(); ctx.fillStyle = '#ff5d5d'; ctx.fill();
+      ctx.fillStyle = '#f2f4f8'; ctx.fillText('N', 0, 7);
+      ctx.restore();
+    }
+    const bar = near ? 500 : [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000].find(m => m * S >= w / 5) || 50000;
+    ctx.fillStyle = '#c9cfda'; ctx.fillRect(6, h - 6, bar * S, 2); ctx.fillRect(6, h - 10, 1.5, 6); ctx.fillRect(6 + bar * S - 1.5, h - 10, 1.5, 6);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(bar >= 1000 ? `${bar / 1000} km` : `${bar} m`, 10 + bar * S, h - 4);
+  }
+
   const put = (id, v) => { const el = $(id); if (el.textContent !== v) el.textContent = v; };
   const num = (v, dp = 0) => (v == null || !Number.isFinite(v) ? '--' : v.toFixed(dp));
 
@@ -6041,7 +6162,7 @@ const rideView = (() => {
         : `${(c.len / 1000).toFixed(1)} km · ${c.avg.toFixed(1)}% average · ${Math.round(c.gain)} m up`);
       drawClimb(c);
     }
-    drawWorkout(); drawGraph(); drawElev();
+    drawWorkout(); drawGraph(); drawElev(); drawMap();
   }
 
   // ---- In and out.
@@ -6098,11 +6219,15 @@ const rideView = (() => {
     if (e.ctrlKey || e.metaKey || e.altKey || typing) return;
     if (e.key === 'Escape' && on()) leave();
     else if ((e.key === 'l' || e.key === 'L') && on() && ride.status === 'riding') { newLap(); update(); }
+    else if ((e.key === 'm' || e.key === 'M') && on()) setMap(mapMode === 'off' ? mapLast : 'off');
     else if (e.key === '+' || e.key === '=') shiftBy(1);
     else if (e.key === '-' || e.key === '_') shiftBy(-1);
   });
+  $('rvMapSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setMap(b.dataset.m); });
+  $('rvMapHide').addEventListener('click', () => setMap('off'));
+  $('rvMapShow').addEventListener('click', () => setMap(mapLast));
   window.addEventListener('resize', () => { if (on()) update(); });
-  setZoom(zoom);
+  setZoom(zoom); setMap(mapMode);
 
   // ---- The start card: what is connected and what the ride will be.
   function setup() {
