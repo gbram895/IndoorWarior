@@ -65,6 +65,16 @@ The ride view lays out what Zwift shows:
   minutes of power (coloured by zone, on the zone bands) and heart rate, with
   the ERG target dashed.
 
+A **map** sits bottom left, above Screenshot and Record: the route from
+above with what you have ridden in orange, the start (green) and finish (red),
+an arrow for you and, in a race, a dot per rider in their kit colour.
+**Route** fits the whole route, north up; **Near** shows 2 km round you,
+turned so the road you ride goes up, with a north arrow. × (or M) hides it and
+**Map** (or M) brings it back; the choice is remembered. It is drawn from the
+route's own points, so it needs no map tiles or network and works on the
+island, a GPX, a game stage and Ride anywhere. During a race on a short screen
+it shrinks to stay clear of the race board.
+
 A lap starts at each workout step, each time round a loop, and on **Lap** (or
 L). Laps on screen are for you; the .fit file still saves one lap per step.
 
